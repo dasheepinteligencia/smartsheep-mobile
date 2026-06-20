@@ -9,6 +9,7 @@ Esta pasta documenta o aplicativo mobile Omni Field com base no código existent
 - [02 - Fluxo mobile](./02-fluxo-mobile.md)
 - [03 - Banco local SQLite e persistência offline](./03-banco-local-sqlite.md)
 - [04 - Sincronização mobile](./04-sincronizacao-mobile.md)
+- [05 - Visitas, check-in, check-out e justificativas](./05-visitas-checkin-checkout-justificativas.md)
 
 ## Escopo observado
 
@@ -21,6 +22,7 @@ A documentação inicial cobre:
 - navegação e telas principais;
 - sessão/autenticação;
 - roteiro e execução de visitas;
+- visitas, check-in, check-out e justificativas;
 - pesquisas e evidências;
 - funcionamento offline;
 - sincronização;
