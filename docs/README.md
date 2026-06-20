@@ -14,6 +14,7 @@ Esta pasta documenta o aplicativo mobile Omni Field com base no código existent
 - [07 - Alertas e Mural](./07-alertas-e-mural.md)
 - [08 - Performance, Gamificação e Perfect Store](./08-performance-gamificacao-perfect-store.md)
 - [09 - Menu, navegação e telas principais](./09-menu-navegacao-telas.md)
+- [10 - Operação, testes e troubleshooting](./10-operacao-testes-troubleshooting.md)
 
 ## Escopo observado
 
