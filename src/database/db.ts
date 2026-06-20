@@ -538,6 +538,8 @@ const initializeDatabaseInternal = async () => {
         id TEXT PRIMARY KEY, 
         nome TEXT, 
         ativo TEXT DEFAULT 'false', 
+        data_inicio TEXT,
+        data_fim TEXT,
         valor_atingido REAL DEFAULT 0, 
         valor_esperado REAL DEFAULT 0,
         scorecard_raw_json TEXT,
@@ -548,6 +550,8 @@ const initializeDatabaseInternal = async () => {
         id TEXT PRIMARY KEY, 
         nome TEXT, 
         ativo TEXT DEFAULT 'false', 
+        data_inicio TEXT,
+        data_fim TEXT,
         perfisAlvo TEXT,
         campanha_raw_json TEXT,
         updated_at TEXT
@@ -657,9 +661,13 @@ const initializeDatabaseInternal = async () => {
     await addColumnIfMissing('coletas', 'created_at', 'TEXT');
     await addColumnIfMissing('coletas', 'updated_at', 'TEXT');
 
+    await addColumnIfMissing('scorecards', 'data_inicio', 'TEXT');
+    await addColumnIfMissing('scorecards', 'data_fim', 'TEXT');
     await addColumnIfMissing('scorecards', 'scorecard_raw_json', 'TEXT');
     await addColumnIfMissing('scorecards', 'updated_at', 'TEXT');
 
+    await addColumnIfMissing('campanhas_gamificacao', 'data_inicio', 'TEXT');
+    await addColumnIfMissing('campanhas_gamificacao', 'data_fim', 'TEXT');
     await addColumnIfMissing('campanhas_gamificacao', 'campanha_raw_json', 'TEXT');
     await addColumnIfMissing('campanhas_gamificacao', 'updated_at', 'TEXT');
 
@@ -1102,7 +1110,13 @@ export const saveRoteiroCompletoOffline = async (
   try {
     await initializeDatabase();
 
-    const { scorecards, campanhas } = splitCampaignsAndScorecards(thirdList, fourthList);
+    // O sync atual chama:
+    // saveRoteiroCompletoOffline(visits, tasks, campanhas, scorecards, pesquisas)
+    // Não podemos tentar adivinhar pelo formato, porque campanhas de performance
+    // também podem ter "regras" e eram confundidas com scorecards quando
+    // Perfect Store vinha vazio.
+    const campanhas = safeParseArray(thirdList);
+    const scorecards = safeParseArray(fourthList);
 
     await db.withTransactionAsync(async () => {
       const visitIdsFromServer: string[] = [];
@@ -1284,21 +1298,60 @@ export const saveRoteiroCompletoOffline = async (
         );
       }
 
+      // Campanhas e scorecards são snapshot do backend.
+      // Primeiro limpa, depois salva exatamente o que veio no sync atual.
+      await db.runAsync(`DELETE FROM scorecards`);
+      await db.runAsync(`DELETE FROM campanhas_gamificacao`);
+
       for (const s of safeParseArray(scorecards)) {
+        const scorecardId = String(
+          s.id ||
+            s.id_scorecard ||
+            s.scorecardId ||
+            s.scorecard_id ||
+            s.perfectStoreId ||
+            s.perfect_store_id ||
+            ''
+        ).trim();
+
+        if (!scorecardId) continue;
+
         await db.runAsync(
           `INSERT OR REPLACE INTO scorecards (
             id,
             nome,
             ativo,
+            data_inicio,
+            data_fim,
             valor_atingido,
             valor_esperado,
             scorecard_raw_json,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            String(s.id),
-            String(s.nome || s.name || s.titulo || ''),
-            String(s.ativo ?? true),
+            scorecardId,
+            String(s.nome || s.nome_scorecard || s.name || s.titulo || s.title || ''),
+            String(s.ativo ?? s.active ?? s.enabled ?? s.isActive ?? s.is_active ?? false),
+            s.data_inicio ||
+              s.dataInicio ||
+              s.data_inicial ||
+              s.dataInicial ||
+              s.startDate ||
+              s.start_date ||
+              s.starts_at ||
+              s.startsAt ||
+              s.inicio ||
+              null,
+            s.data_fim ||
+              s.dataFim ||
+              s.data_final ||
+              s.dataFinal ||
+              s.endDate ||
+              s.end_date ||
+              s.ends_at ||
+              s.endsAt ||
+              s.fim ||
+              null,
             Number(s.valor_atingido || s.valorAtingido || 0),
             Number(s.valor_esperado || s.valorEsperado || 0),
             safeStringify(s, '{}'),
@@ -1308,20 +1361,54 @@ export const saveRoteiroCompletoOffline = async (
       }
 
       for (const c of safeParseArray(campanhas)) {
+        const campanhaId = String(
+          c.id ||
+            c.id_campanha ||
+            c.campanhaId ||
+            c.campanha_id ||
+            c.gamificationCampaignId ||
+            c.gamification_campaign_id ||
+            ''
+        ).trim();
+
+        if (!campanhaId) continue;
+
         await db.runAsync(
           `INSERT OR REPLACE INTO campanhas_gamificacao (
             id,
             nome,
             ativo,
+            data_inicio,
+            data_fim,
             perfisAlvo,
             campanha_raw_json,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            String(c.id),
-            String(c.nome || c.name || c.titulo || ''),
-            String(c.ativo ?? true),
-            safeStringify(c.perfisAlvo || c.perfis_alvo || [], '[]'),
+            campanhaId,
+            String(c.nome || c.nome_campanha || c.name || c.titulo || c.title || ''),
+            String(c.ativo ?? c.active ?? c.enabled ?? c.isActive ?? c.is_active ?? false),
+            c.data_inicio ||
+              c.dataInicio ||
+              c.data_inicial ||
+              c.dataInicial ||
+              c.startDate ||
+              c.start_date ||
+              c.starts_at ||
+              c.startsAt ||
+              c.inicio ||
+              null,
+            c.data_fim ||
+              c.dataFim ||
+              c.data_final ||
+              c.dataFinal ||
+              c.endDate ||
+              c.end_date ||
+              c.ends_at ||
+              c.endsAt ||
+              c.fim ||
+              null,
+            safeStringify(c.perfisAlvo || c.perfis_alvo || c.perfis_alvo_json || c.perfis || [], '[]'),
             safeStringify(c, '{}'),
             now,
           ]

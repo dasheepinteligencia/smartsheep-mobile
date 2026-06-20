@@ -537,6 +537,254 @@ const fetchAlertas = async (
 };
 
 
+
+// ============================================================================
+// 🎯 CAMPANHAS / SCORECARDS — FONTE DA VERDADE DO WEB
+// ============================================================================
+const parseArrayPayload = (value: any): any[] | null => {
+  if (Array.isArray(value)) return value;
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return null;
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parseArrayPayload(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof value === 'object') {
+    const candidateKeys = [
+      'gamificationConfig',
+      'perfectStoreRules',
+      'campanhas',
+      'campanhas_gamificacao',
+      'campanhasGamificacao',
+      'campaigns',
+      'scorecards',
+      'rules',
+      'items',
+      'data',
+      'rows',
+    ];
+
+    for (const key of candidateKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const parsed = parseArrayPayload(value[key]);
+        if (parsed) return parsed;
+      }
+    }
+  }
+
+  return null;
+};
+
+const pickFirstFilled = (...values: any[]) => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '' && String(value).trim() !== 'null' && String(value).trim() !== 'undefined') {
+      return value;
+    }
+  }
+
+  return null;
+};
+
+const normalizeRemoteBoolean = (value: any): boolean | null => {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+
+  const normalized = String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+
+  if (['1', 'TRUE', 'SIM', 'YES', 'ATIVO', 'ATIVA', 'ACTIVE', 'ENABLED', 'PUBLICADO', 'PUBLICADA', 'EM_ANDAMENTO', 'RUNNING'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'FALSE', 'NAO', 'NÃO', 'NO', 'INATIVO', 'INATIVA', 'INACTIVE', 'DISABLED', 'CANCELADO', 'CANCELADA', 'ENCERRADO', 'ENCERRADA', 'FINALIZADO', 'FINALIZADA', 'PAUSADO', 'PAUSADA', 'ARQUIVADO', 'ARQUIVADA'].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+};
+
+const normalizeRemoteDate = (...values: any[]) => {
+  const value = pickFirstFilled(...values);
+  if (!value) return null;
+
+  const raw = String(value).trim();
+  if (!raw || raw === 'null' || raw === 'undefined') return null;
+
+  // Mantém YYYY-MM-DD quando a API já entrega a data curta.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const time = new Date(raw).getTime();
+  if (!Number.isNaN(time)) return new Date(time).toISOString().substring(0, 10);
+
+  return raw.substring(0, 10);
+};
+
+const normalizeGamificationCampaign = (item: any) => {
+  if (!item || typeof item !== 'object') return null;
+
+  const raw = safeJsonParse(item.raw_json || item.campanha_raw_json, item);
+
+  const id = String(
+    pickFirstFilled(
+      item.id,
+      item.id_campanha,
+      item.campanhaId,
+      item.campanha_id,
+      raw.id,
+      raw.id_campanha,
+      raw.campanhaId,
+      raw.campanha_id
+    ) || ''
+  ).trim();
+
+  if (!id) return null;
+
+  const ativo = normalizeRemoteBoolean(
+    pickFirstFilled(
+      raw.enabled,
+      raw.ativo,
+      raw.active,
+      raw.isActive,
+      raw.is_active,
+      item.enabled,
+      item.ativo,
+      item.active,
+      item.isActive,
+      item.is_active
+    )
+  );
+
+  return {
+    ...raw,
+    ...item,
+    id,
+    nome: String(pickFirstFilled(item.nome, item.nome_campanha, item.name, item.titulo, raw.nome, raw.nome_campanha, raw.name, raw.titulo) || 'Campanha de Performance'),
+    ativo: ativo === true,
+    enabled: ativo === true,
+    data_inicio: normalizeRemoteDate(item.data_inicio, item.dataInicio, item.startDate, item.start_date, item.inicio, raw.data_inicio, raw.dataInicio, raw.startDate, raw.start_date, raw.inicio),
+    data_fim: normalizeRemoteDate(item.data_fim, item.dataFim, item.endDate, item.end_date, item.fim, raw.data_fim, raw.dataFim, raw.endDate, raw.end_date, raw.fim),
+    dataInicio: normalizeRemoteDate(item.dataInicio, item.data_inicio, item.startDate, item.start_date, item.inicio, raw.dataInicio, raw.data_inicio, raw.startDate, raw.start_date, raw.inicio),
+    dataFim: normalizeRemoteDate(item.dataFim, item.data_fim, item.endDate, item.end_date, item.fim, raw.dataFim, raw.data_fim, raw.endDate, raw.end_date, raw.fim),
+  };
+};
+
+const normalizePerfectStoreScorecard = (item: any) => {
+  if (!item || typeof item !== 'object') return null;
+
+  const raw = safeJsonParse(item.raw_json || item.scorecard_raw_json, item);
+
+  const id = String(
+    pickFirstFilled(
+      item.id,
+      item.id_scorecard,
+      item.scorecardId,
+      item.scorecard_id,
+      raw.id,
+      raw.id_scorecard,
+      raw.scorecardId,
+      raw.scorecard_id
+    ) || ''
+  ).trim();
+
+  if (!id) return null;
+
+  const ativo = normalizeRemoteBoolean(
+    pickFirstFilled(
+      raw.enabled,
+      raw.ativo,
+      raw.active,
+      raw.isActive,
+      raw.is_active,
+      item.enabled,
+      item.ativo,
+      item.active,
+      item.isActive,
+      item.is_active
+    )
+  );
+
+  return {
+    ...raw,
+    ...item,
+    id,
+    nome: String(pickFirstFilled(item.nome, item.nome_scorecard, item.name, item.titulo, raw.nome, raw.nome_scorecard, raw.name, raw.titulo) || 'Perfect Store'),
+    ativo: ativo === true,
+    enabled: ativo === true,
+    data_inicio: normalizeRemoteDate(item.data_inicio, item.dataInicio, item.startDate, item.start_date, item.inicio, raw.data_inicio, raw.dataInicio, raw.startDate, raw.start_date, raw.inicio),
+    data_fim: normalizeRemoteDate(item.data_fim, item.dataFim, item.endDate, item.end_date, item.fim, raw.data_fim, raw.dataFim, raw.endDate, raw.end_date, raw.fim),
+    dataInicio: normalizeRemoteDate(item.dataInicio, item.data_inicio, item.startDate, item.start_date, item.inicio, raw.dataInicio, raw.data_inicio, raw.startDate, raw.start_date, raw.inicio),
+    dataFim: normalizeRemoteDate(item.dataFim, item.data_fim, item.endDate, item.end_date, item.fim, raw.dataFim, raw.data_fim, raw.endDate, raw.end_date, raw.fim),
+  };
+};
+
+const fetchGamificationCampaigns = async (projectId: string, urlTS: number, fetchOptions: any): Promise<any[] | null> => {
+  const endpoints = [
+    `/gamification/rules/${projectId}?t=${urlTS}`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await api(endpoint, fetchOptions).catch(() => null);
+      const data = await getJsonIfOk(res);
+
+      if (!data) continue;
+
+      const list = parseArrayPayload(data);
+      if (!list) continue;
+
+      return safeArray(list)
+        .map(normalizeGamificationCampaign)
+        .filter(Boolean) as any[];
+    } catch {}
+  }
+
+  return null;
+};
+
+const fetchPerfectStoreScorecards = async (projectId: string, urlTS: number, fetchOptions: any): Promise<any[] | null> => {
+  const endpoints = [
+    `/perfect-store/rules/${projectId}?t=${urlTS}`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await api(endpoint, fetchOptions).catch(() => null);
+      const data = await getJsonIfOk(res);
+
+      if (!data) continue;
+
+      const list = parseArrayPayload(data);
+      if (!list) continue;
+
+      return safeArray(list)
+        .map(normalizePerfectStoreScorecard)
+        .filter(Boolean) as any[];
+    } catch {}
+  }
+
+  return null;
+};
+
+const buildCampaignDebugSnapshot = (list: any[]) =>
+  safeArray(list).map((item) => ({
+    id: item?.id,
+    nome: item?.nome || item?.name || item?.titulo,
+    ativo: item?.ativo ?? item?.enabled ?? item?.active,
+    data_inicio: item?.data_inicio || item?.dataInicio || item?.startDate || null,
+    data_fim: item?.data_fim || item?.dataFim || item?.endDate || null,
+  }));
+
 const updateVisitAfterSyncedQueueItem = async (db: any, item: any) => {
   try {
     const payload = safeJsonParse(item.payload, {});
@@ -1136,11 +1384,20 @@ export const globalSync = async () => {
       resPesquisas = await api(`/pesquisas?projectId=${projectId}&t=${urlTS}`, fetchOptions).catch(() => null);
     }
 
-    const [resLojas, resCategorias, fetchedJustificativas, fetchedAlertas] = await Promise.all([
+    const [
+      resLojas,
+      resCategorias,
+      fetchedJustificativas,
+      fetchedAlertas,
+      fetchedGamificationCampaigns,
+      fetchedPerfectStoreScorecards,
+    ] = await Promise.all([
       api(`/lojas/${projectId}?t=${urlTS}`, fetchOptions).catch(() => null),
       api(`/categorias?projectId=${projectId}&t=${urlTS}`, fetchOptions).catch(() => null),
       fetchJustificativas(projectId, urlTS, fetchOptions).catch(() => []),
       fetchAlertas(projectId, promotorId, urlTS, fetchOptions).catch(() => []),
+      fetchGamificationCampaigns(projectId, urlTS, fetchOptions).catch(() => null),
+      fetchPerfectStoreScorecards(projectId, urlTS, fetchOptions).catch(() => null),
     ]);
 
     if (resPesquisas && resPesquisas.ok) {
@@ -1156,6 +1413,16 @@ export const globalSync = async () => {
 
     if (safeArray(fetchedAlertas).length > 0) {
       a_list = fetchedAlertas;
+    }
+
+    // Campanhas e scorecards vêm das rotas relacionais do web.
+    // Se a rota respondeu, ela é a fonte da verdade, inclusive quando vier vazia.
+    if (fetchedGamificationCampaigns !== null) {
+      c_list = fetchedGamificationCampaigns;
+    }
+
+    if (fetchedPerfectStoreScorecards !== null) {
+      s_list = fetchedPerfectStoreScorecards;
     }
 
     await saveJustificativasOffline(db, j_list);
@@ -1219,9 +1486,14 @@ export const globalSync = async () => {
       data_vencimento: String(task.data_vencimento || task.data_fim || task.deadline || ''),
     }));
 
-    c_list = safeArray(c_list);
-    s_list = safeArray(s_list);
+    c_list = safeArray(c_list).map(normalizeGamificationCampaign).filter(Boolean);
+    s_list = safeArray(s_list).map(normalizePerfectStoreScorecard).filter(Boolean);
     p_list = safeArray(p_list);
+
+    console.log('[Sync][Campanhas]', {
+      performance: buildCampaignDebugSnapshot(c_list),
+      perfectStore: buildCampaignDebugSnapshot(s_list),
+    });
 
     // 4. Salva pesquisas para uso offline
     try {

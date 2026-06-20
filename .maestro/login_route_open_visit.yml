@@ -1,0 +1,51 @@
+appId: host.exp.exponent
+---
+- openLink: exp://127.0.0.1:8081
+
+- extendedWaitUntil:
+    visible:
+      id: "login-email-input"
+    timeout: 30000
+
+- tapOn:
+    id: "login-email-input"
+- eraseText
+- inputText: "amanda@nutri.com"
+
+- tapOn:
+    id: "login-password-input"
+- eraseText
+- inputText: "123456"
+
+- hideKeyboard
+
+- extendedWaitUntil:
+    visible:
+      id: "login-submit-button"
+    timeout: 10000
+
+- tapOn:
+    id: "login-submit-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-screen"
+    timeout: 60000
+
+- tapOn:
+    id: "home-route-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "route-screen"
+    timeout: 45000
+
+- extendedWaitUntil:
+    visible:
+      id: "route-first-visit-title"
+    timeout: 30000
+
+- tapOn:
+    id: "route-first-visit-title"
+
+- waitForAnimationToEnd

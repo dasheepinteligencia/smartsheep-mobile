@@ -1,0 +1,15 @@
+appId: host.exp.exponent
+---
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible: ".*Ponto Extra.*Merchandising.*"
+    timeout: 30000
+
+- extendedWaitUntil:
+    visible: ".*PONTOS EXTRAS.*"
+    timeout: 15000
+
+- extendedWaitUntil:
+    visible: ".*FINALIZAR PESQUISA.*"
+    timeout: 15000

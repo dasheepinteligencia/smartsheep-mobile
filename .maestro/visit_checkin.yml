@@ -1,0 +1,47 @@
+appId: host.exp.exponent
+---
+- extendedWaitUntil:
+    visible:
+      id: "visit-checkin-button"
+    timeout: 20000
+
+- tapOn:
+    id: "visit-checkin-button"
+
+- waitForAnimationToEnd
+
+# Cenário configurado: fora do raio, alerta, mas permite continuar
+- extendedWaitUntil:
+    visible: ".*Fora do raio.*"
+    timeout: 20000
+
+- assertVisible: ".*Você está a.*da loja.*"
+
+- assertVisible: ".*Deseja registrar a entrada assim mesmo.*"
+
+- tapOn: "Continuar"
+
+- waitForAnimationToEnd
+
+# Confirmação de check-in salvo
+- extendedWaitUntil:
+    visible: ".*Entrada Registrada.*"
+    timeout: 30000
+
+- assertVisible: ".*check-in.*salvo.*celular.*|.*sincronizado automaticamente.*"
+
+- tapOn: "OK"
+
+- waitForAnimationToEnd
+
+# Após confirmar, visita deve ficar em andamento e liberar tarefas/check-out
+- extendedWaitUntil:
+    visible: ".*EM ANDAMENTO.*|.*EM_ANDAMENTO.*|.*Entrada:.*"
+    timeout: 30000
+
+- extendedWaitUntil:
+    visible:
+      id: "visit-checkout-button"
+    timeout: 20000
+
+- assertVisible: ".*Tarefas desta visita.*|.*Pesquisar.*|.*Check-out.*"

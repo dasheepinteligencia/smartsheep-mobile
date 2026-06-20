@@ -1,0 +1,16 @@
+appId: host.exp.exponent
+---
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible: ".*PONTOS EXTRAS.*"
+    timeout: 15000
+
+- tapOn: "PONTOS EXTRAS"
+
+- waitForAnimationToEnd
+
+# Depois de abrir a seção, esperamos ver conteúdo interno do formulário/perguntas
+- extendedWaitUntil:
+    visible: ".*pergunta.*|.*Pergunta.*|.*Sim.*|.*Não.*|.*Foto.*|.*Imagem.*|.*Salvar.*|.*FINALIZAR PESQUISA.*"
+    timeout: 30000

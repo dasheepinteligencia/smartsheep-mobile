@@ -1,0 +1,21 @@
+appId: host.exp.exponent
+---
+- extendedWaitUntil:
+    visible:
+      id: "visit-back-button"
+    timeout: 15000
+
+- tapOn:
+    id: "visit-back-button"
+
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible:
+      id: "route-screen"
+    timeout: 30000
+
+- extendedWaitUntil:
+    visible:
+      id: "route-first-visit-title"
+    timeout: 30000

@@ -1,0 +1,30 @@
+appId: host.exp.exponent
+---
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible:
+      id: "visit-screen-title"
+    timeout: 45000
+
+# Valida área de tarefas
+- scrollUntilVisible:
+    element:
+      text: ".*Tarefas desta visita.*"
+    direction: DOWN
+    timeout: 15000
+
+- assertVisible: ".*Tarefas desta visita.*"
+
+# Valida pelo menos uma tarefa conhecida
+- extendedWaitUntil:
+    visible: ".*Ponto Extra.*|.*Pesquisa de Produtos.*|.*Troca de Brindes.*"
+    timeout: 15000
+
+# Valida botões inferiores da visita em andamento
+- extendedWaitUntil:
+    visible:
+      id: "visit-checkout-button"
+    timeout: 15000
+
+- assertVisible: ".*Pesquisar.*|.*Check-out.*"

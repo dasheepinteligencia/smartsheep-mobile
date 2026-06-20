@@ -1,0 +1,17 @@
+appId: host.exp.exponent
+---
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible:
+      id: "visit-first-task-title"
+    timeout: 20000
+
+- tapOn:
+    id: "visit-first-task-title"
+
+- waitForAnimationToEnd
+
+- runFlow: survey_assert.yml
+
+- runFlow: survey_open_points_extra.yml

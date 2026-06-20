@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface User {
   id: string;
@@ -92,8 +93,8 @@ const getStoredToken = async (): Promise<string | null> => {
 };
 
 const getStoredUser = async (): Promise<User | null> => {
-  const mainUser = await SecureStore.getItemAsync(STORAGE_KEYS.USER);
-  const legacyUser = await SecureStore.getItemAsync(STORAGE_KEYS.LEGACY_USER);
+  const mainUser = await AsyncStorage.getItem(STORAGE_KEYS.USER);
+  const legacyUser = await AsyncStorage.getItem(STORAGE_KEYS.LEGACY_USER);
   const userJson = mainUser || legacyUser;
 
   if (!userJson || userJson === 'null' || userJson === 'undefined') {
@@ -116,12 +117,12 @@ export const useAuthStore = create<AuthState>((set) => ({
 
     // Salva no padrão novo
     await SecureStore.setItemAsync(STORAGE_KEYS.TOKEN, token);
-    await SecureStore.setItemAsync(STORAGE_KEYS.USER, JSON.stringify(normalizedUser));
+    await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(normalizedUser));
 
     // Salva também no padrão legado, porque o api.ts e alguns services antigos
     // podem buscar por estas chaves.
     await SecureStore.setItemAsync(STORAGE_KEYS.LEGACY_TOKEN, token);
-    await SecureStore.setItemAsync(STORAGE_KEYS.LEGACY_USER, JSON.stringify(normalizedUser));
+    await AsyncStorage.setItem(STORAGE_KEYS.LEGACY_USER, JSON.stringify(normalizedUser));
 
     set({ token, user: normalizedUser });
   },
@@ -146,9 +147,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     if (token && user) {
       // Regrava nos dois padrões para auto-curar instalações antigas.
       await SecureStore.setItemAsync(STORAGE_KEYS.TOKEN, token);
-      await SecureStore.setItemAsync(STORAGE_KEYS.USER, JSON.stringify(user));
+      await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
       await SecureStore.setItemAsync(STORAGE_KEYS.LEGACY_TOKEN, token);
-      await SecureStore.setItemAsync(STORAGE_KEYS.LEGACY_USER, JSON.stringify(user));
+      await AsyncStorage.setItem(STORAGE_KEYS.LEGACY_USER, JSON.stringify(user));
 
       set({ token, user });
     } else {

@@ -200,17 +200,13 @@ const getFirstFilled = (...values: any[]) => {
 const isCampaignActiveNow = (campaign: any) => {
   const today = getLocalDateKey(new Date());
 
-  const rawStatus = String(
-    getFirstFilled(campaign?.status, campaign?.situacao, campaign?.state, campaign?.campaign_status, '')
-  )
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toUpperCase();
-
-  if (['INATIVA', 'INATIVO', 'ENCERRADA', 'ENCERRADO', 'CANCELADA', 'CANCELADO', 'FINALIZADA', 'FINALIZADO', 'PAUSADA', 'PAUSADO', 'ARQUIVADA', 'ARQUIVADO'].includes(rawStatus)) {
-    return false;
-  }
+  const raw = safeParseJson(
+    campaign?.scorecard_raw_json ||
+      campaign?.campanha_raw_json ||
+      campaign?.raw_json ||
+      '{}',
+    {}
+  );
 
   const activeFlag = getFirstFilled(
     campaign?.ativo,
@@ -218,7 +214,13 @@ const isCampaignActiveNow = (campaign: any) => {
     campaign?.isActive,
     campaign?.is_active,
     campaign?.habilitado,
-    campaign?.enabled
+    campaign?.enabled,
+    raw?.ativo,
+    raw?.active,
+    raw?.isActive,
+    raw?.is_active,
+    raw?.habilitado,
+    raw?.enabled
   );
 
   if (activeFlag !== null && isFalseLike(activeFlag)) return false;
@@ -230,7 +232,11 @@ const isCampaignActiveNow = (campaign: any) => {
       campaign?.startDate,
       campaign?.start_date,
       campaign?.inicio,
-      campaign?.starts_at
+      raw?.data_inicio,
+      raw?.dataInicio,
+      raw?.startDate,
+      raw?.start_date,
+      raw?.inicio
     )
   );
 
@@ -241,7 +247,11 @@ const isCampaignActiveNow = (campaign: any) => {
       campaign?.endDate,
       campaign?.end_date,
       campaign?.fim,
-      campaign?.ends_at
+      raw?.data_fim,
+      raw?.dataFim,
+      raw?.endDate,
+      raw?.end_date,
+      raw?.fim
     )
   );
 

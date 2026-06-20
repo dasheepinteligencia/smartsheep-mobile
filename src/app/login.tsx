@@ -313,6 +313,8 @@ export default function LoginScreen() {
               <Mail color={focusedInput === 'email' ? accent : placeholderColor} size={20} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: inputTextColor }]}
+                testID="login-email-input"
+                accessibilityLabel="login-email-input"
                 placeholder={i18n.t('emailPlaceholder')}
                 placeholderTextColor={placeholderColor}
                 autoCapitalize="none"
@@ -330,6 +332,8 @@ export default function LoginScreen() {
               <Lock color={focusedInput === 'password' ? accent : placeholderColor} size={20} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: inputTextColor }]}
+                testID="login-password-input"
+                accessibilityLabel="login-password-input"
                 placeholder={i18n.t('passwordLabel')}
                 placeholderTextColor={placeholderColor}
                 secureTextEntry={!showPassword}
@@ -345,6 +349,8 @@ export default function LoginScreen() {
           </View>
 
           <Pressable
+            testID="login-submit-button"
+            accessibilityLabel="login-submit-button"
             onPress={handleLogin}
             disabled={isLoading}
             style={({ pressed }) => [

@@ -399,10 +399,12 @@ const getSurveyServerStateUpdatedAt = (survey: any, visit: any) => firstFilled(
   survey?.coleta_updated_at,
   survey?.updated_at,
   survey?.updatedAt,
+  // Importante: NÃO usar visit.updated_at aqui.
+  // visits.updated_at muda quando a coleta é finalizada localmente.
+  // Se esse timestamp for tratado como estado do servidor, a pesquisa recém-concluída
+  // pode ser considerada pendente de novo.
   visit?.coletas_sync_updated_at,
-  visit?.coletasSyncUpdatedAt,
-  visit?.updated_at,
-  visit?.updatedAt
+  visit?.coletasSyncUpdatedAt
 );
 
 const toTimestamp = (value: any) => {
@@ -460,7 +462,7 @@ const getCompletedSurveyIdsForVisit = async (db: any, visit: any) => {
     // Só consideramos coletas locais ainda pendentes de sync.
     // Se o servidor já mandou um estado pendente mais recente, ele vence e a coleta local antiga é ignorada.
     const rows = await db.getAllAsync<any>(
-      `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim FROM coletas WHERE visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
+      `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim, updated_at FROM coletas WHERE visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
       visitIds
     );
 
@@ -1210,12 +1212,16 @@ export default function VisitaDetailScreen() {
   };
 
   const handleCheckout = async () => {
-    const aindaTemTarefaObrigatoria = tarefasRenderizadas.some((tarefa: any) => tarefa?.concluida !== true);
+    const tarefasPendentes = tarefasRenderizadas.filter((tarefa: any) => tarefa?.concluida !== true);
 
-    if (aindaTemTarefaObrigatoria) {
+    if (tarefasPendentes.length > 0) {
+      const listaPendencias = tarefasPendentes
+        .map((tarefa: any, index: number) => `${index + 1}. ${String(tarefa?.titulo || 'Pesquisa/Tarefa sem nome')}`)
+        .join('\n');
+
       showCustomAlert(
         'Saída Bloqueada',
-        'Você ainda não finalizou todos os formulários e tarefas obrigatórias desta visita.',
+        `Você ainda precisa finalizar ${tarefasPendentes.length} formulário(s)/tarefa(s) desta visita:\n\n${listaPendencias}`,
         'warning'
       );
       return;
@@ -1418,7 +1424,7 @@ export default function VisitaDetailScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.center, { backgroundColor: bg }]}>
+      <View testID="visit-loading" accessibilityLabel="visit-loading" style={[styles.center, { backgroundColor: bg }]}>
         <ActivityIndicator size="large" color={colorCheckin} />
       </View>
     );
@@ -1427,7 +1433,7 @@ export default function VisitaDetailScreen() {
   if (!visita) {
     return (
       <View style={[styles.center, { backgroundColor: bg }]}>
-        <Text style={{ color: textPrimary }}>Visita não encontrada.</Text>
+        <Text testID="visit-not-found" accessibilityLabel="visit-not-found" style={{ color: textPrimary }}>Visita não encontrada.</Text>
       </View>
     );
   }
@@ -1542,10 +1548,18 @@ export default function VisitaDetailScreen() {
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
       <View style={[styles.header, { backgroundColor: cardBg, borderBottomColor: border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+        <TouchableOpacity
+              testID="visit-back-button"
+              accessibilityLabel="visit-back-button" onPress={() => router.back()} style={styles.backBtn}>
           <ArrowLeft size={24} color={textPrimary} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: textPrimary }]}>Detalhes da Visita</Text>
+        <Text
+            testID="visit-screen-title"
+            accessibilityLabel="visit-screen-title"
+            style={[styles.headerTitle, { color: textPrimary }]}
+          >
+            Detalhes da Visita
+          </Text>
         <View style={{ width: 24 }} />
       </View>
 
@@ -1578,7 +1592,7 @@ export default function VisitaDetailScreen() {
               </View>
             </View>
 
-            <Text style={[styles.storeName, { color: textPrimary }]}>{visita.loja_nome}</Text>
+            <Text testID="visit-screen" accessibilityLabel="visit-screen" style={[styles.storeName, { color: textPrimary }]}>{visita.loja_nome}</Text>
 
             <View style={styles.addressRow}>
               <MapPin size={16} color={textSecondary} style={{ marginTop: 2 }} />
@@ -1645,6 +1659,8 @@ export default function VisitaDetailScreen() {
               return (
               <TouchableOpacity
                 key={`${tarefa.id || index}`}
+                  testID={index === 0 ? "visit-first-task-card" : `visit-task-card-${tarefa.id || index}`}
+                  accessibilityLabel={index === 0 ? "visit-first-task-card" : `visit-task-card-${tarefa.id || index}`}
                 style={[
                   styles.taskCard,
                   { backgroundColor: cardBg, borderColor: tarefaConcluida ? colorCheckin : border },
@@ -1673,7 +1689,13 @@ export default function VisitaDetailScreen() {
                   )}
                 </View>
                 <View style={styles.taskInfo}>
-                  <Text style={[styles.taskTitle, { color: textPrimary }]}>{tarefa.titulo}</Text>
+                  <Text
+                      testID={index === 0 ? "visit-first-task-title" : `visit-task-title-${tarefa.id || index}`}
+                      accessibilityLabel={index === 0 ? "visit-first-task-title" : `visit-task-title-${tarefa.id || index}`}
+                      style={[styles.taskTitle, { color: textPrimary }]}
+                    >
+                      {tarefa.titulo}
+                    </Text>
                   <Text style={[styles.taskSubtitle, { color: tarefaConcluida ? colorCheckin : textSecondary }]}>
                     {tarefaConcluida
                       ? 'Tarefa Concluída'
@@ -1696,6 +1718,8 @@ export default function VisitaDetailScreen() {
         {isPendente ? (
           <>
             <TouchableOpacity
+              testID="visit-justify-button"
+              accessibilityLabel="visit-justify-button"
               style={[
                 styles.btnAction,
                 { backgroundColor: colorJustify, marginRight: 12, opacity: justifyLoading ? 0.7 : 1 },
@@ -1715,6 +1739,8 @@ export default function VisitaDetailScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
+              testID="visit-checkin-button"
+              accessibilityLabel="visit-checkin-button"
               style={[styles.btnAction, { backgroundColor: colorCheckin, flex: 1.5, opacity: checkinLoading ? 0.7 : 1 }]}
               onPress={handleCheckin}
               disabled={checkinLoading}
@@ -1740,6 +1766,8 @@ export default function VisitaDetailScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
+              testID="visit-checkout-button"
+              accessibilityLabel="visit-checkout-button"
               style={[styles.btnAction, { backgroundColor: colorCheckout, flex: 1.5, opacity: checkoutLoading ? 0.7 : 1 }]}
               onPress={handleCheckout}
               disabled={checkoutLoading}

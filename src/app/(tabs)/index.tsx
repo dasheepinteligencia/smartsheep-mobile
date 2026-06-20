@@ -122,40 +122,114 @@ const firstFilled = (...values: any[]) => {
 const normalizeCampaignStatus = (value: any) =>
   String(value ?? '')
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toUpperCase();
 
-const isActiveCampaignFlag = (value: any) => {
+const normalizeCampaignActiveFlag = (value: any): boolean | null => {
   const normalized = normalizeCampaignStatus(value);
 
-  return (
+  if (
     value === true ||
     value === 1 ||
     ['1', 'TRUE', 'SIM', 'YES', 'ATIVO', 'ATIVA', 'ACTIVE', 'PUBLICADO', 'PUBLICADA', 'EM_ANDAMENTO', 'RUNNING'].includes(normalized)
+  ) {
+    return true;
+  }
+
+  if (
+    value === false ||
+    value === 0 ||
+    ['0', 'FALSE', 'NAO', 'NÃO', 'NO', 'INATIVO', 'INATIVA', 'INACTIVE', 'CANCELADO', 'CANCELADA', 'ENCERRADO', 'ENCERRADA', 'FINALIZADO', 'FINALIZADA', 'PAUSADO', 'PAUSADA', 'ARQUIVADO', 'ARQUIVADA'].includes(normalized)
+  ) {
+    return false;
+  }
+
+  return null;
+};
+
+const getCampaignRaw = (row: any) => {
+  return safeParseJson(
+    row?.scorecard_raw_json ||
+      row?.campanha_raw_json ||
+      row?.raw_json ||
+      '{}',
+    {}
   );
 };
 
-const isInactiveCampaignFlag = (value: any) => {
-  const normalized = normalizeCampaignStatus(value);
-
-  return (
-    value === false ||
-    value === 0 ||
-    ['0', 'FALSE', 'NAO', 'NÃO', 'NO', 'INATIVO', 'INATIVA', 'INACTIVE', 'CANCELADO', 'CANCELADA', 'ENCERRADO', 'ENCERRADA', 'FINALIZADO', 'FINALIZADA', 'PAUSADO', 'PAUSADA'].includes(normalized)
+const getCampaignActiveValue = (row: any, raw: any) => {
+  // O raw_json vem do backend e tem prioridade sobre colunas locais antigas.
+  // Regra obrigatória: sem ativo explícito, não aparece.
+  return firstFilled(
+    raw?.ativo,
+    raw?.active,
+    raw?.enabled,
+    raw?.isActive,
+    raw?.is_active,
+    raw?.habilitado,
+    raw?.status,
+    raw?.situacao,
+    row?.ativo,
+    row?.active,
+    row?.enabled,
+    row?.isActive,
+    row?.is_active,
+    row?.habilitado,
+    row?.status,
+    row?.situacao
   );
+};
+
+const getCampaignStartDate = (row: any, raw: any) => {
+  return formatToYMD(firstFilled(
+    raw?.dataInicio,
+    raw?.data_inicio,
+    raw?.startDate,
+    raw?.start_date,
+    raw?.inicio,
+    raw?.starts_at,
+    row?.dataInicio,
+    row?.data_inicio,
+    row?.startDate,
+    row?.start_date,
+    row?.inicio,
+    row?.starts_at
+  ));
+};
+
+const getCampaignEndDate = (row: any, raw: any) => {
+  return formatToYMD(firstFilled(
+    raw?.dataFim,
+    raw?.data_fim,
+    raw?.endDate,
+    raw?.end_date,
+    raw?.fim,
+    raw?.ends_at,
+    row?.dataFim,
+    row?.data_fim,
+    row?.endDate,
+    row?.end_date,
+    row?.fim,
+    row?.ends_at
+  ));
 };
 
 const isCampaignActiveForToday = (row: any, todayStr: string) => {
-  const activeValue = firstFilled(row?.ativo, row?.active, row?.enabled, row?.isActive, row?.is_active, row?.status, row?.situacao);
+  const raw = getCampaignRaw(row);
+  const activeValue = getCampaignActiveValue(row, raw);
+  const isActive = normalizeCampaignActiveFlag(activeValue);
 
-  if (activeValue !== null && isInactiveCampaignFlag(activeValue)) return false;
-  if (activeValue !== null && !isActiveCampaignFlag(activeValue)) return false;
+  // Se estiver inativa, não aparece. Se não vier explicitamente ativa, também não aparece.
+  if (isActive !== true) return false;
 
-  const startDate = formatToYMD(firstFilled(row?.data_inicio, row?.dataInicio, row?.inicio, row?.start_date, row?.startDate, row?.starts_at, row?.startsAt));
-  const endDate = formatToYMD(firstFilled(row?.data_fim, row?.dataFim, row?.fim, row?.end_date, row?.endDate, row?.ends_at, row?.endsAt));
+  const startDate = getCampaignStartDate(row, raw);
+  const endDate = getCampaignEndDate(row, raw);
 
+  // Ativa, mas ainda fora da vigência: não aparece.
   if (startDate && startDate > todayStr) return false;
+
+  // Ativa, mas vencida: não aparece.
   if (endDate && endDate < todayStr) return false;
 
   return true;
@@ -378,25 +452,32 @@ export default function DashboardScreen() {
   const [dynamicPSScore, setDynamicPSScore] = useState(0);
 
   const custom = useMemo(() => {
-    let parsed = safeParseJson(user?.custom_data, {});
+    const rawCustomData = user?.custom_data ?? user?.customData ?? {};
+
+    let parsed = safeParseJson(rawCustomData, {});
 
     if (typeof parsed === 'string') {
       parsed = safeParseJson(parsed, {});
     }
 
     return parsed || {};
-  }, [user?.custom_data]);
+  }, [user?.custom_data, user?.customData]);
 
   const currentPSScore = Number(custom?.perfect_store_score || 0);
   const currentGamiPoints = Number(user?.pontos_gamificacao || custom?.pontos_gamificacao || 0);
 
+
   let fotoUrl =
-    user?.foto_url ||
-    user?.avatar ||
-    user?.foto ||
-    user?.avatarUrl ||
     custom?.avatar_url ||
-    custom?.foto;
+    custom?.avatarUrl ||
+    custom?.foto_url ||
+    custom?.fotoUrl ||
+    user?.avatar_url ||
+    user?.avatarUrl ||
+    user?.foto_url ||
+    user?.fotoUrl ||
+    user?.avatar ||
+    user?.foto;
 
   fotoUrl = toPngIfDicebearSvg(fotoUrl);
 
@@ -409,6 +490,10 @@ export default function DashboardScreen() {
     : null;
 
   const initialName = user?.nome ? user.nome.charAt(0).toUpperCase() : 'U';
+
+  useEffect(() => {
+    setImgError(false);
+  }, [fotoUrl]);
 
   const loadDashboardData = async () => {
     try {
@@ -428,8 +513,6 @@ export default function DashboardScreen() {
         hasActivePerfectStoreCampaign = false;
       }
 
-      // Não usamos pontos/score em custom_data como critério de ativação.
-      // Pontuação histórica pode existir mesmo quando não há campanha ativa.
       setPerformance({ active: hasActivePerformanceCampaign });
       setPerfectStore({ active: hasActivePerfectStoreCampaign });
 
@@ -662,7 +745,7 @@ export default function DashboardScreen() {
         console.log('Erro ao calcular insights no dashboard', e);
       }
 
-      // Perfect Store: mostra nota somente quando há campanha ativa.
+      // Perfect Store: mostra nota somente quando há campanha ativa sincronizada.
       setDynamicPSScore(hasActivePerfectStoreCampaign && Number.isFinite(livePSScore) ? livePSScore : 0);
       });
     } catch (error) {
@@ -717,6 +800,8 @@ export default function DashboardScreen() {
       <View style={[styles.statusBarBoundary, { height: Math.max(insets.top, 0), backgroundColor: statusBarBg }]} />
 
       <ScrollView
+        testID="home-screen"
+        accessibilityLabel="home-screen"
         style={[styles.container, { backgroundColor: bg }]}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[accent]} tintColor={accent} />}
@@ -764,6 +849,8 @@ export default function DashboardScreen() {
       <Text style={[styles.sectionTitle, { color: textSecondary }]}>{i18n.t('nextStopSection')}</Text>
 
       <TouchableOpacity
+        testID="home-route-button"
+        accessibilityLabel="home-route-button"
         style={[
           styles.nextStopCardWrapper,
           { backgroundColor: cardBg, borderLeftColor: nsColors.text, borderColor: border },
@@ -832,6 +919,8 @@ export default function DashboardScreen() {
 
       <View style={styles.row}>
         <TouchableOpacity
+          testID="home-route-summary-card"
+          accessibilityLabel="home-route-summary-card"
           style={[styles.cardSquare, { backgroundColor: cardBg, borderColor: border }]}
           onPress={() => router.push('/roteiro' as any)}
         >

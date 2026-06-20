@@ -1,0 +1,28 @@
+appId: host.exp.exponent
+---
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible:
+      id: "visit-screen-title"
+    timeout: 45000
+
+- extendedWaitUntil:
+    visible:
+      id: "visit-screen"
+    timeout: 15000
+
+- extendedWaitUntil:
+    visible:
+      id: "visit-back-button"
+    timeout: 15000
+
+# Rola até a área de ações da visita sem clicar em nada
+- scrollUntilVisible:
+    element:
+      text: ".*Check-in.*|.*Justificar.*|.*Checkout.*"
+    direction: DOWN
+    timeout: 15000
+
+- assertVisible:
+    text: ".*Check-in.*|.*Justificar.*|.*Checkout.*"

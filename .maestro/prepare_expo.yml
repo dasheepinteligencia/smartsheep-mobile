@@ -1,0 +1,13 @@
+appId: host.exp.exponent
+---
+- clearState
+- openLink: exp://127.0.0.1:8081
+- extendedWaitUntil:
+    visible: "APP_COLETA_MOBILE"
+    timeout: 30000
+- tapOn:
+    point: "91%,64%"
+- extendedWaitUntil:
+    visible:
+      id: "login-email-input"
+    timeout: 30000

@@ -1,0 +1,19 @@
+appId: host.exp.exponent
+---
+- openLink: exp://127.0.0.1:8081
+- extendedWaitUntil:
+    visible:
+      id: "login-email-input"
+    timeout: 30000
+- tapOn:
+    id: "login-email-input"
+- inputText: "teste@coleta.com"
+- tapOn:
+    id: "login-password-input"
+- inputText: "123456"
+- tapOn:
+    id: "login-submit-button"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 15000

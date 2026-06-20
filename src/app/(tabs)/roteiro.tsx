@@ -1001,7 +1001,7 @@ export default function RoteiroScreen() {
     };
   }, [visits, tasks]);
 
-  const renderVisitCard = ({ item }: { item: any }) => {
+  const renderVisitCard = ({ item, index }: { item: any; index: number }) => {
     const colors = getStatusColors(item.status);
 
     let insightToDisplay = null;
@@ -1024,12 +1024,14 @@ export default function RoteiroScreen() {
 
     return (
       <TouchableOpacity
+          testID={index === 0 ? "route-first-visit-card" : `route-visit-card-${item.id}`}
+          accessibilityLabel={index === 0 ? "route-first-visit-card" : `route-visit-card-${item.id}`}
         style={[
           styles.cardWrapper,
           { backgroundColor: surface, borderLeftColor: colors.text, borderColor: border },
         ]}
         activeOpacity={0.7}
-        onPress={() => router.push(`../visita/${item.id}` as any)}
+        onPress={() => router.push({ pathname: '/visita/[id]', params: { id: String(item.id) } } as any)}
       >
         <View style={styles.cardMainRow}>
           <View style={{ flex: 1 }}>
@@ -1053,7 +1055,13 @@ export default function RoteiroScreen() {
               </View>
             </View>
 
-            <Text style={[styles.cardTitle, { color: textPrimary }]}>{item.loja_nome}</Text>
+            <Text
+                testID={index === 0 ? "route-first-visit-title" : `route-visit-title-${item.id}`}
+                accessibilityLabel={index === 0 ? "route-first-visit-title" : `route-visit-title-${item.id}`}
+                style={[styles.cardTitle, { color: textPrimary }]}
+              >
+                {item.loja_nome}
+              </Text>
             <Text style={[styles.cardSubtitle, { color: textSecondary }]} numberOfLines={1}>
               {getCleanAddress(item.endereco)}
             </Text>
@@ -1089,6 +1097,7 @@ export default function RoteiroScreen() {
                           { backgroundColor: isDark ? entradaBadge.bgDark : entradaBadge.bgLight },
                         ]}
                       >
+
                         <Text style={[styles.compactTimingBadgeText, { color: entradaBadge.color }]}>
                           {rt('entry', language)} {entradaBadge.label}
                         </Text>
@@ -1303,7 +1312,11 @@ export default function RoteiroScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.container, { backgroundColor: bg }]}>
+      <View
+      testID="route-screen"
+      accessibilityLabel="route-screen"
+      style={[styles.container, { backgroundColor: bg }]}
+    >
         <StatusBar barStyle={statusBarStyle} backgroundColor={statusBarBg} translucent={false} />
         <View style={[styles.statusBarBoundary, { height: Math.max(insets.top, 0), backgroundColor: statusBarBg }]} />
 
@@ -1345,7 +1358,13 @@ export default function RoteiroScreen() {
             <ArrowLeft size={22} color={textPrimary} />
           </TouchableOpacity>
 
-          <Text style={[styles.headerTitle, { color: textPrimary }]}>{i18n.t('myRoute')}</Text>
+          <Text
+              testID="route-screen"
+              accessibilityLabel="route-screen"
+              style={[styles.headerTitle, { color: textPrimary }]}
+            >
+              {i18n.t('myRoute')}
+            </Text>
 
           <TouchableOpacity
             onPress={onRefresh}

@@ -286,10 +286,12 @@ const getSurveyServerStateUpdatedAt = (survey: any, visit: any) => pickFirstFill
     survey?.coleta_updated_at,
     survey?.updated_at,
     survey?.updatedAt,
+    // Importante: NÃO usar visit.updated_at aqui.
+    // O app atualiza visits.updated_at quando salva a coleta localmente.
+    // Se usarmos esse campo como se fosse estado do servidor, a própria coleta
+    // recém-finalizada passa a parecer "antiga" e a tarefa volta como pendente.
     visit?.coletas_sync_updated_at,
-    visit?.coletasSyncUpdatedAt,
-    visit?.updated_at,
-    visit?.updatedAt
+    visit?.coletasSyncUpdatedAt
 );
 
 const toTimestamp = (value: any) => {
@@ -1471,6 +1473,8 @@ export default function SurveyExecutionScreen() {
               throw new Error(translate('surveyMissingRealIdError', 'Não foi possível identificar o ID real da pesquisa desta visita. Verifique se a visita recebeu pesquisa_id no roteiro.'));
           }
 
+          const finalizadoAt = new Date().toISOString();
+
           const payload = {
               projectId: getProjectId(user, visita),
               project_id: getProjectId(user, visita),
@@ -1498,8 +1502,8 @@ export default function SurveyExecutionScreen() {
               pesquisa_titulo: tituloDaPesquisa,
               pesquisaTitulo: tituloDaPesquisa,
               status: 'REALIZADA',
-              data_inicio: new Date().toISOString(),
-              data_fim: new Date().toISOString(),
+              data_inicio: finalizadoAt,
+              data_fim: finalizadoAt,
               data_programada: visita?.data_programada || new Date().toISOString().split('T')[0],
               respostas: respostasArray,
               origem: 'MOBILE_OFFLINE',
@@ -1515,7 +1519,7 @@ export default function SurveyExecutionScreen() {
           await addToSyncQueue('/coletas', payload, 'POST', token);
           await db.runAsync(
               `UPDATE visits SET pending_sync = 1, updated_at = ? WHERE id = ?`,
-              [new Date().toISOString(), String(id)]
+              [finalizadoAt, String(id)]
           ).catch(async () => {
               // Compatibilidade com bancos locais antigos que ainda não possuem pending_sync/updated_at.
           });
@@ -1526,8 +1530,8 @@ export default function SurveyExecutionScreen() {
                   await db.runAsync(
                       `INSERT OR REPLACE INTO coletas (
                           id, project_id, usuario_id, loja_id, visita_id, pesquisa_id, status,
-                          data_inicio, data_fim, data_programada, respostas_json, raw_json, pending_sync
-                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                          data_inicio, data_fim, data_programada, respostas_json, raw_json, pending_sync, updated_at
+                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                       [
                           operationId,
                           payload.projectId,
@@ -1542,12 +1546,13 @@ export default function SurveyExecutionScreen() {
                           JSON.stringify(respostasArray),
                           JSON.stringify(payload),
                           1,
+                          finalizadoAt,
                       ]
                   ).catch(() => {});
               }
           } catch {}
 
-          await SecureStore.setItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`, JSON.stringify(answers));
+          await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 
           showCustomAlert(
               'success',

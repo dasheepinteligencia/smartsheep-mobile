@@ -1,0 +1,9 @@
+appId: host.exp.exponent
+---
+- extendedWaitUntil:
+    visible:
+      id: "android:id/button1"
+    timeout: 15000
+
+- tapOn:
+    id: "android:id/button1"
