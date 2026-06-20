@@ -7,6 +7,7 @@ Esta pasta documenta o aplicativo mobile Omni Field com base no código existent
 - [00 - Visão geral](./00-visao-geral.md)
 - [01 - Arquitetura](./01-arquitetura.md)
 - [02 - Fluxo mobile](./02-fluxo-mobile.md)
+- [03 - Banco local SQLite e persistência offline](./03-banco-local-sqlite.md)
 
 ## Escopo observado
 
@@ -25,7 +26,7 @@ A documentação inicial cobre:
 - alertas e mural;
 - performance/gamificação;
 - Perfect Store;
-- banco local SQLite;
+- banco local SQLite e persistência offline;
 - pontos de atenção e riscos técnicos.
 
 Quando algum comportamento não pôde ser confirmado diretamente no código analisado, os documentos usam a marcação **A confirmar**.
@@ -37,7 +38,7 @@ A documentação deve ser evoluída por partes, preferencialmente um módulo por
 Próximos blocos sugeridos:
 
 - telas e navegação;
-- banco local SQLite;
+- banco local SQLite e persistência offline;
 - sincronização;
 - visitas/check-in/check-out;
 - pesquisas/formulários;
