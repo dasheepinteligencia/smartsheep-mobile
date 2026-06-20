@@ -8,6 +8,7 @@ Esta pasta documenta o aplicativo mobile Omni Field com base no código existent
 - [01 - Arquitetura](./01-arquitetura.md)
 - [02 - Fluxo mobile](./02-fluxo-mobile.md)
 - [03 - Banco local SQLite e persistência offline](./03-banco-local-sqlite.md)
+- [04 - Sincronização mobile](./04-sincronizacao-mobile.md)
 
 ## Escopo observado
 
