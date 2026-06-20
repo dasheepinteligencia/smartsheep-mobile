@@ -11,6 +11,7 @@ Esta pasta documenta o aplicativo mobile Omni Field com base no código existent
 - [04 - Sincronização mobile](./04-sincronizacao-mobile.md)
 - [05 - Visitas, check-in, check-out e justificativas](./05-visitas-checkin-checkout-justificativas.md)
 - [06 - Pesquisas, formulários e evidências](./06-pesquisas-formularios-evidencias.md)
+- [07 - Alertas e Mural](./07-alertas-e-mural.md)
 
 ## Escopo observado
 
