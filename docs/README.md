@@ -53,3 +53,5 @@ Próximos blocos sugeridos:
 - fotos/evidências;
 - alertas e mural;
 - performance e Perfect Store.
+
+- [11 - Mapa da documentação e pendências](./11-mapa-documentacao-pendencias.md)
