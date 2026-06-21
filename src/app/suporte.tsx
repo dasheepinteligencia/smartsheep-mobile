@@ -319,7 +319,7 @@ export default function AjudaSuporteScreen() {
       const localProfile = await getPerfilFromVisits(db, language);
 
       let perfil = localProfile.perfil;
-      let profileSource = localProfile.source;
+      let profileSource: string = String(localProfile.source);
 
       if (!perfil && getUserId(user) && getProjectId(user)) {
         try {
@@ -343,7 +343,7 @@ export default function AjudaSuporteScreen() {
 
             profileSource = supportText('apiRouteSource', language);
           } else {
-            profileSource = `${supportText('apiUnavailable', language)} (${response.status})`;
+            profileSource = String(supportText('apiUnavailable', language)) + ' (' + response.status + ')';
           }
         } catch (error: any) {
           profileSource = supportText('apiUnavailable', language);
