@@ -16,7 +16,7 @@ import {
 
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
-import { getDBConnection } from '../../database/db';
+import { addAppLog, getDBConnection } from '../../database/db';
 import { addToSyncQueue } from '../../services/syncService';
 import { t } from '../../utils/i18n';
 
@@ -1516,16 +1516,11 @@ export default function SurveyExecutionScreen() {
               throw new Error(translate('syncQueueFunctionMissing', 'A função addToSyncQueue não foi encontrada'));
           }
 
-          await addToSyncQueue('/coletas', payload, 'POST', token);
-          await db.runAsync(
-              `UPDATE visits SET pending_sync = 1, updated_at = ? WHERE id = ?`,
-              [finalizadoAt, String(id)]
-          ).catch(async () => {
-              // Compatibilidade com bancos locais antigos que ainda não possuem pending_sync/updated_at.
-          });
+          let collectionPersistedLocally = false;
 
           try {
               const exists = await db.getAllAsync(`SELECT name FROM sqlite_master WHERE type='table' AND name='coletas'`);
+
               if (exists?.length > 0) {
                   await db.runAsync(
                       `INSERT OR REPLACE INTO coletas (
@@ -1548,9 +1543,69 @@ export default function SurveyExecutionScreen() {
                           1,
                           finalizadoAt,
                       ]
-                  ).catch(() => {});
+                  );
+
+                  collectionPersistedLocally = true;
               }
-          } catch {}
+          } catch (localPersistError: any) {
+              await addAppLog({
+                  level: 'ERROR',
+                  module: 'PESQUISA',
+                  action: 'PERSIST_LOCAL_COLETA',
+                  message: 'Falha ao preservar coleta localmente antes de enfileirar.',
+                  metadata: {
+                      visitId: id,
+                      pesquisaId: idDaPesquisa,
+                      clientOperationId: operationId,
+                      error: localPersistError?.message || String(localPersistError),
+                  },
+              });
+
+              throw new Error(translate('surveyLocalPersistErrorMessage', 'Não foi possível preservar as respostas no banco local. Não saia da tela e tente salvar novamente.'));
+          }
+
+          if (!collectionPersistedLocally) {
+              await addAppLog({
+                  level: 'ERROR',
+                  module: 'PESQUISA',
+                  action: 'PERSIST_LOCAL_COLETA_MISSING_TABLE',
+                  message: 'Tabela local de coletas não encontrada para preservar respostas.',
+                  metadata: {
+                      visitId: id,
+                      pesquisaId: idDaPesquisa,
+                      clientOperationId: operationId,
+                  },
+              });
+
+              throw new Error(translate('surveyLocalPersistErrorMessage', 'Não foi possível preservar as respostas no banco local. Não saia da tela e tente salvar novamente.'));
+          }
+
+          try {
+              await addToSyncQueue('/coletas', payload, 'POST', token);
+          } catch (queueError: any) {
+              await addAppLog({
+                  level: 'ERROR',
+                  module: 'PESQUISA',
+                  action: 'SYNC_QUEUE_COLETA',
+                  message: 'Falha ao enfileirar coleta de pesquisa.',
+                  metadata: {
+                      endpoint: '/coletas',
+                      visitId: id,
+                      pesquisaId: idDaPesquisa,
+                      clientOperationId: operationId,
+                      error: queueError?.message || String(queueError),
+                  },
+              });
+
+              throw new Error(translate('surveyQueueErrorMessage', 'As respostas foram salvas no banco local, mas não entraram na fila de sincronização. Não apague os dados do app e avise o suporte.'));
+          }
+
+          await db.runAsync(
+              `UPDATE visits SET pending_sync = 1, updated_at = ? WHERE id = ?`,
+              [finalizadoAt, String(id)]
+          ).catch(async () => {
+              // Compatibilidade com bancos locais antigos que ainda não possuem pending_sync/updated_at.
+          });
 
           await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 

@@ -26,7 +26,7 @@ import {
   Navigation,
 } from 'lucide-react-native';
 import MapView, { Marker } from 'react-native-maps';
-import { getDBConnection } from '../../database/db';
+import { addAppLog, getDBConnection } from '../../database/db';
 import { getSmartLocation, getDistanceInMeters } from '../../services/locationService';
 import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
@@ -1362,10 +1362,6 @@ export default function VisitaDetailScreen() {
 
       const payload = buildVisitPayload(lat, lng, acao, now, operationId, justificativa, detalhe, fotoUri);
 
-      // Além do pending_sync da tabela visits, deixamos a operação explícita na fila.
-      // Isso aumenta a segurança para checkout/justificativa, que não eram enviados pelo sync antigo.
-      await addToSyncQueue(endpoint, payload, 'POST', token || undefined).catch(() => {});
-
       const updatedVisit = {
         ...visita,
         status: novoStatus,
@@ -1379,6 +1375,37 @@ export default function VisitaDetailScreen() {
         detalhe_justificativa: detalhe || '',
         ...(fotoUri ? { [getPhotoFieldByAction(acao)]: fotoUri } : {}),
       };
+
+      // Além do pending_sync da tabela visits, deixamos a operação explícita na fila.
+      // Isso aumenta a segurança para checkout/justificativa, que não eram enviados pelo sync antigo.
+      try {
+        await addToSyncQueue(endpoint, payload, 'POST', token || undefined);
+      } catch (queueError: any) {
+        await addAppLog({
+          level: 'ERROR',
+          module: 'VISITA',
+          action: `SYNC_QUEUE_${acao}`,
+          message: 'Falha ao enfileirar ação crítica de visita.',
+          metadata: {
+            endpoint,
+            visitId: visita?.id,
+            action: acao,
+            clientOperationId: operationId,
+            error: queueError?.message || String(queueError),
+          },
+        });
+
+        setVisita(updatedVisit);
+        setCheckinLoading(false);
+        setCheckoutLoading(false);
+        setJustifyLoading(false);
+        showCustomAlert(
+          'Ação salva sem sincronização',
+          'A ação foi preservada no celular, mas não entrou na fila de sincronização. Tente sincronizar novamente mais tarde ou avise o suporte antes de apagar dados do app.',
+          'error'
+        );
+        return;
+      }
 
       setVisita(updatedVisit);
 

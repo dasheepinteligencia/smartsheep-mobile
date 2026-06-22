@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, ClipboardCheck, X } from 'lucide-react-native';
-import { getDBConnection } from '../../database/db';
+import { addAppLog, getDBConnection } from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { globalSync } from '../../services/syncService';
 import * as ImagePicker from 'expo-image-picker';
@@ -657,15 +657,32 @@ export default function PesquisaAvulsaScreen() {
         client_operation_id: `coleta_avulsa_${pesquisaId}_${Date.now()}`,
       };
 
-      await db.runAsync(
-        `INSERT INTO sync_queue (endpoint, payload, method, created_at) VALUES (?, ?, ?, ?)`,
-        ['/coletas', JSON.stringify(payload), 'POST', now]
-      );
+      try {
+        await db.runAsync(
+          `INSERT INTO sync_queue (endpoint, payload, method, created_at) VALUES (?, ?, ?, ?)`,
+          ['/coletas', JSON.stringify(payload), 'POST', now]
+        );
+      } catch (queueError: any) {
+        await addAppLog({
+          level: 'ERROR',
+          module: 'PESQUISA_AVULSA',
+          action: 'SYNC_QUEUE_COLETA',
+          message: 'Falha ao enfileirar coleta avulsa.',
+          metadata: {
+            endpoint: '/coletas',
+            pesquisaId,
+            clientOperationId: payload.client_operation_id,
+            error: queueError?.message || String(queueError),
+          },
+        });
+
+        throw new Error('Não foi possível colocar a pesquisa na fila de sincronização. Não saia da tela; tente salvar novamente em instantes.');
+      }
 
       globalSync();
       Alert.alert('Sucesso', 'Pesquisa finalizada!', [{ text: 'OK', onPress: () => router.back() }]);
-    } catch (error) {
-      Alert.alert('Erro', 'Falha ao salvar no banco local.');
+    } catch (error: any) {
+      Alert.alert('Erro', error?.message || 'Falha ao salvar no banco local.');
     } finally {
       setSaving(false);
     }
