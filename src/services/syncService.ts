@@ -74,18 +74,23 @@ const readResponseBodySafely = async (res: Response | null) => {
 const isAlreadyProcessedResponse = async (res: Response | null) => {
   if (!res) return false;
 
-  if (res.status === 409) return true;
-
   const text = (await readResponseBodySafely(res)).toLowerCase();
 
-  return (
+  const hasAlreadyProcessedMarker =
     text.includes('já existe') ||
     text.includes('ja existe') ||
     text.includes('duplic') ||
     text.includes('already exists') ||
     text.includes('already processed') ||
-    text.includes('registro existente')
-  );
+    text.includes('already applied') ||
+    text.includes('operation_already_processed') ||
+    text.includes('registro existente');
+
+  // 409 pode ser conflito real ou operação já processada.
+  // Só removemos da fila quando o backend deixa claro que a operação já foi aplicada.
+  if (res.status === 409) return hasAlreadyProcessedMarker;
+
+  return hasAlreadyProcessedMarker;
 };
 
 const parseResponseBodySafely = (body: string) => {
