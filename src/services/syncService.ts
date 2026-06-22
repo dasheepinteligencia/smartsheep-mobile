@@ -1,5 +1,5 @@
 import { api } from './api';
-import { saveRoteiroCompletoOffline, getDBConnection, saveAlertsOffline } from '../database/db';
+import { saveRoteiroCompletoOffline, getDBConnection, saveAlertsOffline, addAppLog } from '../database/db';
 import { useAuthStore } from '../store/useAuthStore';
 import { useSyncStore } from '../store/useSyncStore';
 import * as Network from 'expo-network';
@@ -1644,10 +1644,39 @@ export const addToSyncQueue = async (
 
     const payloadString = JSON.stringify(payloadWithMetadata);
     const dataCriacao = new Date().toISOString();
+    const methodToUse = String(method || 'POST').toUpperCase();
+    const clientOperationId = String(payloadWithMetadata.client_operation_id || '').trim();
+
+    if (clientOperationId) {
+      const existing: any = await db.getFirstAsync(
+        `SELECT id FROM sync_queue
+         WHERE endpoint = ?
+           AND payload LIKE ?
+         LIMIT 1`,
+        [endpoint, `%"client_operation_id":"${clientOperationId}"%`]
+      );
+
+      if (existing?.id) {
+        await addAppLog({
+          level: 'INFO',
+          module: 'SYNC',
+          action: 'SKIP_DUPLICATE_QUEUE_ITEM',
+          message: 'Item duplicado não foi inserido novamente na fila offline.',
+          metadata: {
+            endpoint,
+            method: methodToUse,
+            clientOperationId,
+            existingQueueId: existing.id,
+          },
+        });
+
+        return { success: true, offline: true, skippedDuplicate: true };
+      }
+    }
 
     await db.runAsync(
       `INSERT INTO sync_queue (endpoint, payload, method, created_at) VALUES (?, ?, ?, ?)`,
-      [endpoint, payloadString, String(method || 'POST').toUpperCase(), dataCriacao]
+      [endpoint, payloadString, methodToUse, dataCriacao]
     );
 
     return { success: true, offline: true };
