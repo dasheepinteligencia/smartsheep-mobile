@@ -8,6 +8,28 @@ export interface LocationResult {
     error?: string | null;
 }
 
+export type AppGpsStatus = 'denied' | 'disabled' | 'enabled' | 'unknown';
+
+export const getAppGpsStatus = async (): Promise<AppGpsStatus> => {
+    try {
+        const permission = await Location.getForegroundPermissionsAsync();
+
+        if (permission.status !== 'granted') {
+            return 'denied';
+        }
+
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
+
+        if (!servicesEnabled) {
+            return 'disabled';
+        }
+
+        return 'enabled';
+    } catch {
+        return 'unknown';
+    }
+};
+
 /**
  * 📍 Calcula a distância em metros entre dois pontos de GPS usando a Fórmula de Haversine
  */
@@ -29,10 +51,24 @@ export const getDistanceInMeters = (lat1: number, lon1: number, lat2: number, lo
  */
 export const getSmartLocation = async (): Promise<LocationResult> => {
     try {
-        // 1. Checagem de Permissão
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
+        // 1. Checagem de permissão sem tentar ler GPS antes da autorização
+        const currentPermission = await Location.getForegroundPermissionsAsync();
+
+        let permissionStatus = currentPermission.status;
+
+        if (permissionStatus === 'undetermined') {
+            const requestedPermission = await Location.requestForegroundPermissionsAsync();
+            permissionStatus = requestedPermission.status;
+        }
+
+        if (permissionStatus !== 'granted') {
             return { error: 'PERMISSION_DENIED' };
+        }
+
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
+
+        if (!servicesEnabled) {
+            return { error: 'GPS_DISABLED' };
         }
 
         // 2. Corrida contra o tempo (10 segundos)

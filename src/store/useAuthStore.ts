@@ -46,6 +46,10 @@ const STORAGE_KEYS = {
   TOKEN: 'DasheepToken',
   USER: 'DasheepUser',
 
+  // Marca local criada por esta versão do app.
+  // Se não existir, tratamos como primeira abertura da nova build e limpamos sessão antiga.
+  INSTALL_MARKER: 'DasheepInstallMarker_v1',
+
   // Legado / compatibilidade com api.ts antigo
   LEGACY_TOKEN: 'ColetaToken',
   LEGACY_USER: 'ColetaUser',
@@ -74,6 +78,17 @@ const normalizeUser = (user: User): User => {
     custom_data: parsedCustomData,
     customData: parsedCustomData,
   };
+};
+
+const clearStoredAuthData = async () => {
+  await Promise.allSettled([
+    SecureStore.deleteItemAsync(STORAGE_KEYS.TOKEN),
+    SecureStore.deleteItemAsync(STORAGE_KEYS.LEGACY_TOKEN),
+    SecureStore.deleteItemAsync(STORAGE_KEYS.USER),
+    SecureStore.deleteItemAsync(STORAGE_KEYS.LEGACY_USER),
+    AsyncStorage.removeItem(STORAGE_KEYS.USER),
+    AsyncStorage.removeItem(STORAGE_KEYS.LEGACY_USER),
+  ]);
 };
 
 const getStoredToken = async (): Promise<string | null> => {
@@ -128,17 +143,21 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
-    await Promise.allSettled([
-      SecureStore.deleteItemAsync(STORAGE_KEYS.TOKEN),
-      SecureStore.deleteItemAsync(STORAGE_KEYS.USER),
-      SecureStore.deleteItemAsync(STORAGE_KEYS.LEGACY_TOKEN),
-      SecureStore.deleteItemAsync(STORAGE_KEYS.LEGACY_USER),
-    ]);
+    await clearStoredAuthData();
 
     set({ token: null, user: null });
   },
 
   loadStorageData: async () => {
+    const installMarker = await AsyncStorage.getItem(STORAGE_KEYS.INSTALL_MARKER);
+
+    if (!installMarker) {
+      await clearStoredAuthData();
+      await AsyncStorage.setItem(STORAGE_KEYS.INSTALL_MARKER, String(Date.now()));
+      set({ token: null, user: null });
+      return;
+    }
+
     const [token, user] = await Promise.all([
       getStoredToken(),
       getStoredUser(),
