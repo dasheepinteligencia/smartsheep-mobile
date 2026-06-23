@@ -10,6 +10,7 @@ import {
   TextInput,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
 import { persistVisitPhotoLocally } from '../../services/mobileAwsUploadService';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import {
@@ -42,6 +43,11 @@ const priorityMapping: Record<string, any> = {
   ALTA: { color: '#EF4444', icon: AlertCircle, label: i18n.t('priorityHigh') },
   MEDIA: { color: '#F59E0B', icon: AlertCircle, label: i18n.t('priorityMedium') },
   BAIXA: { color: '#3B82F6', icon: AlertCircle, label: i18n.t('priorityLow') },
+};
+
+const hasGoogleMapsApiKey = () => {
+  const extra = (Constants?.expoConfig?.extra || Constants?.manifest?.extra || {}) as any;
+  return Boolean(extra?.googleMapsAndroidApiKey || extra?.googleMapsApiKey);
 };
 
 const getInsightPriorityStyles = (priority: string, isDark: boolean) => {
@@ -522,6 +528,7 @@ export default function VisitaDetailScreen() {
   const { isSyncing, lastSync } = useSyncStore();
 
   const isDark = theme === 'dark';
+  const canRenderMap = hasGoogleMapsApiKey();
 
   const [visita, setVisita] = useState<any>(null);
   const [tarefasRenderizadas, setTarefasRenderizadas] = useState<any[]>([]);
@@ -1650,27 +1657,39 @@ export default function VisitaDetailScreen() {
         </View>
 
         <View style={[styles.mapContainer, { borderColor: border }]}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            initialRegion={{
-              latitude: lojaLat || -23.55,
-              longitude: lojaLng || -46.63,
-              latitudeDelta: 0.005,
-              longitudeDelta: 0.005,
-            }}
-          >
-            {lojaLat !== 0 && lojaLng !== 0 && (
-              <Marker coordinate={{ latitude: lojaLat, longitude: lojaLng }} pinColor="red" />
-            )}
-            {userLocation && <Marker coordinate={userLocation} pinColor="blue" />}
-          </MapView>
+          {canRenderMap ? (
+            <>
+              <MapView
+                ref={mapRef}
+                style={styles.map}
+                initialRegion={{
+                  latitude: lojaLat || -23.55,
+                  longitude: lojaLng || -46.63,
+                  latitudeDelta: 0.005,
+                  longitudeDelta: 0.005,
+                }}
+              >
+                {lojaLat !== 0 && lojaLng !== 0 && (
+                  <Marker coordinate={{ latitude: lojaLat, longitude: lojaLng }} pinColor="red" />
+                )}
+                {userLocation && <Marker coordinate={userLocation} pinColor="blue" />}
+              </MapView>
 
-          {lojaLat !== 0 && lojaLng !== 0 && userLocation && (
-            <View style={styles.distanceBadge}>
-              <Navigation size={12} color="#FFFFFF" />
-              <Text style={styles.distanceBadgeText}>
-                {Math.round(getDistanceInMeters(userLocation.latitude, userLocation.longitude, lojaLat, lojaLng))}m
+              {lojaLat !== 0 && lojaLng !== 0 && userLocation && (
+                <View style={styles.distanceBadge}>
+                  <Navigation size={12} color="#FFFFFF" />
+                  <Text style={styles.distanceBadgeText}>
+                    {Math.round(getDistanceInMeters(userLocation.latitude, userLocation.longitude, lojaLat, lojaLng))}m
+                  </Text>
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={[styles.mapFallback, { backgroundColor: isDark ? '#111827' : '#F8FAFC' }]}>
+              <MapPin size={24} color={textSecondary} />
+              <Text style={[styles.mapFallbackTitle, { color: textPrimary }]}>Mapa indisponível</Text>
+              <Text style={[styles.mapFallbackText, { color: textSecondary }]}>
+                A chave do Google Maps não está configurada neste build. A visita pode ser executada normalmente.
               </Text>
             </View>
           )}
@@ -2004,6 +2023,22 @@ const styles = StyleSheet.create({
   addressRow: { flexDirection: 'row', alignItems: 'flex-start' },
   addressText: { fontSize: 14, flex: 1, marginLeft: 8, lineHeight: 20 },
   mapContainer: { height: 220, borderRadius: 16, overflow: 'hidden', borderWidth: 1 },
+  mapFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    gap: 8,
+  },
+  mapFallbackTitle: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  mapFallbackText: {
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
   map: { width: '100%', height: '100%' },
   distanceBadge: { position: 'absolute', right: 12, bottom: 12, backgroundColor: 'rgba(15, 23, 42, 0.82)', borderRadius: 18, paddingHorizontal: 10, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 5 },
   distanceBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
