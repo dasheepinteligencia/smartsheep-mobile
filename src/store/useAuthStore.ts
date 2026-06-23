@@ -33,6 +33,7 @@ interface User {
 interface AuthState {
   token: string | null;
   user: User | null;
+  hasHydrated: boolean;
   login: (token: string, user: User) => Promise<void>;
   logout: () => Promise<void>;
   loadStorageData: () => Promise<void>;
@@ -126,6 +127,7 @@ const getStoredUser = async (): Promise<User | null> => {
 export const useAuthStore = create<AuthState>((set) => ({
   token: null,
   user: null,
+  hasHydrated: false,
 
   login: async (token, user) => {
     const normalizedUser = normalizeUser(user);
@@ -139,13 +141,13 @@ export const useAuthStore = create<AuthState>((set) => ({
     await SecureStore.setItemAsync(STORAGE_KEYS.LEGACY_TOKEN, token);
     await AsyncStorage.setItem(STORAGE_KEYS.LEGACY_USER, JSON.stringify(normalizedUser));
 
-    set({ token, user: normalizedUser });
+    set({ token, user: normalizedUser, hasHydrated: true });
   },
 
   logout: async () => {
     await clearStoredAuthData();
 
-    set({ token: null, user: null });
+    set({ token: null, user: null, hasHydrated: true });
   },
 
   loadStorageData: async () => {
@@ -154,7 +156,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     if (!installMarker) {
       await clearStoredAuthData();
       await AsyncStorage.setItem(STORAGE_KEYS.INSTALL_MARKER, String(Date.now()));
-      set({ token: null, user: null });
+      set({ token: null, user: null, hasHydrated: true });
       return;
     }
 
@@ -163,16 +165,17 @@ export const useAuthStore = create<AuthState>((set) => ({
       getStoredUser(),
     ]);
 
-    if (token && user) {
+    if (token && user && user.id) {
       // Regrava nos dois padrões para auto-curar instalações antigas.
       await SecureStore.setItemAsync(STORAGE_KEYS.TOKEN, token);
       await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
       await SecureStore.setItemAsync(STORAGE_KEYS.LEGACY_TOKEN, token);
       await AsyncStorage.setItem(STORAGE_KEYS.LEGACY_USER, JSON.stringify(user));
 
-      set({ token, user });
+      set({ token, user, hasHydrated: true });
     } else {
-      set({ token: null, user: null });
+      await clearStoredAuthData();
+      set({ token: null, user: null, hasHydrated: true });
     }
   },
 }));

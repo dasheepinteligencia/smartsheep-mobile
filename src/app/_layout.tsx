@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundFetch from 'expo-background-fetch';
 
@@ -56,7 +56,9 @@ const registerBackgroundSync = async () => {
 };
 
 export default function RootLayout() {
-  const { loadStorageData } = useAuthStore();
+  const { loadStorageData, hasHydrated, token, user } = useAuthStore();
+  const router = useRouter();
+  const segments = useSegments();
 
   useEffect(() => {
     let mounted = true;
@@ -83,6 +85,27 @@ export default function RootLayout() {
       mounted = false;
     };
   }, [loadStorageData]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+
+    const firstSegment = String(segments?.[0] || '');
+    const isLoginRoute = firstSegment === 'login';
+    const hasValidSession = Boolean(token && user?.id);
+
+    if (!hasValidSession && !isLoginRoute) {
+      router.replace('/login' as any);
+      return;
+    }
+
+    if (hasValidSession && isLoginRoute) {
+      router.replace('/(tabs)' as any);
+    }
+  }, [hasHydrated, token, user?.id, segments, router]);
+
+  if (!hasHydrated) {
+    return null;
+  }
 
   return (
     <Stack
