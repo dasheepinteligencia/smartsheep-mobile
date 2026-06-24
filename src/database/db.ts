@@ -901,13 +901,13 @@ const getVisitConflictDecision = async (visitId: string, localData: any, serverV
   }
 
   if (localTime > 0 && serverTime > 0) {
-    if (localTime > serverTime) {
+    if (localTime > serverTime && hasUnsyncedWork) {
       return {
         winner: 'LOCAL',
         localTime,
         serverTime,
         hasUnsyncedWork,
-        reason: 'local-newer',
+        reason: 'pending-local-newer',
       };
     }
 
@@ -916,7 +916,11 @@ const getVisitConflictDecision = async (visitId: string, localData: any, serverV
       localTime,
       serverTime,
       hasUnsyncedWork,
-      reason: serverTime > localTime ? 'server-newer' : 'same-time-server-source-of-truth',
+      reason: serverTime > localTime
+        ? 'server-newer'
+        : localTime > serverTime
+          ? 'local-newer-but-no-pending-sync-server-source-of-truth'
+          : 'same-time-server-source-of-truth',
     };
   }
 
@@ -1164,6 +1168,38 @@ export const saveRoteiroCompletoOffline = async (
         // Quando o servidor diz EM_ANDAMENTO/REALIZADA/JUSTIFICADA, preservamos local só como fallback
         // caso algum endpoint antigo ainda não devolva os horários.
         const serverIsOperational = isOperationalServerStatus(statusServidor);
+
+        // clear-stale-local-visit-coletas-after-server-reset
+        // Quando o web reseta/apaga uma visita e o servidor volta PENDENTE,
+        // o SQLite não pode manter coletas antigas dessa visita como cache local.
+        if (!serverIsOperational) {
+          const staleVisitIds = Array.from(new Set([
+            visitId,
+            v.visita_id_json,
+            v.visitaIdJson,
+            v.visitaAgendadaId,
+            v.visita_agendada_id,
+            v.registroVisitaId,
+            v.registro_visita_id,
+            localData?.id,
+            localData?.visita_id_json,
+            localData?.visitaIdJson,
+            localData?.visitaAgendadaId,
+            localData?.visita_agendada_id,
+            localData?.registroVisitaId,
+            localData?.registro_visita_id,
+          ]
+            .map((value) => String(value ?? '').trim())
+            .filter((value) => value && value !== 'null' && value !== 'undefined')
+          ));
+
+          if (staleVisitIds.length > 0) {
+            const stalePlaceholders = staleVisitIds.map(() => '?').join(',');
+            await db
+              .runAsync(`DELETE FROM coletas WHERE visita_id IN (${stalePlaceholders})`, staleVisitIds)
+              .catch((error) => console.warn('[DB] Falha ao limpar coletas locais após reset do servidor:', error));
+          }
+        }
 
         const finalCheckinAt = serverIsOperational ? (serverCheckinAt || localData?.checkin_at || null) : null;
         const finalCheckoutAt = serverIsOperational ? (serverCheckoutAt || localData?.checkout_at || null) : null;
