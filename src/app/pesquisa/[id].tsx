@@ -1501,6 +1501,18 @@ export default function SurveyExecutionScreen() {
               survey_id: idDaPesquisa,
               pesquisa_titulo: tituloDaPesquisa,
               pesquisaTitulo: tituloDaPesquisa,
+              checkin_at: visita?.checkin_at || null,
+              checkout_at: visita?.checkout_at || null,
+              lat_checkin: visita?.lat_checkin || visita?.latitude_checkin || visita?.checkin_latitude || visita?.latitude || null,
+              lng_checkin: visita?.lng_checkin || visita?.longitude_checkin || visita?.checkin_longitude || visita?.longitude || null,
+              lat_checkout: visita?.checkout_at
+                  ? (visita?.lat_checkout || visita?.latitude_checkout || visita?.checkout_latitude || visita?.latitude || null)
+                  : null,
+              lng_checkout: visita?.checkout_at
+                  ? (visita?.lng_checkout || visita?.longitude_checkout || visita?.checkout_longitude || visita?.longitude || null)
+                  : null,
+              foto_checkin_url: visita?.foto_checkin_url || visita?.fotoCheckinUrl || null,
+              foto_checkout_url: visita?.foto_checkout_url || visita?.fotoCheckoutUrl || null,
               status: 'REALIZADA',
               data_inicio: finalizadoAt,
               data_fim: finalizadoAt,
