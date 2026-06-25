@@ -128,6 +128,67 @@ const isStockInsufficientResponse = (res: Response | null, body: string) => {
   );
 };
 
+const isRepeatableSurveyLimitResponse = (res: Response | null, body: string) => {
+  if (!res || res.status !== 409) return false;
+
+  const parsed = parseResponseBodySafely(body);
+  const code = String(parsed?.code || '').toUpperCase();
+  const message = extractApiErrorMessage(body).toLowerCase();
+
+  return (
+    code === 'REPEATABLE_SURVEY_LIMIT_REACHED' ||
+    message.includes('limite de respostas da pesquisa recorrente') ||
+    message.includes('limite atingido') ||
+    message.includes('quantidade máxima')
+  );
+};
+
+const discardCollectionRejectedByRepeatableLimit = async (db: any, item: any, payload: any, body: string) => {
+  const parsed = parseResponseBodySafely(body);
+  const coletaId = payload?.client_operation_id || item?.id || null;
+  const visitId = getVisitIdFromCollectionPayload(payload);
+  const now = new Date().toISOString();
+
+  await db.runAsync(`DELETE FROM sync_queue WHERE id = ?`, [item.id]).catch(() => {});
+
+  if (coletaId) {
+    await db
+      .runAsync(`DELETE FROM coletas WHERE id = ?`, [String(coletaId)])
+      .catch(() => {});
+  }
+
+  if (visitId) {
+    await db
+      .runAsync(
+        `UPDATE visits SET pending_sync = 0, updated_at = ? WHERE id = ?`,
+        [now, String(visitId)]
+      )
+      .catch(() => {});
+  }
+
+  await addAppLog({
+    level: 'WARNING',
+    module: 'SYNC',
+    action: 'REPEATABLE_SURVEY_LIMIT_REACHED',
+    message: parsed?.message || 'Coleta descartada porque o limite da pesquisa recorrente já foi atingido no servidor.',
+    metadata: {
+      queueId: item?.id,
+      coletaId,
+      visitId,
+      pesquisaId: payload?.pesquisa_id || payload?.pesquisaId || payload?.surveyId,
+      currentCount: parsed?.currentCount,
+      max: parsed?.max,
+    },
+  }).catch(() => {});
+
+  console.warn('[SYNC] Coleta recorrente excedente descartada da fila/local.', {
+    queueId: item?.id,
+    coletaId,
+    visitId,
+    message: parsed?.message || extractApiErrorMessage(body),
+  });
+};
+
 const getFriendlyStockErrorMessage = (body: string) => {
   const raw = extractApiErrorMessage(body, 'Saldo insuficiente para realizar a movimentação de estoque.');
 
@@ -793,6 +854,30 @@ const buildCampaignDebugSnapshot = (list: any[]) =>
 const updateVisitAfterSyncedQueueItem = async (db: any, item: any) => {
   try {
     const payload = safeJsonParse(item.payload, {});
+    const endpoint = String(item?.endpoint || '').toLowerCase();
+    const isCollectionSync = endpoint.includes('/coletas');
+
+    if (isCollectionSync) {
+      const collectionId =
+        payload?.client_operation_id ||
+        payload?.coleta_id ||
+        payload?.coletaId ||
+        payload?.id ||
+        null;
+
+      if (collectionId) {
+        await db
+          .runAsync(
+            `UPDATE coletas SET pending_sync = 0, status = ?, updated_at = ? WHERE id = ?`,
+            ['SINCRONIZADA', new Date().toISOString(), String(collectionId)]
+          )
+          .catch(() => {});
+      }
+
+      // Sincronizar formulário não deve alterar pending_sync da visita.
+      return;
+    }
+
     const visitId = payload.offline_id || payload.visita_id || payload.visitaId || payload.visitaIdJson;
 
     if (!visitId) return;
@@ -1036,6 +1121,14 @@ const uploadSyncQueue = async (db: any) => {
         await db.runAsync(`DELETE FROM sync_queue WHERE id = ?`, [item.id]);
       } else {
         const body = await readResponseBodySafely(res);
+
+        if (
+          String(item.endpoint || '').toLowerCase().includes('/coletas') &&
+          isRepeatableSurveyLimitResponse(res, body)
+        ) {
+          await discardCollectionRejectedByRepeatableLimit(db, item, preparedPayload, body);
+          continue;
+        }
 
         if (res?.status === 400) {
           const resetDone = await resetInvalidJustificationWithoutPhoto(db, item, preparedPayload, body);

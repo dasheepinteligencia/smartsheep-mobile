@@ -18,6 +18,7 @@ import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { addAppLog, getDBConnection } from '../../database/db';
 import { addToSyncQueue } from '../../services/syncService';
+import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { t } from '../../utils/i18n';
 
 const normalizar = (val: any) => String(val || '').normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
@@ -673,7 +674,7 @@ const getPhotoConfigFromVisit = (visitObj: any) => {
 };
 
 export default function SurveyExecutionScreen() {
-  const { id, pesquisaId } = useLocalSearchParams(); 
+  const { id, pesquisaId, serverCount, repeatMax, repeatLabelPlural, repeatLabelSingular } = useLocalSearchParams(); 
   const router = useRouter();
   const { user } = useAuthStore();
   const insets = useSafeAreaInsets();
@@ -886,6 +887,15 @@ export default function SurveyExecutionScreen() {
               multiplasFotosPorOpcao: isTruthy(v.multiplasFotosPorOpcao) || isTruthy(v.multiplas_fotos_por_opcao),
               max_fotos_por_opcao: v.max_fotos_por_opcao ?? v.maxFotosPorOpcao,
               maxFotosPorOpcao: v.maxFotosPorOpcao ?? v.max_fotos_por_opcao,
+              repetivel: isTruthy(v.repetivel) || isTruthy(v.repeatable),
+              repeticao_min: v.repeticao_min ?? v.repeticaoMin ?? v.repeat_min,
+              repeticaoMin: v.repeticaoMin ?? v.repeticao_min ?? v.repeat_min,
+              repeticao_max: v.repeticao_max ?? v.repeticaoMax ?? v.repeat_max,
+              repeticaoMax: v.repeticaoMax ?? v.repeticao_max ?? v.repeat_max,
+              repeticao_label_singular: v.repeticao_label_singular ?? v.repeticaoLabelSingular ?? v.repeat_label_singular,
+              repeticaoLabelSingular: v.repeticaoLabelSingular ?? v.repeticao_label_singular ?? v.repeat_label_singular,
+              repeticao_label_plural: v.repeticao_label_plural ?? v.repeticaoLabelPlural ?? v.repeat_label_plural,
+              repeticaoLabelPlural: v.repeticaoLabelPlural ?? v.repeticao_label_plural ?? v.repeat_label_plural,
           };
 
           return { 
@@ -1473,7 +1483,32 @@ export default function SurveyExecutionScreen() {
               throw new Error(translate('surveyMissingRealIdError', 'Não foi possível identificar o ID real da pesquisa desta visita. Verifique se a visita recebeu pesquisa_id no roteiro.'));
           }
 
-          const finalizadoAt = new Date().toISOString();
+                     // REPEATABLE_SAVE_GUARD_MOBILE
+           const serverStatus = await fetchRepeatableStatusForVisit({
+               user,
+               visit: visita,
+               surveyId: idDaPesquisa,
+           }).catch(() => null);
+
+           const fallbackMax = repeatMax ? Number(repeatMax) : null;
+           const fallbackCount = serverCount ? Number(serverCount) : 0;
+
+           const effectiveMax = serverStatus?.max || fallbackMax;
+           const effectiveCount = Math.max(Number(serverStatus?.currentCount || 0), fallbackCount || 0);
+
+           if (
+               (serverStatus && isRepeatableStatusBlocked(serverStatus)) ||
+               (effectiveMax && effectiveCount >= effectiveMax)
+           ) {
+               setSaving(false);
+               Alert.alert(
+                   'Limite atingido',
+                   `Esta pesquisa já possui ${effectiveCount}/${effectiveMax} ${String(repeatLabelPlural || serverStatus?.labelPlural || 'registros')}. Não é possível registrar nova resposta.`
+               );
+               return;
+           }
+
+const finalizadoAt = new Date().toISOString();
 
           const payload = {
               projectId: getProjectId(user, visita),
@@ -1513,15 +1548,19 @@ export default function SurveyExecutionScreen() {
                   : null,
               foto_checkin_url: visita?.foto_checkin_url || visita?.fotoCheckinUrl || null,
               foto_checkout_url: visita?.foto_checkout_url || visita?.fotoCheckoutUrl || null,
-              status: 'REALIZADA',
+              status: 'COMPLETA',
               data_inicio: finalizadoAt,
               data_fim: finalizadoAt,
               data_programada: visita?.data_programada || new Date().toISOString().split('T')[0],
               respostas: respostasArray,
               origem: 'MOBILE_OFFLINE',
+              tipo_registro: 'COLETA_FORMULARIO',
+              collection_only: true,
+              finaliza_visita: false,
+              nao_finalizar_visita: true,
+              checkoutAt: null,
               client_operation_id: operationId,
           };
-
           const db = await getDBConnection();
           
           if (typeof addToSyncQueue !== 'function') {
@@ -1613,11 +1652,11 @@ export default function SurveyExecutionScreen() {
           }
 
           await db.runAsync(
-              `UPDATE visits SET pending_sync = 1, updated_at = ? WHERE id = ?`,
-              [finalizadoAt, String(id)]
-          ).catch(async () => {
-              // Compatibilidade com bancos locais antigos que ainda não possuem pending_sync/updated_at.
-          });
+               `UPDATE visits SET updated_at = ? WHERE id = ?`,
+               [finalizadoAt, String(id)]
+           ).catch(async () => {
+               // Compatibilidade com bancos locais antigos que ainda não possuem updated_at.
+           });
 
           await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 
@@ -1650,7 +1689,7 @@ export default function SurveyExecutionScreen() {
   };
 
   const handleRequestSave = async () => {
-      let hardError = null;
+      let hardError: string | null = null;
       let focusTargetKey: string | null = null;
       let softWarningsList: string[] = [];
       const stockRunningBalances: Record<string, number> = {};
@@ -1951,7 +1990,7 @@ export default function SurveyExecutionScreen() {
                                   let newAns = [...ansArr];
                                   if (isChecked) newAns = newAns.filter(a => a !== opcao);
                                   else newAns.push(opcao);
-                                  handleTextChange(answerKey, newAns);
+                                  handleTextChange(answerKey, newAns as any);
                               }}>
                                   <View style={[styles.checkboxBox, { borderColor: textSecondary }, isChecked && { backgroundColor: accent, borderColor: accent, borderWidth: 0 }]}>{isChecked && <Check size={14} color="#fff" />}</View>
                                   <View style={{ flex: 1 }}>
@@ -1990,7 +2029,7 @@ export default function SurveyExecutionScreen() {
 
       if (isSelecao) {
           const selectedOp = answers[answerKey];
-          const selectedObj = optionObjects.find((op: any) => op.value === selectedOp);
+          const selectedObj: any = optionObjects.find((op: any) => op.value === selectedOp);
           const selectedLabel = selectedObj?.label || selectedOp;
           const photoKey = selectedOp ? `${answerKey}::foto_${selectedOp}` : null;
           const currentPhotosOp = photoKey && answers[photoKey]

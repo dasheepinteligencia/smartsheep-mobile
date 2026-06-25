@@ -33,6 +33,7 @@ import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
 import { addToSyncQueue } from '../../services/syncService';
+import { fetchRepeatableStatusForVisit, getRepeatableStatusSubtitle, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useSyncStore } from '../../store/useSyncStore';
 
@@ -398,6 +399,184 @@ const getSurveyCompletedFlag = (survey: any) => truthyConfig(
   )
 );
 
+const getValidationObject = (source: any) => {
+  const raw = source?.validacao || source?.validation || source?.validacoes || source?.validacaoPergunta || {};
+  return safeParseJson(raw, {});
+};
+
+const findRepeatableConfigInQuestions = (questions: any[]): any | null => {
+  if (!Array.isArray(questions)) return null;
+
+  for (const question of questions) {
+    const validation = getValidationObject(question);
+
+    const isRepeatable =
+      truthyConfig(firstFilled(
+        validation?.repetivel,
+        validation?.repeatable,
+        question?.repetivel,
+        question?.repeatable
+      ));
+
+    if (isRepeatable) {
+      return { question, validation };
+    }
+
+    const children =
+      question?.perguntas ||
+      question?.questoes ||
+      question?.questions ||
+      question?.children ||
+      question?.items ||
+      [];
+
+    const found = findRepeatableConfigInQuestions(children);
+    if (found) return found;
+  }
+
+  return null;
+};
+
+const toOptionalNumber = (value: any): number | null => {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const isSurveyMandatoryForCheckout = (source: any) => {
+  const validation = safeParseJson(
+    source?.validacao ||
+    source?.validation ||
+    source?.validacoes ||
+    source?.validacaoPergunta ||
+    {},
+    {}
+  );
+
+  return truthyConfig(firstFilled(
+    source?.obrigatoria,
+    source?.obrigatório,
+    source?.obrigatorio,
+    source?.mandatory,
+    source?.required,
+    source?.requiredToCheckout,
+    source?.required_to_checkout,
+    source?.bloqueiaCheckout,
+    source?.bloqueia_checkout,
+    source?.blockCheckout,
+    source?.block_checkout,
+    source?.exigeCheckout,
+    source?.exige_checkout,
+    validation?.obrigatoria,
+    validation?.obrigatorio,
+    validation?.mandatory,
+    validation?.required,
+    validation?.requiredToCheckout,
+    validation?.required_to_checkout,
+    validation?.bloqueiaCheckout,
+    validation?.bloqueia_checkout,
+    validation?.blockCheckout,
+    validation?.block_checkout,
+    validation?.exigeCheckout,
+    validation?.exige_checkout
+  ));
+};
+
+const getRepeatableSurveyMeta = (survey: any) => {
+  const questions =
+    survey?.perguntas ||
+    survey?.questoes ||
+    survey?.questions ||
+    survey?.campos ||
+    [];
+
+  const config = findRepeatableConfigInQuestions(Array.isArray(questions) ? questions : []);
+  const validation = config?.validation || {};
+  const question = config?.question || {};
+
+  const min = toOptionalNumber(firstFilled(
+    validation?.repeticao_min,
+    validation?.repeticaoMin,
+    validation?.repeat_min,
+    question?.repeticao_min,
+    question?.repeticaoMin
+  ));
+
+  const max = toOptionalNumber(firstFilled(
+    validation?.repeticao_max,
+    validation?.repeticaoMax,
+    validation?.repeat_max,
+    question?.repeticao_max,
+    question?.repeticaoMax
+  ));
+
+  return {
+    repetivel: Boolean(config),
+    repeticaoMin: min,
+    repeticaoMax: max,
+    repeticaoLabelSingular: String(firstFilled(
+      validation?.repeticao_label_singular,
+      validation?.repeticaoLabelSingular,
+      validation?.repeat_label_singular,
+      question?.repeticao_label_singular,
+      question?.repeticaoLabelSingular,
+      'registro'
+    )),
+    repeticaoLabelPlural: String(firstFilled(
+      validation?.repeticao_label_plural,
+      validation?.repeticaoLabelPlural,
+      validation?.repeat_label_plural,
+      question?.repeticao_label_plural,
+      question?.repeticaoLabelPlural,
+      'registros'
+    )),
+  };
+};
+
+const incrementCount = (map: Map<string, number>, surveyId: any) => {
+  const key = String(surveyId || '').trim();
+  if (!key || key === 'null' || key === 'undefined') return;
+  map.set(key, (map.get(key) || 0) + 1);
+};
+
+const getCollectionCountsBySurveyForVisit = async (db: any, visit: any) => {
+  const counts = new Map<string, number>();
+
+  const parsedVisitCollections = safeParseJson(visit?.coletas || visit?.coletas_json || visit?.collections, []);
+  if (Array.isArray(parsedVisitCollections)) {
+    parsedVisitCollections.forEach((collection: any) => {
+      incrementCount(counts, getSurveyIdFromAnyPayload(collection));
+    });
+  }
+
+  try {
+    if (!(await tableExists(db, 'coletas'))) return counts;
+
+    const visitIds = getVisitIdentifierCandidates(visit);
+    if (visitIds.length === 0) return counts;
+
+    const placeholders = visitIds.map(() => '?').join(',');
+
+    const rows = await db.getAllAsync(
+      `SELECT pesquisa_id, raw_json FROM coletas WHERE visita_id IN (${placeholders})`,
+      visitIds
+    );
+
+    (rows || []).forEach((row: any) => {
+      const raw = safeParseJson(row?.raw_json, {});
+      incrementCount(counts, getSurveyIdFromAnyPayload(row) || getSurveyIdFromAnyPayload(raw));
+    });
+  } catch {}
+
+  return counts;
+};
+
+const isRepeatableLimitReached = (meta: any, count: number) => {
+  if (!meta?.repetivel) return false;
+  if (meta.repeticaoMax === null || meta.repeticaoMax === undefined) return false;
+  return count >= Number(meta.repeticaoMax);
+};
+
 const getSurveyServerStateUpdatedAt = (survey: any, visit: any) => firstFilled(
   survey?.serverStateUpdatedAt,
   survey?.server_state_updated_at,
@@ -467,7 +646,7 @@ const getCompletedSurveyIdsForVisit = async (db: any, visit: any) => {
 
     // Só consideramos coletas locais ainda pendentes de sync.
     // Se o servidor já mandou um estado pendente mais recente, ele vence e a coleta local antiga é ignorada.
-    const rows = await db.getAllAsync<any>(
+    const rows = await db.getAllAsync(
       `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim, updated_at FROM coletas WHERE visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
       visitIds
     );
@@ -687,6 +866,7 @@ export default function VisitaDetailScreen() {
       const db = await getDBConnection();
       let tarefasConsolidadas: any[] = [];
       let completedSurveyIds = new Set<string>();
+      let collectionCountsBySurvey = new Map<string, number>();
 
       const resultVisita = await db.getFirstAsync<any>(`SELECT * FROM visits WHERE id = ?`, [
         String(id),
@@ -718,13 +898,14 @@ export default function VisitaDetailScreen() {
         });
 
         completedSurveyIds = await getCompletedSurveyIdsForVisit(db, resultVisita);
+        collectionCountsBySurvey = await getCollectionCountsBySurveyForVisit(db, resultVisita);
 
         setVisita({
           ...resultVisita,
           status: normalizeStatus(resultVisita.status),
         });
 
-        const surveysMap = new Map<string, { id: string; titulo: string; qtdPerguntas: number; concluida: boolean }>();
+        const surveysMap = new Map<string, any>();
 
         const parsedPesquisaJson = safeParseJson(resultVisita.pesquisa_json, []);
 
@@ -763,6 +944,10 @@ export default function VisitaDetailScreen() {
 
             if (looksLikeSurvey) {
               const surveyId = String(directSurveyId);
+              const repeatableMeta = getRepeatableSurveyMeta({ ...item, perguntas: directQuestions });
+              const collectionCount = collectionCountsBySurvey.get(surveyId) || 0;
+              const repeatableLimitReached = isRepeatableLimitReached(repeatableMeta, collectionCount);
+
               surveysMap.set(surveyId, {
                 id: surveyId,
                 titulo:
@@ -772,7 +957,16 @@ export default function VisitaDetailScreen() {
                   item?.survey_title ||
                   'Pesquisa da visita',
                 qtdPerguntas: Array.isArray(directQuestions) ? directQuestions.length : 0,
-                concluida: completedSurveyIds.has(surveyId) || truthyConfig(firstFilled(item?.concluida, item?.completed, item?.realizada, item?.respondida, item?.hasColeta)),
+                concluida: repeatableMeta.repetivel
+                  ? repeatableLimitReached
+                  : completedSurveyIds.has(surveyId) || truthyConfig(firstFilled(item?.concluida, item?.completed, item?.realizada, item?.respondida, item?.hasColeta)),
+                repetivel: repeatableMeta.repetivel,
+                repeticaoMin: repeatableMeta.repeticaoMin,
+                repeticaoMax: repeatableMeta.repeticaoMax,
+                repeticaoLabelSingular: repeatableMeta.repeticaoLabelSingular,
+                repeticaoLabelPlural: repeatableMeta.repeticaoLabelPlural,
+                coletasCount: collectionCount,
+                obrigatoria: isSurveyMandatoryForCheckout(item),
               });
               return;
             }
@@ -795,6 +989,13 @@ export default function VisitaDetailScreen() {
 
             const surveyId = String(questionSurveyId);
             const current = surveysMap.get(surveyId);
+            const repeatableMeta = getRepeatableSurveyMeta({ ...item, perguntas: [item] });
+            const collectionCount = collectionCountsBySurvey.get(surveyId) || 0;
+
+            const finalRepeatable = Boolean(current?.repetivel || repeatableMeta.repetivel);
+            const finalRepeatMax = current?.repeticaoMax ?? repeatableMeta.repeticaoMax;
+            const finalRepeatableMeta = { ...repeatableMeta, repetivel: finalRepeatable, repeticaoMax: finalRepeatMax };
+            const repeatableLimitReached = isRepeatableLimitReached(finalRepeatableMeta, collectionCount);
 
             surveysMap.set(surveyId, {
               id: surveyId,
@@ -810,9 +1011,40 @@ export default function VisitaDetailScreen() {
                 item?.titulo_pesquisa ||
                 'Pesquisa da visita',
               qtdPerguntas: (current?.qtdPerguntas || 0) + 1,
-              concluida: Boolean(current?.concluida) || completedSurveyIds.has(surveyId) || truthyConfig(firstFilled(item?.concluida, item?.completed, item?.realizada, item?.respondida, item?.hasColeta)),
+              concluida: finalRepeatable
+                ? repeatableLimitReached
+                : Boolean(current?.concluida) || completedSurveyIds.has(surveyId) || truthyConfig(firstFilled(item?.concluida, item?.completed, item?.realizada, item?.respondida, item?.hasColeta)),
+              repetivel: finalRepeatable,
+              repeticaoMin: current?.repeticaoMin ?? repeatableMeta.repeticaoMin,
+              repeticaoMax: finalRepeatMax,
+              repeticaoLabelSingular: current?.repeticaoLabelSingular || repeatableMeta.repeticaoLabelSingular,
+              repeticaoLabelPlural: current?.repeticaoLabelPlural || repeatableMeta.repeticaoLabelPlural,
+              coletasCount: collectionCount,
+              obrigatoria: Boolean(current?.obrigatoria) || isSurveyMandatoryForCheckout(item),
             });
           });
+        }
+
+        for (const [surveyId, survey] of Array.from(surveysMap.entries())) {
+          const serverStatus = await fetchRepeatableStatusForVisit({
+            user,
+            visit: resultVisita,
+            surveyId,
+          }).catch(() => null);
+
+          if (serverStatus?.repetivel) {
+            surveysMap.set(surveyId, {
+              ...survey,
+              repetivel: true,
+              coletasCount: serverStatus.currentCount,
+              repeticaoMin: serverStatus.min || 1,
+              repeticaoMax: serverStatus.max,
+              repeticaoLabelSingular: serverStatus.labelSingular || 'registro',
+              repeticaoLabelPlural: serverStatus.labelPlural || 'registros',
+              serverRepeatableStatus: serverStatus,
+              concluida: isRepeatableStatusBlocked(serverStatus),
+            });
+          }
         }
 
         for (const survey of Array.from(surveysMap.values())) {
@@ -826,18 +1058,28 @@ export default function VisitaDetailScreen() {
 
           const nomeFinal = row?.nome || survey.titulo || 'Pesquisa da visita';
 
-          tarefasConsolidadas.push({
+                    const repeatableSubtitle = getRepeatableStatusSubtitle(survey.serverRepeatableStatus);
+
+tarefasConsolidadas.push({
             id: survey.id,
             titulo: nomeFinal,
             qtdPerguntas: survey.qtdPerguntas || 0,
             tipo: 'VISITA',
+            repetivel: survey.repetivel === true,
+            coletasCount: Number(survey.coletasCount || 0),
+            repeticaoMin: survey.repeticaoMin || 1,
+            repeticaoMax: survey.repeticaoMax || null,
+            repeticaoLabelSingular: survey.repeticaoLabelSingular || 'registro',
+            repeticaoLabelPlural: survey.repeticaoLabelPlural || 'registros',
+            repeatableSubtitle,
+            bloqueadaPorLimite: survey.repetivel === true && survey.repeticaoMax && Number(survey.coletasCount || 0) >= Number(survey.repeticaoMax),
             concluida: completedSurveyIds.has(String(survey.id)) || Boolean(survey.concluida),
           });
         }
       }
 
       try {
-        const allTasks = await db.getAllAsync<any>(`SELECT * FROM other_tasks`);
+        const allTasks = await db.getAllAsync(`SELECT * FROM other_tasks`);
 
         const outrasTarefas = (allTasks || [])
           .filter((t: any) => {
@@ -853,12 +1095,24 @@ export default function VisitaDetailScreen() {
             const raw = safeParseJson(t.task_raw_json, {});
             const perguntas = raw.perguntas || raw.questoes || raw.questions || [];
 
+            const repeatableMeta = getRepeatableSurveyMeta({ ...raw, perguntas });
+            const collectionCount = collectionCountsBySurvey.get(String(t.id)) || 0;
+
             return {
               id: t.id,
               titulo: t.titulo || raw.titulo || raw.nome || 'Tarefa Adicional',
               qtdPerguntas: Array.isArray(perguntas) ? perguntas.length : 0,
               tipo: 'AVULSA_VISITA',
-              concluida: completedSurveyIds.has(String(t.id)),
+              concluida: repeatableMeta.repetivel
+                ? isRepeatableLimitReached(repeatableMeta, collectionCount)
+                : completedSurveyIds.has(String(t.id)),
+              repetivel: repeatableMeta.repetivel,
+              repeticaoMin: repeatableMeta.repeticaoMin,
+              repeticaoMax: repeatableMeta.repeticaoMax,
+              repeticaoLabelSingular: repeatableMeta.repeticaoLabelSingular,
+              repeticaoLabelPlural: repeatableMeta.repeticaoLabelPlural,
+              coletasCount: collectionCount,
+              obrigatoria: isSurveyMandatoryForCheckout(raw) || isSurveyMandatoryForCheckout(t),
             };
           });
 
@@ -1219,16 +1473,40 @@ export default function VisitaDetailScreen() {
   };
 
   const handleCheckout = async () => {
-    const tarefasPendentes = tarefasRenderizadas.filter((tarefa: any) => tarefa?.concluida !== true);
+    const tarefasObrigatoriasPendentes = tarefasRenderizadas.filter((tarefa: any) => {
+      if (tarefa?.obrigatoria !== true) return false;
 
-    if (tarefasPendentes.length > 0) {
-      const listaPendencias = tarefasPendentes
-        .map((tarefa: any, index: number) => `${index + 1}. ${String(tarefa?.titulo || 'Pesquisa/Tarefa sem nome')}`)
+      if (tarefa?.repetivel === true) {
+        const minRequired = Number(tarefa?.repeticaoMin ?? 1);
+        const doneCount = Number(tarefa?.coletasCount || 0);
+        return doneCount < minRequired;
+      }
+
+      return tarefa?.concluida !== true;
+    });
+
+    if (tarefasObrigatoriasPendentes.length > 0) {
+      const listaPendencias = tarefasObrigatoriasPendentes
+        .map((tarefa: any, index: number) => {
+          const titulo = String(tarefa?.titulo || 'Pesquisa/Tarefa sem nome');
+
+          if (tarefa?.repetivel === true) {
+            const minRequired = Number(tarefa?.repeticaoMin ?? 1);
+            const doneCount = Number(tarefa?.coletasCount || 0);
+            const label = doneCount === 1
+              ? String(tarefa?.repeticaoLabelSingular || 'registro')
+              : String(tarefa?.repeticaoLabelPlural || 'registros');
+
+            return `${index + 1}. ${titulo} (${doneCount}/${minRequired} ${label} mínimos)`;
+          }
+
+          return `${index + 1}. ${titulo}`;
+        })
         .join('\n');
 
       showCustomAlert(
         'Saída Bloqueada',
-        `Você ainda precisa finalizar ${tarefasPendentes.length} formulário(s)/tarefa(s) desta visita:\n\n${listaPendencias}`,
+        `Você ainda precisa finalizar ${tarefasObrigatoriasPendentes.length} formulário(s)/tarefa(s) obrigatório(s) desta visita:\n\n${listaPendencias}`,
         'warning'
       );
       return;
@@ -1713,7 +1991,13 @@ export default function VisitaDetailScreen() {
                 ]}
                 onPress={() =>
                   isAndamento
-                    ? router.push(`../pesquisa/${visita.id}?pesquisaId=${encodeURIComponent(String(tarefa.id || ''))}` as any)
+                    ? tarefa?.bloqueadaPorLimite
+                      ? showCustomAlert(
+                          'Limite atingido',
+                          `Esta pesquisa já possui ${tarefa.repeatableSubtitle || 'o limite máximo de respostas'}. Não é possível registrar nova resposta.`,
+                          'warning'
+                        )
+                      : router.push(`../pesquisa/${visita.id}?pesquisaId=${encodeURIComponent(String(tarefa.id || ''))}&serverCount=${encodeURIComponent(String(tarefa.coletasCount || 0))}&repeatMax=${encodeURIComponent(String(tarefa.repeticaoMax || ''))}&repeatLabelPlural=${encodeURIComponent(String(tarefa.repeticaoLabelPlural || 'registros'))}&repeatLabelSingular=${encodeURIComponent(String(tarefa.repeticaoLabelSingular || 'registro'))}` as any)
                     : showCustomAlert(
                         'Aviso',
                         'Realize o check-in na loja primeiro para liberar a execução das tarefas.',
@@ -1743,9 +2027,11 @@ export default function VisitaDetailScreen() {
                       {tarefa.titulo}
                     </Text>
                   <Text style={[styles.taskSubtitle, { color: tarefaConcluida ? colorCheckin : textSecondary }]}>
-                    {tarefaConcluida
-                      ? 'Tarefa Concluída'
-                      : `${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? 'pergunta' : 'perguntas'}`}
+                    {tarefa.repeatableSubtitle
+                      ? tarefa.repeatableSubtitle
+                      : tarefaConcluida
+                        ? 'Tarefa Concluída'
+                        : `${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? 'pergunta' : 'perguntas'}`}
                   </Text>
                 </View>
                 <ChevronRight size={18} color={tarefaConcluida ? colorCheckin : border} />
