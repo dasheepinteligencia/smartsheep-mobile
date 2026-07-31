@@ -33,7 +33,7 @@ import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
 import { addToSyncQueue } from '../../services/syncService';
-import { fetchRepeatableStatusForVisit, getRepeatableStatusSubtitle, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
+import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveyStatus';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useSyncStore } from '../../store/useSyncStore';
 
@@ -249,10 +249,28 @@ const getPhotoRequirementPolicy = (visit: any, config: any, action: VisitAction)
       ? truthyConfig(firstFilled(addressConfig.reqPhotoCheckout, config?.reqPhotoCheckout, config?.requirePhotoCheckout, config?.checkoutPhotoRequired, config?.exigirFotoSaida, project?.reqPhotoCheckout, project?.requirePhotoCheckout, perfilProject?.reqPhotoCheckout, perfilProject?.requirePhotoCheckout, visit?.reqPhotoCheckout, visit?.requirePhotoCheckout))
       : truthyConfig(firstFilled(addressConfig.reqPhotoJustify, config?.reqPhotoJustify, config?.requirePhotoJustify, config?.justifyPhotoRequired, config?.exigirFotoJustificativa, project?.reqPhotoJustify, project?.requirePhotoJustify, perfilProject?.reqPhotoJustify, perfilProject?.requirePhotoJustify, visit?.reqPhotoJustify, visit?.requirePhotoJustify));
 
-  const forceLiveCamera = truthyConfig(firstFilled(addressConfig.forceLiveCamera, config?.forceLiveCamera, config?.force_live_camera, config?.blockGallery, config?.disableGallery, config?.bloquearGaleria, project?.forceLiveCamera, project?.blockGallery, project?.disableGallery, perfilProject?.forceLiveCamera, perfilProject?.blockGallery, perfilProject?.disableGallery, visit?.forceLiveCamera, visit?.blockGallery, visit?.disableGallery));
+  // OMNI_CAMERA_ONLY_CHECKIN_CHECKOUT_V1
+  const isPresencePhoto =
+    action === 'CHECKIN' ||
+    action === 'CHECKOUT';
+
+  const configuredForceLiveCamera = truthyConfig(firstFilled(addressConfig.forceLiveCamera, config?.forceLiveCamera, config?.force_live_camera, config?.blockGallery, config?.disableGallery, config?.bloquearGaleria, project?.forceLiveCamera, project?.blockGallery, project?.disableGallery, perfilProject?.forceLiveCamera, perfilProject?.blockGallery, perfilProject?.disableGallery, visit?.forceLiveCamera, visit?.blockGallery, visit?.disableGallery));
+
+  const forceLiveCamera =
+    isPresencePhoto ||
+    configuredForceLiveCamera;
 
   const explicitAllowGallery = firstFilled(config?.allowGallery, config?.allow_gallery, config?.permitirGaleria, project?.allowGallery, project?.allow_gallery, perfilProject?.allowGallery, perfilProject?.allow_gallery, visit?.allowGallery, visit?.allow_gallery);
-  const allowGallery = forceLiveCamera ? false : explicitAllowGallery === null ? true : !falseyConfig(explicitAllowGallery);
+
+  const allowGallery = isPresencePhoto
+    ? false
+    : forceLiveCamera
+      ? false
+      : explicitAllowGallery === null
+        ? true
+        : !falseyConfig(
+            explicitAllowGallery
+          );
 
   const orientation = normalizePhotoOrientation(firstFilled(config?.[`${actionLower}PhotoOrientation`], config?.[`${actionLower}_photo_orientation`], config?.photoOrientation, config?.photo_orientation, project?.[`${actionLower}PhotoOrientation`], project?.photoOrientation, perfilProject?.[`${actionLower}PhotoOrientation`], perfilProject?.photoOrientation, visit?.[`${actionLower}PhotoOrientation`], visit?.photoOrientation));
 
@@ -571,10 +589,36 @@ const getCollectionCountsBySurveyForVisit = async (db: any, visit: any) => {
   return counts;
 };
 
-const isRepeatableLimitReached = (meta: any, count: number) => {
-  if (!meta?.repetivel) return false;
-  if (meta.repeticaoMax === null || meta.repeticaoMax === undefined) return false;
-  return count >= Number(meta.repeticaoMax);
+// OMNI_REPEATABLE_VISIT_STATUS_V1
+const getRepeatableTaskSubtitle = (
+  params: {
+    count: number;
+    closed: boolean;
+    labelSingular?: string;
+    labelPlural?: string;
+  }
+) => {
+  const count = Math.max(
+    0,
+    Number(params.count || 0)
+  );
+
+  const label =
+    count === 1
+      ? params.labelSingular ||
+        'registro'
+      : params.labelPlural ||
+        'registros';
+
+  if (params.closed) {
+    return `Fechado - ${count} ${label}`;
+  }
+
+  if (count === 0) {
+    return 'Pendente';
+  }
+
+  return `Aberto - ${count} ${label}`;
 };
 
 const getSurveyServerStateUpdatedAt = (survey: any, visit: any) => firstFilled(
@@ -867,6 +911,7 @@ export default function VisitaDetailScreen() {
       let tarefasConsolidadas: any[] = [];
       let completedSurveyIds = new Set<string>();
       let collectionCountsBySurvey = new Map<string, number>();
+      let visitClosedForRepeatable = false;
 
       const resultVisita = await db.getFirstAsync<any>(`SELECT * FROM visits WHERE id = ?`, [
         String(id),
@@ -904,6 +949,18 @@ export default function VisitaDetailScreen() {
           ...resultVisita,
           status: normalizeStatus(resultVisita.status),
         });
+
+        visitClosedForRepeatable =
+          Boolean(
+            resultVisita?.checkout_at ||
+            resultVisita?.checkoutAt ||
+            resultVisita?.data_checkout
+          ) ||
+          isDoneStatus(
+            normalizeStatus(
+              resultVisita.status
+            )
+          );
 
         const surveysMap = new Map<string, any>();
 
@@ -946,7 +1003,6 @@ export default function VisitaDetailScreen() {
               const surveyId = String(directSurveyId);
               const repeatableMeta = getRepeatableSurveyMeta({ ...item, perguntas: directQuestions });
               const collectionCount = collectionCountsBySurvey.get(surveyId) || 0;
-              const repeatableLimitReached = isRepeatableLimitReached(repeatableMeta, collectionCount);
 
               surveysMap.set(surveyId, {
                 id: surveyId,
@@ -958,7 +1014,7 @@ export default function VisitaDetailScreen() {
                   'Pesquisa da visita',
                 qtdPerguntas: Array.isArray(directQuestions) ? directQuestions.length : 0,
                 concluida: repeatableMeta.repetivel
-                  ? repeatableLimitReached
+                  ? visitClosedForRepeatable
                   : completedSurveyIds.has(surveyId) || truthyConfig(firstFilled(item?.concluida, item?.completed, item?.realizada, item?.respondida, item?.hasColeta)),
                 repetivel: repeatableMeta.repetivel,
                 repeticaoMin: repeatableMeta.repeticaoMin,
@@ -994,8 +1050,6 @@ export default function VisitaDetailScreen() {
 
             const finalRepeatable = Boolean(current?.repetivel || repeatableMeta.repetivel);
             const finalRepeatMax = current?.repeticaoMax ?? repeatableMeta.repeticaoMax;
-            const finalRepeatableMeta = { ...repeatableMeta, repetivel: finalRepeatable, repeticaoMax: finalRepeatMax };
-            const repeatableLimitReached = isRepeatableLimitReached(finalRepeatableMeta, collectionCount);
 
             surveysMap.set(surveyId, {
               id: surveyId,
@@ -1012,7 +1066,7 @@ export default function VisitaDetailScreen() {
                 'Pesquisa da visita',
               qtdPerguntas: (current?.qtdPerguntas || 0) + 1,
               concluida: finalRepeatable
-                ? repeatableLimitReached
+                ? visitClosedForRepeatable
                 : Boolean(current?.concluida) || completedSurveyIds.has(surveyId) || truthyConfig(firstFilled(item?.concluida, item?.completed, item?.realizada, item?.respondida, item?.hasColeta)),
               repetivel: finalRepeatable,
               repeticaoMin: current?.repeticaoMin ?? repeatableMeta.repeticaoMin,
@@ -1042,7 +1096,7 @@ export default function VisitaDetailScreen() {
               repeticaoLabelSingular: serverStatus.labelSingular || 'registro',
               repeticaoLabelPlural: serverStatus.labelPlural || 'registros',
               serverRepeatableStatus: serverStatus,
-              concluida: isRepeatableStatusBlocked(serverStatus),
+              concluida: visitClosedForRepeatable,
             });
           }
         }
@@ -1056,24 +1110,67 @@ export default function VisitaDetailScreen() {
             row = await db.getFirstAsync(`SELECT nome FROM pesquisas WHERE id = ?`, [survey.id]);
           }
 
-          const nomeFinal = row?.nome || survey.titulo || 'Pesquisa da visita';
+          const nomeFinal =
+            row?.nome ||
+            survey.titulo ||
+            'Pesquisa da visita';
 
-                    const repeatableSubtitle = getRepeatableStatusSubtitle(survey.serverRepeatableStatus);
+          const repeatableCount =
+            Number(
+              survey.coletasCount || 0
+            );
 
-tarefasConsolidadas.push({
+          const repeatableSubtitle =
+            survey.repetivel === true
+              ? getRepeatableTaskSubtitle({
+                  count:
+                    repeatableCount,
+                  closed:
+                    visitClosedForRepeatable,
+                  labelSingular:
+                    survey.repeticaoLabelSingular,
+                  labelPlural:
+                    survey.repeticaoLabelPlural,
+                })
+              : null;
+
+          tarefasConsolidadas.push({
             id: survey.id,
             titulo: nomeFinal,
-            qtdPerguntas: survey.qtdPerguntas || 0,
+            qtdPerguntas:
+              survey.qtdPerguntas || 0,
             tipo: 'VISITA',
-            repetivel: survey.repetivel === true,
-            coletasCount: Number(survey.coletasCount || 0),
-            repeticaoMin: survey.repeticaoMin || 1,
-            repeticaoMax: survey.repeticaoMax || null,
-            repeticaoLabelSingular: survey.repeticaoLabelSingular || 'registro',
-            repeticaoLabelPlural: survey.repeticaoLabelPlural || 'registros',
+            repetivel:
+              survey.repetivel === true,
+            coletasCount:
+              repeatableCount,
+            repeticaoMin:
+              survey.repeticaoMin || 1,
+            repeticaoMax:
+              survey.repeticaoMax || null,
+            repeticaoLabelSingular:
+              survey.repeticaoLabelSingular ||
+              'registro',
+            repeticaoLabelPlural:
+              survey.repeticaoLabelPlural ||
+              'registros',
             repeatableSubtitle,
-            bloqueadaPorLimite: survey.repetivel === true && survey.repeticaoMax && Number(survey.coletasCount || 0) >= Number(survey.repeticaoMax),
-            concluida: completedSurveyIds.has(String(survey.id)) || Boolean(survey.concluida),
+            bloqueadaPorLimite:
+              survey.repetivel === true &&
+              survey.repeticaoMax &&
+              repeatableCount >=
+                Number(
+                  survey.repeticaoMax
+                ),
+            concluida:
+              survey.repetivel === true
+                ? visitClosedForRepeatable
+                : completedSurveyIds.has(
+                    String(survey.id)
+                  ) ||
+                  Boolean(
+                    survey.concluida
+                  ),
           });
         }
       }
@@ -1095,24 +1192,80 @@ tarefasConsolidadas.push({
             const raw = safeParseJson(t.task_raw_json, {});
             const perguntas = raw.perguntas || raw.questoes || raw.questions || [];
 
-            const repeatableMeta = getRepeatableSurveyMeta({ ...raw, perguntas });
-            const collectionCount = collectionCountsBySurvey.get(String(t.id)) || 0;
+            const repeatableMeta =
+              getRepeatableSurveyMeta({
+                ...raw,
+                perguntas
+              });
+
+            const collectionCount =
+              collectionCountsBySurvey.get(
+                String(t.id)
+              ) || 0;
+
+            const repeatableSubtitle =
+              repeatableMeta.repetivel
+                ? getRepeatableTaskSubtitle({
+                    count:
+                      collectionCount,
+                    closed:
+                      visitClosedForRepeatable,
+                    labelSingular:
+                      repeatableMeta.repeticaoLabelSingular,
+                    labelPlural:
+                      repeatableMeta.repeticaoLabelPlural,
+                  })
+                : null;
 
             return {
               id: t.id,
-              titulo: t.titulo || raw.titulo || raw.nome || 'Tarefa Adicional',
-              qtdPerguntas: Array.isArray(perguntas) ? perguntas.length : 0,
-              tipo: 'AVULSA_VISITA',
-              concluida: repeatableMeta.repetivel
-                ? isRepeatableLimitReached(repeatableMeta, collectionCount)
-                : completedSurveyIds.has(String(t.id)),
-              repetivel: repeatableMeta.repetivel,
-              repeticaoMin: repeatableMeta.repeticaoMin,
-              repeticaoMax: repeatableMeta.repeticaoMax,
-              repeticaoLabelSingular: repeatableMeta.repeticaoLabelSingular,
-              repeticaoLabelPlural: repeatableMeta.repeticaoLabelPlural,
-              coletasCount: collectionCount,
-              obrigatoria: isSurveyMandatoryForCheckout(raw) || isSurveyMandatoryForCheckout(t),
+              titulo:
+                t.titulo ||
+                raw.titulo ||
+                raw.nome ||
+                'Tarefa Adicional',
+              qtdPerguntas:
+                Array.isArray(perguntas)
+                  ? perguntas.length
+                  : 0,
+              tipo:
+                'AVULSA_VISITA',
+              concluida:
+                repeatableMeta.repetivel
+                  ? visitClosedForRepeatable
+                  : completedSurveyIds.has(
+                      String(t.id)
+                    ),
+              repetivel:
+                repeatableMeta.repetivel,
+              repeticaoMin:
+                repeatableMeta.repeticaoMin,
+              repeticaoMax:
+                repeatableMeta.repeticaoMax,
+              repeticaoLabelSingular:
+                repeatableMeta.repeticaoLabelSingular,
+              repeticaoLabelPlural:
+                repeatableMeta.repeticaoLabelPlural,
+              coletasCount:
+                collectionCount,
+              repeatableSubtitle,
+              bloqueadaPorLimite:
+                repeatableMeta.repetivel &&
+                repeatableMeta.repeticaoMax !==
+                  null &&
+                repeatableMeta.repeticaoMax !==
+                  undefined &&
+                collectionCount >=
+                  Number(
+                    repeatableMeta.repeticaoMax
+                  ),
+              obrigatoria:
+                isSurveyMandatoryForCheckout(
+                  raw
+                ) ||
+                isSurveyMandatoryForCheckout(
+                  t
+                ),
             };
           });
 
@@ -1247,8 +1400,35 @@ tarefasConsolidadas.push({
 
     if (!photoPolicy.requirePhoto) return null;
 
-    const source = await escolherOrigemFoto(photoPolicy.allowGallery);
+    const cameraOnly =
+      acao === 'CHECKIN' ||
+      acao === 'CHECKOUT';
+
+    const source =
+      await escolherOrigemFoto(
+        cameraOnly
+          ? false
+          : photoPolicy.allowGallery
+      );
+
     if (!source) return null;
+
+    /*
+     * Proteção adicional:
+     * check-in e check-out só aceitam câmera.
+     */
+    if (
+      cameraOnly &&
+      source !== 'camera'
+    ) {
+      showCustomAlert(
+        'Câmera obrigatória',
+        `A foto de ${getPhotoLabelByAction(acao)} deve ser tirada no momento da visita.`,
+        'warning'
+      );
+
+      return null;
+    }
 
     const permission = source === 'camera'
       ? await ImagePicker.requestCameraPermissionsAsync()

@@ -21,7 +21,7 @@
     "axios": "^1.16.1",
     "babel-plugin-module-resolver": "^5.0.3",
     "date-fns": "^4.1.0",
-    "expo": "~54.0.33",
+    "expo": "~54.0.36",
     "expo-application": "~7.0.8",
     "expo-background-fetch": "~14.0.9",
     "expo-battery": "~10.0.8",
@@ -59,6 +59,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "babel-preset-expo": "~54.0.10",
     "typescript": "~5.9.2"
   },
   "private": true
