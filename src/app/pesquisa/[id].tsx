@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { 
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, 
+import {
+  View, Text, StyleSheet, TouchableOpacity, ScrollView,
   TextInput, Alert, Image, ActivityIndicator, StatusBar,
   KeyboardAvoidingView, Platform, Modal
 } from 'react-native';
@@ -10,7 +10,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { captureRef } from 'react-native-view-shot';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
-import { 
+import {
     ArrowLeft, Camera, Save, X, Package, FolderOpen, ChevronDown, ChevronRight, Asterisk, Check, AlertTriangle, CheckCircle2, XCircle
 } from 'lucide-react-native';
 
@@ -20,6 +20,7 @@ import { addAppLog, getDBConnection } from '../../database/db';
 import { addToSyncQueue } from '../../services/syncService';
 import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { t } from '../../utils/i18n';
+import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
 
 const normalizar = (val: any) => String(val || '').normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 
@@ -475,7 +476,7 @@ const checkSurveyIsMandatory = (pergunta: any) => {
 const parseNumericValue = (val: any): number => {
     if (val === undefined || val === null || val === '') return NaN;
     if (typeof val === 'number') return val;
-    let str = String(val).trim().replace(/[^0-9.,-]/g, ''); 
+    let str = String(val).trim().replace(/[^0-9.,-]/g, '');
     if (str === '') return NaN;
     const lastComma = str.lastIndexOf(',');
     const lastDot = str.lastIndexOf('.');
@@ -674,7 +675,7 @@ const getPhotoConfigFromVisit = (visitObj: any) => {
 };
 
 export default function SurveyExecutionScreen() {
-  const { id, pesquisaId, serverCount, repeatMax, repeatLabelPlural, repeatLabelSingular } = useLocalSearchParams(); 
+  const { id, pesquisaId, serverCount, repeatMax, repeatLabelPlural, repeatLabelSingular } = useLocalSearchParams();
   const router = useRouter();
   const { user } = useAuthStore();
   const insets = useSafeAreaInsets();
@@ -696,30 +697,30 @@ export default function SurveyExecutionScreen() {
   const textPrimary = isDark ? '#FFFFFF' : '#1E293B';
   const textSecondary = isDark ? '#8F9BB3' : '#64748B';
   const border = isDark ? '#1E293B' : '#E2E8F0';
-  const accent = '#3B82F6'; 
+  const accent = '#3B82F6';
   const errorColor = '#EF4444';
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [visita, setVisita] = useState<any>(null);
-  
-  const [produtosDoMix, setProdutosDoMix] = useState<any[]>([]); 
+
+  const [produtosDoMix, setProdutosDoMix] = useState<any[]>([]);
   const [pesquisasRaw, setPesquisasRaw] = useState<any[]>([]);
-  
+
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
 
   const scrollViewRef = useRef<ScrollView>(null);
-  const inputRefs = useRef<Record<string, any>>({}); 
+  const inputRefs = useRef<Record<string, any>>({});
   const layoutRefs = useRef<Record<string, number>>({});
-  const photosRef = useRef<Record<string, { uri: string, base64: string }[]>>({});
+  const photosRef = useRef<Record<string, any[]>>({});
   const watermarkRef = useRef<View>(null);
   const watermarkResolverRef = useRef<{
       resolve: (value: { uri: string; base64: string }) => void;
       reject: (error: any) => void;
   } | null>(null);
-  const [watermarkJob, setWatermarkJob] = useState<{ uri: string; text: string } | null>(null);
+  const [watermarkJob, setWatermarkJob] = useState<{ uri: string; text: string; width: number; height: number } | null>(null);
 
   const [customAlert, setCustomAlert] = useState<{
       visible: boolean;
@@ -809,8 +810,8 @@ export default function SurveyExecutionScreen() {
                     }
                 }
 
-                setVisita({ 
-                    ...v, 
+                setVisita({
+                    ...v,
                     loja_custom_data: safeParseArray(v.loja_custom_data_json || '{}'),
                     pesquisa_id_real: selectedPayload.selectedSurveyId,
                     pesquisa_titulo_real: selectedPayload.selectedSurveyTitle,
@@ -898,7 +899,7 @@ export default function SurveyExecutionScreen() {
               repeticaoLabelPlural: v.repeticaoLabelPlural ?? v.repeticao_label_plural ?? v.repeat_label_plural,
           };
 
-          return { 
+          return {
               ...p,
               tipo: tipoStr,
               isGrupoReal,
@@ -974,9 +975,9 @@ export default function SurveyExecutionScreen() {
 
   const checkCondition = (operator: string, answerVal: any, conditionVal: any, targetType: string = 'TEXTO'): boolean => {
       if (answerVal === undefined || answerVal === null || answerVal === '') return false;
-      
+
       const op = String(operator).trim().toUpperCase();
-      
+
       if (Array.isArray(answerVal)) {
           if (op === 'CONTAINS' || op === 'CONTEM' || op === 'EQUALS' || op === '==' || op === '=') {
               return answerVal.some(a => normalizar(a) === normalizar(conditionVal));
@@ -994,7 +995,7 @@ export default function SurveyExecutionScreen() {
           if (aStr === '' && !['EQUALS', '==', '!=', 'NOT_EQUALS'].includes(op)) return false;
           const cNum = parseNumericValue(conditionVal);
           const aNum = parseNumericValue(answerVal);
-          
+
           if (isNaN(aNum) || isNaN(cNum)) return false;
           switch (op) {
               case 'EQUALS': case '==': case '=': return aNum === cNum;
@@ -1018,7 +1019,7 @@ export default function SurveyExecutionScreen() {
 
   const isQuestionVisible = useCallback((pergunta: any, produtoId?: string) => {
       if (!pergunta.regras_exibicao || pergunta.regras_exibicao.length === 0) return true;
-      
+
       return pergunta.regras_exibicao.every((regra: any) => {
           const targetRef = normalizar(regra.perguntaId);
           const operador = regra.operador;
@@ -1027,7 +1028,7 @@ export default function SurveyExecutionScreen() {
           if (!targetRef || !operador) return true;
 
           let currentAnswer;
-          let targetType = 'TEXTO'; 
+          let targetType = 'TEXTO';
 
           if (String(regra.perguntaId).startsWith('loja.custom_data.')) {
               currentAnswer = visita?.loja_custom_data?.[regra.perguntaId.replace('loja.custom_data.', '')];
@@ -1041,12 +1042,12 @@ export default function SurveyExecutionScreen() {
                   perguntasLookup.byRef.get(targetRef);
 
               if (!targetQ) return true;
-              
+
               const key = produtoId && targetQ.escopo === 'PRODUTO' ? `${targetQ.id}::${produtoId}` : targetQ.id;
               currentAnswer = answers[key] ?? answers[targetQ.id];
               targetType = targetQ.tipo;
           }
-          
+
           return checkCondition(operador, currentAnswer, valorAlvo, targetType);
       });
   }, [perguntasLookup, answers, visita]);
@@ -1103,34 +1104,97 @@ export default function SurveyExecutionScreen() {
       return productOptionsByQuestionId.get(String(pergunta.id)) || [];
   }, [productOptionsByQuestionId]);
 
+  // MOBILE_PHOTO_EVIDENCE_STRUCTURED_V3
   const buildWatermarkText = () => {
-      const now = new Date();
-      const lojaNome = visita?.loja_nome || visita?.lojaNome || translate('perfectStoreDefaultStore', 'Loja');
-      const usuarioNome = user?.nome || user?.name || translate('profileUserFallback', 'Usuário');
+      const contextTitle =
+          visita?.loja_nome ||
+          visita?.loja?.nome ||
+          translate(
+              'surveyTitleFallback',
+              'Pesquisa'
+          );
 
-      return `${lojaNome} • ${usuarioNome} • ${now.toLocaleString('pt-BR')}`;
+      const usuarioNome =
+          user?.nome ||
+          user?.name ||
+          '';
+
+      /*
+       * SOMENTE contexto configurado.
+       *
+       * GPS / CAMERA / GALLERY
+       * NÃO são desenhados na fotografia.
+       */
+      return [
+          contextTitle,
+          usuarioNome,
+          new Date().toLocaleString()
+      ]
+          .filter(Boolean)
+          .join(' • ');
   };
 
-  const applyWatermarkIfNeeded = async (asset: any) => {
-      const photoConfig = getPhotoConfigFromVisit(visita);
+  const applyWatermarkIfNeeded = async (
+      asset: any
+  ) => {
+      const photoConfig =
+          getPhotoConfigFromVisit(
+              visita
+          );
 
-      if (!photoConfig.watermarkPhotos) {
-          return {
-              uri: asset.uri,
-              base64: `data:image/jpeg;base64,${asset.base64}`,
-          };
+      const originalPhoto = {
+          uri:
+              asset.uri,
+
+          base64:
+              `data:image/jpeg;base64,${asset.base64}`,
+      };
+
+      if (
+          !photoConfig.watermarkPhotos
+      ) {
+          return originalPhoto;
       }
 
-      return new Promise<{ uri: string; base64: string }>((resolve, reject) => {
-          watermarkResolverRef.current = { resolve, reject };
+      const width =
+          Number(asset?.width) > 0
+              ? Number(asset.width)
+              : 1080;
+
+      const height =
+          Number(asset?.height) > 0
+              ? Number(asset.height)
+              : 1440;
+
+      /*
+       * Fotografia inteira +
+       * faixa separada abaixo.
+       *
+       * Nunca sobre a imagem.
+       */
+      return new Promise<{
+          uri: string;
+          base64: string;
+      }>((resolve, reject) => {
+          watermarkResolverRef.current = {
+              resolve,
+              reject
+          };
+
           setWatermarkJob({
-              uri: asset.uri,
-              text: buildWatermarkText(),
+              uri:
+                  asset.uri,
+
+              text:
+                  buildWatermarkText(),
+
+              width,
+              height,
           });
       });
   };
 
-  const handleWatermarkImageLoaded = async () => {
+const handleWatermarkImageLoaded = async () => {
       try {
           if (!watermarkRef.current || !watermarkResolverRef.current) return;
 
@@ -1163,7 +1227,7 @@ export default function SurveyExecutionScreen() {
       const isOptionPhoto = !!optionName;
       const targetKey = isOptionPhoto ? `${answerKey}::foto_${optionName}` : answerKey;
 
-      if (errorKey === answerKey) setErrorKey(null); 
+      if (errorKey === answerKey) setErrorKey(null);
 
       const v = pergunta.validacao || {};
       const photoConfig = getPhotoConfigFromVisit(visita);
@@ -1188,7 +1252,11 @@ export default function SurveyExecutionScreen() {
           ? translate('photoHorizontalLandscape', 'horizontal/paisagem')
           : translate('photoVerticalPortrait', 'vertical/retrato');
 
-      const processAsset = async (asset: any) => {
+      const processAsset = async (
+      asset: any,
+      source: 'CAMERA' | 'GALLERY',
+      locationPromise?: Promise<any>
+    ) => {
           if (!asset?.uri || !asset?.base64) return;
 
           if (!assetMatchesOrientation(asset, requiredOrientation)) {
@@ -1200,7 +1268,87 @@ export default function SurveyExecutionScreen() {
               return;
           }
 
-          const photoPayload = await applyWatermarkIfNeeded(asset);
+          const gpsResult =
+        await (
+          locationPromise ||
+          getFastPhotoLocation()
+        );
+
+          const latitude =
+              Number(
+                  gpsResult?.latitude
+              );
+
+          const longitude =
+              Number(
+                  gpsResult?.longitude
+              );
+
+          if (
+              !Number.isFinite(
+                  latitude
+              ) ||
+              !Number.isFinite(
+                  longitude
+              )
+          ) {
+              showCustomAlert(
+                  'error',
+                  t(
+                      'photoGpsRequiredTitle'
+                  ),
+                  gpsResult?.error ===
+                  'FAKE_GPS'
+                      ? t(
+                          'photoGpsFakeDetected'
+                        )
+                      : t(
+                          'photoGpsRequiredMessage'
+                        )
+              );
+
+              return;
+          }
+
+          // PHOTO_ORIGINAL_NO_MOBILE_WATERMARK_V1
+          const rawBase64 =
+            String(asset.base64).startsWith('data:image')
+              ? String(asset.base64)
+              : `data:image/jpeg;base64,${asset.base64}`;
+
+          // PHOTO_STRUCTURED_METADATA_V1
+          const photoPayload = {
+            /*
+             * Preview usa diretamente o arquivo original.
+             */
+            uri:
+              asset.uri,
+
+            /*
+             * Payload para upload.
+             */
+            base64:
+              rawBase64,
+
+            url:
+              rawBase64,
+
+            /*
+             * Metadata técnica.
+             * Nada disso é desenhado sobre a fotografia.
+             */
+            origin:
+              source,
+
+            capturedAt:
+              new Date().toISOString(),
+
+            latitude:
+              latitude,
+
+            longitude:
+              longitude,
+          };
 
           if (!photosRef.current[targetKey]) photosRef.current[targetKey] = [];
 
@@ -1227,8 +1375,15 @@ export default function SurveyExecutionScreen() {
               return;
           }
 
-          const res = await ImagePicker.launchCameraAsync({ quality: 0.2, base64: true }); 
-          if (!res.canceled && res.assets?.[0]) await processAsset(res.assets[0]);
+          const locationPromise =
+        getFastPhotoLocation();
+
+      const res = await ImagePicker.launchCameraAsync({ quality: 0.2, base64: true });
+          if (!res.canceled && res.assets?.[0]) await processAsset(
+          res.assets[0],
+          'CAMERA',
+          locationPromise
+        );
       };
 
       if (photoConfig.blockGallery || photoConfig.forceLiveCamera) {
@@ -1254,7 +1409,10 @@ export default function SurveyExecutionScreen() {
                       return;
                   }
 
-                  const res = await ImagePicker.launchImageLibraryAsync({
+                  const locationPromise =
+            getFastPhotoLocation();
+
+          const res = await ImagePicker.launchImageLibraryAsync({
                       mediaTypes: ['images'],
                       quality: 0.2,
                       base64: true,
@@ -1263,7 +1421,11 @@ export default function SurveyExecutionScreen() {
 
                   if (!res.canceled && res.assets) {
                       for (const asset of res.assets) {
-                          await processAsset(asset);
+                          await processAsset(
+              asset,
+              'GALLERY',
+              locationPromise
+            );
                       }
                   }
               }},
@@ -1434,16 +1596,34 @@ export default function SurveyExecutionScreen() {
               const parts = baseKey.split('::');
               const pId = parts[0];
               const prodId = parts.length > 1 ? parts[1] : null;
-              
+
               const perguntaConfig = perguntas.find(p => String(p.id) === String(pId));
               if (!perguntaConfig || !isQuestionVisible(perguntaConfig, prodId || undefined)) continue;
 
               if (perguntaConfig.tipo === 'FOTO') {
                   const actualFotos = photosRef.current[baseKey] || [];
-                  if (actualFotos.length > 0) respostasArray.push({ pergunta_id: pId, produto_id: prodId, valor: JSON.stringify(actualFotos.map(f => f.base64)) });
+                  if (actualFotos.length > 0) respostasArray.push({ pergunta_id: pId, produto_id: prodId, valor: JSON.stringify(
+                      actualFotos.map((f: any) => ({
+                          url:
+                              f.url ||
+                              f.base64,
+
+                          origin:
+                              f.origin,
+
+                          capturedAt:
+                              f.capturedAt,
+
+                          latitude:
+                              f.latitude,
+
+                          longitude:
+                              f.longitude,
+                      }))
+                  ) });
                   continue;
               }
-              
+
               const isMultiple = Array.isArray(baseAnswer);
               respostasArray.push({ pergunta_id: pId, produto_id: prodId, valor: isMultiple ? JSON.stringify(baseAnswer) : String(baseAnswer) });
 
@@ -1465,7 +1645,25 @@ export default function SurveyExecutionScreen() {
                           respostasArray.push({
                               pergunta_id: `${pId}_${cleanOpt}`,
                               produto_id: prodId,
-                              valor: JSON.stringify(optFotosObj.map(f => f.base64)),
+                              valor: JSON.stringify(
+                                  optFotosObj.map((f: any) => ({
+                                      url:
+                                          f.url ||
+                                          f.base64,
+
+                                      origin:
+                                          f.origin,
+
+                                      capturedAt:
+                                          f.capturedAt,
+
+                                      latitude:
+                                          f.latitude,
+
+                                      longitude:
+                                          f.longitude,
+                                  }))
+                              ),
                           });
                       }
                   }
@@ -1516,7 +1714,7 @@ const finalizadoAt = new Date().toISOString();
               usuario_id: user?.id,
               usuarioId: user?.id,
               promotorId: user?.id,
-              usuario_nome: user?.nome, 
+              usuario_nome: user?.nome,
               loja_id: realLojaId,
               lojaId: realLojaId,
               loja_nome: visita?.loja_nome || '',
@@ -1562,7 +1760,7 @@ const finalizadoAt = new Date().toISOString();
               client_operation_id: operationId,
           };
           const db = await getDBConnection();
-          
+
           if (typeof addToSyncQueue !== 'function') {
               throw new Error(translate('syncQueueFunctionMissing', 'A função addToSyncQueue não foi encontrada'));
           }
@@ -1672,7 +1870,7 @@ const finalizadoAt = new Date().toISOString();
               }
           }, undefined, translate('commonOkUnderstood', 'OK, entendi'));
 
-      } catch (error: any) { 
+      } catch (error: any) {
           console.error("🔥 ERRO CRÍTICO NO SALVAMENTO:", error);
           showCustomAlert(
               'error',
@@ -1683,8 +1881,8 @@ const finalizadoAt = new Date().toISOString();
               undefined,
               translate('commonClose', 'Fechar')
           );
-      } finally { 
-          setSaving(false); 
+      } finally {
+          setSaving(false);
       }
   };
 
@@ -1698,29 +1896,29 @@ const finalizadoAt = new Date().toISOString();
           for (const p of questionsArray) {
               if (hardError) break;
               if (!isQuestionVisible(p, contextProdId || undefined)) continue;
-              
+
               const isMandatory = checkSurveyIsMandatory(p);
               const answerKey = contextProdId ? `${p.id}::${contextProdId}` : p.id;
               const answer = answers[answerKey];
               const isAnswered = answer !== undefined && answer !== null && answer !== '' && (Array.isArray(answer) ? answer.length > 0 : true);
-              
+
               const pTitle = String(p.titulo || p.texto || '').toLowerCase();
-              
+
               const isDecimal = String(p.tipo).toUpperCase() === 'DECIMAL' || String(p.tipo).toUpperCase() === 'MOEDA' || pTitle.includes('preço') || pTitle.includes('preco');
               const isNumber = String(p.tipo).toUpperCase() === 'NUMERO' || isDecimal;
-              
+
               let validacao = p.validacao || {};
               const prodContext = contextProdId ? produtosDoMix.find(prod => String(prod.id) === String(contextProdId)) : null;
               const itemLabel = prodContext ? `(${prodContext.nome})` : '';
 
-              if (!isAnswered && isMandatory) { 
+              if (!isAnswered && isMandatory) {
                   setErrorKey(answerKey); focusTargetKey = answerKey;
                   hardError = translate(
                       'surveyRequiredQuestion',
                       'A pergunta "{{question}}" é obrigatória. {{item}}',
                       { question: p.titulo || p.texto || '', item: itemLabel }
-                  ); 
-                  break; 
+                  );
+                  break;
               }
 
               if (isAnswered && (validacao.foto_por_opcao === true || validacao.fotoPorOpcao === true)) {
@@ -1843,7 +2041,7 @@ const finalizadoAt = new Date().toISOString();
                               setErrorKey(answerKey); focusTargetKey = answerKey; hardError = msg + `\n\n${itemLabel}`; break;
                           }
                       }
-                      
+
                       if (max !== undefined && !isNaN(max) && num > max) {
                           let msg = validacao.mensagem_erro_customizada || translate(
                               'surveyMaxValueError',
@@ -1873,7 +2071,7 @@ const finalizadoAt = new Date().toISOString();
               for (const prod of sortedProdutosDoMix) {
                   if (section.group && !shouldShowProductForQuestion(section.group, prod)) continue;
                   if (!isQuestionVisible(section.group || {}, prod.id)) continue;
-                  
+
                   processQuestions(section.products, prod.id);
                   if (hardError) break;
               }
@@ -1899,25 +2097,25 @@ const finalizadoAt = new Date().toISOString();
       // 🎯 MODAL AMARELO COM DUAS OPÇÕES PARA FURA-BLOQUEIO
       if (softWarningsList.length > 0) {
           showCustomAlert(
-              'warning', 
-              translate('validationValuesAttentionTitle', 'Atenção aos valores'), 
+              'warning',
+              translate('validationValuesAttentionTitle', 'Atenção aos valores'),
               translate(
                   'validationValuesAttentionMessage',
                   'Existem {{count}} aviso(s) nas suas respostas:\n\n{{warning}}\n\nDeseja revisar ou enviar assim mesmo?',
                   { count: softWarningsList.length, warning: softWarningsList[0] }
               ),
-              processSaveAction, 
+              processSaveAction,
               () => {
                   closeCustomAlert();
                   if (focusTargetKey) scrollToError(focusTargetKey);
-              }, 
-              translate('validationSendAnyway', 'Enviar mesmo assim'), 
+              },
+              translate('validationSendAnyway', 'Enviar mesmo assim'),
               translate('validationReview', 'Revisar')
           );
           return;
       }
 
-      processSaveAction(); 
+      processSaveAction();
   };
 
   const renderInputUI = (pergunta: any, answerKey: string) => {
@@ -2089,16 +2287,16 @@ const finalizadoAt = new Date().toISOString();
       }
 
       return (
-          <TextInput 
+          <TextInput
               onLayout={(e) => { layoutRefs.current[answerKey] = e.nativeEvent.layout.y; }}
-              ref={(el) => { if (el) inputRefs.current[answerKey] = el; }} 
-              style={[styles.input, { backgroundColor: bg, borderColor: border, color: textPrimary }, hasError && { borderColor: errorColor, borderWidth: 2 }]} 
-              placeholder={isDecimal ? "0,00" : translate('surveyTextPlaceholder', 'Digite aqui...')} 
-              placeholderTextColor={hasError ? errorColor : textSecondary} 
-              keyboardType={isNumber ? 'numeric' : 'default'} 
-              multiline={!isNumber} 
-              value={answers[answerKey] || ''} 
-              onChangeText={(text) => handleTextChange(answerKey, text, isDecimal)} 
+              ref={(el) => { if (el) inputRefs.current[answerKey] = el; }}
+              style={[styles.input, { backgroundColor: bg, borderColor: border, color: textPrimary }, hasError && { borderColor: errorColor, borderWidth: 2 }]}
+              placeholder={isDecimal ? "0,00" : translate('surveyTextPlaceholder', 'Digite aqui...')}
+              placeholderTextColor={hasError ? errorColor : textSecondary}
+              keyboardType={isNumber ? 'numeric' : 'default'}
+              multiline={!isNumber}
+              value={answers[answerKey] || ''}
+              onChangeText={(text) => handleTextChange(answerKey, text, isDecimal)}
           />
       );
   };
@@ -2109,7 +2307,7 @@ const finalizadoAt = new Date().toISOString();
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={[styles.container, { backgroundColor: bg }]}>
         <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-        
+
         <View style={[styles.header, { backgroundColor: cardBg, paddingTop: Math.max(insets.top, 40), borderBottomColor: border }]}>
             <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}><ArrowLeft color={textPrimary} size={24} /></TouchableOpacity>
             <View>
@@ -2122,7 +2320,7 @@ const finalizadoAt = new Date().toISOString();
 
         <ScrollView ref={scrollViewRef} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
             {surveySections.map((section, sIdx) => {
-                
+
                 let isGroupVisibleGlobally = true;
                 if (section.group) {
                     if (section.group.escopo === 'PRODUTO') {
@@ -2131,9 +2329,9 @@ const finalizadoAt = new Date().toISOString();
                         isGroupVisibleGlobally = isQuestionVisible(section.group);
                     }
                 }
-                
+
                 if (!isGroupVisibleGlobally) return null;
-                
+
                 const isGroupCollapsed = section.group ? collapsedGroups.includes(section.group.id) : false;
 
                 return (
@@ -2148,7 +2346,7 @@ const finalizadoAt = new Date().toISOString();
 
                     {!isGroupCollapsed && (
                         <View style={section.group ? { paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: accent, marginLeft: 10 } : {}}>
-                            
+
                             {section.globals.map((p: any) => {
                                 if (!isQuestionVisible(p)) return null;
                                 return (
@@ -2170,7 +2368,7 @@ const finalizadoAt = new Date().toISOString();
                                     </View>
 
                                     {sortedProdutosDoMix.map((prod: any) => {
-                                        
+
                                         if (section.group && !shouldShowProductForQuestion(section.group, prod)) return null;
                                         if (!isQuestionVisible(section.group || {}, prod.id)) return null;
 
@@ -2185,7 +2383,7 @@ const finalizadoAt = new Date().toISOString();
                                                     <Package size={18} color={accent} />
                                                     <Text style={[styles.prodName, { color: textPrimary }]}>{productName}</Text>
                                                 </View>
-                                                
+
                                                 {visibleQuestions.map((p: any) => (
                                                     <View key={p.id} style={{ marginTop: 15 }}>
                                                         <View style={{ flexDirection: 'row', marginBottom: 5 }}>
@@ -2204,7 +2402,7 @@ const finalizadoAt = new Date().toISOString();
                     )}
                 </View>
             )})}
-            
+
             {perguntas.length === 0 && (
                 <View style={styles.center}>
                     <Text style={{ color: textSecondary }}>{translate('surveyNoQuestionsAvailable', 'Sem perguntas disponíveis.')}</Text>
@@ -2225,12 +2423,78 @@ const finalizadoAt = new Date().toISOString();
 
         {watermarkJob && (
             <View pointerEvents="none" style={styles.watermarkCanvas}>
-                <View ref={watermarkRef} collapsable={false} style={styles.watermarkFrame}>
-                    <Image source={{ uri: watermarkJob.uri }} style={styles.watermarkImage} onLoad={handleWatermarkImageLoaded} />
-                    <View style={styles.watermarkOverlay}>
-                        <Text style={styles.watermarkText}>{watermarkJob.text}</Text>
-                    </View>
-                </View>
+                <View
+                    ref={watermarkRef}
+                    collapsable={false}
+                    style={{
+                      width: 1080,
+                      backgroundColor: '#000000',
+                      alignSelf: 'flex-start',
+                    }}
+                  >
+                    <Image
+                      source={{
+                        uri:
+                          watermarkJob.uri
+                      }}
+                      resizeMode="contain"
+                      style={{
+                        width: 1080,
+
+                        height:
+                          Math.max(
+                            1,
+                            Math.round(
+                              (
+                                watermarkJob.height /
+                                Math.max(
+                                  1,
+                                  watermarkJob.width
+                                )
+                              ) * 1080
+                            )
+                          ),
+
+                        backgroundColor:
+                          '#000000',
+                      }}
+                      onLoad={
+                        handleWatermarkImageLoaded
+                      }
+                    />
+
+                    {Boolean(
+                      watermarkJob.text
+                    ) && (
+                      <View
+                        style={{
+                          width: 1080,
+                          minHeight: 74,
+                          backgroundColor:
+                            '#0F172A',
+                          paddingHorizontal: 28,
+                          paddingVertical: 18,
+                          justifyContent:
+                            'center',
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color:
+                              '#FFFFFF',
+                            fontSize: 22,
+                            fontWeight:
+                              '700',
+                            lineHeight: 30,
+                          }}
+                        >
+                          {
+                            watermarkJob.text
+                          }
+                        </Text>
+                      </View>
+                    )}
+                  </View>
             </View>
         )}
 
@@ -2241,10 +2505,10 @@ const finalizadoAt = new Date().toISOString();
                     {customAlert.type === 'error' && <XCircle size={50} color="#ef4444" style={styles.modalIcon} />}
                     {customAlert.type === 'warning' && <AlertTriangle size={50} color="#f59e0b" style={styles.modalIcon} />}
                     {customAlert.type === 'success' && <CheckCircle2 size={50} color="#10b981" style={styles.modalIcon} />}
-                    
+
                     <Text style={styles.modalTitle}>{customAlert.title}</Text>
                     <Text style={styles.modalMessage}>{customAlert.message}</Text>
-                    
+
                     <View style={styles.modalActions}>
                         {customAlert.onCancel && (
                             <TouchableOpacity style={styles.modalBtnCancel} onPress={customAlert.onCancel}>
@@ -2313,7 +2577,7 @@ const finalizadoAt = new Date().toISOString();
                                     ]}
                                     onPress={() => selectOptionFromSheet(option)}
                                 >
-                                    <View style={[styles.sheetRadio, { borderColor: selected ? accent : textSecondary, backgroundColor: selected ? accent : 'transparent' }]}> 
+                                    <View style={[styles.sheetRadio, { borderColor: selected ? accent : textSecondary, backgroundColor: selected ? accent : 'transparent' }]}>
                                         {selected ? <Check size={13} color="#FFF" /> : null}
                                     </View>
                                     <View style={{ flex: 1 }}>
@@ -2412,7 +2676,7 @@ const styles = StyleSheet.create({
   footer: { padding: 20, borderTopWidth: 1 },
   saveBtn: { height: 54, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
   saveBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
-  
+
   // Estilos do Novo Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalContent: { width: '100%', backgroundColor: '#fff', borderRadius: 24, padding: 24, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 20, elevation: 10 },

@@ -21,12 +21,6 @@ export const getStatusColors = (status: string, isTask: boolean = false) => {
     if (['EM_ANDAMENTO', 'INICIADA'].includes(s)) {
         return { bg: '#dbeafe', text: '#2563eb', border: '#bfdbfe' }; 
     }
-    
-    // 🟣 TAREFAS QUE NÃO SÃO LOJA E ESTÃO PENDENTES (Roxo)
-    if (isTask) {
-        return { bg: '#f3e8ff', text: '#9333ea', border: '#e9d5ff' }; 
-    }
-    
-    // ⚪ LOJA PENDENTE OU STATUS DESCONHECIDO (Cinza)
+// ⚪ LOJA PENDENTE OU STATUS DESCONHECIDO (Cinza)
     return { bg: '#f1f5f9', text: '#64748b', border: '#e2e8f0' }; 
 };

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "APP_COLETA_MOBILE",
+    "name": "SmartSheep",
     "slug": "APP_COLETA_MOBILE",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.dasheepinteligencia.omnifield",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "O SmartSheep utiliza sua localização para validar visitas, check-ins, check-outs e evidências de campo."
       }
     },
     "android": {
@@ -24,7 +25,11 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.dasheepinteligencia.APP_COLETA_MOBILE"
+      "package": "com.dasheepinteligencia.APP_COLETA_MOBILE",
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "output": "static",
@@ -33,7 +38,26 @@
     "plugins": [
       "expo-sqlite",
       "expo-secure-store",
-      "expo-localization"
+      "expo-localization",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#1C1C1C",
+          "image": "./assets/images/android-icon-foreground.png",
+          "imageWidth": 320,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#1C1C1C",
+            "image": "./assets/images/android-icon-foreground.png"
+          }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "O SmartSheep utiliza sua localização para validar visitas, check-ins, check-outs e evidências de campo."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
@@ -43,6 +67,12 @@
       "eas": {
         "projectId": "3954c913-e760-4b2a-9a86-8365e8cdaf90"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/3954c913-e760-4b2a-9a86-8365e8cdaf90"
     }
   }
 }

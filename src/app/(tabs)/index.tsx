@@ -730,16 +730,113 @@ export default function DashboardScreen() {
           }
         }
 
+        // DASHBOARD_STANDALONE_NEXT_STOP_V1
+        const pendingStandaloneTask =
+          !nextVisit
+            ? allTasks
+                .map((row: any) => {
+                  const raw =
+                    safeParseJson(
+                      row.task_raw_json,
+                      {}
+                    );
+
+                  return {
+                    row,
+                    raw,
+                    status:
+                      String(
+                        row.status ||
+                        raw.status ||
+                        ''
+                      ).toUpperCase(),
+                    startDate:
+                      formatToYMD(
+                        raw.data_inicio ||
+                        row.data_inicio ||
+                        raw.criado_em ||
+                        raw.created_at
+                      ),
+                    dueDate:
+                      formatToYMD(
+                        row.data_vencimento ||
+                        raw.data_vencimento ||
+                        raw.data_fim ||
+                        raw.deadline
+                      ),
+                  };
+                })
+                .filter(
+                  (item: any) =>
+                    !isTaskDoneStatus(
+                      item.status
+                    ) &&
+                    (
+                      !item.startDate ||
+                      item.startDate <=
+                        todayStr
+                    ) &&
+                    (
+                      !item.dueDate ||
+                      item.dueDate >=
+                        todayStr
+                    )
+                )
+                .sort(
+                  (
+                    a: any,
+                    b: any
+                  ) =>
+                    String(
+                      a.dueDate ||
+                      '9999-12-31'
+                    ).localeCompare(
+                      String(
+                        b.dueDate ||
+                        '9999-12-31'
+                      )
+                    )
+                )[0] || null
+            : null;
+
         setNextStop(
           nextVisit
             ? {
                 type: 'visit',
                 ...nextVisit,
-                title: nextVisit.loja_nome,
+                title:
+                  nextVisit.loja_nome,
                 contextAlert,
-                insight: insightToDisplay,
+                insight:
+                  insightToDisplay,
               }
-            : null
+            : pendingStandaloneTask
+              ? {
+                  type: 'task',
+                  id:
+                    pendingStandaloneTask
+                      .row.id,
+                  status:
+                    pendingStandaloneTask
+                      .status ||
+                    'PENDENTE',
+                  title:
+                    pendingStandaloneTask
+                      .row.titulo ||
+                    pendingStandaloneTask
+                      .raw.titulo ||
+                    pendingStandaloneTask
+                      .raw.nome ||
+                    i18n.t(
+                      'pendingStandaloneTasks'
+                    ),
+                  contextAlert:
+                    `⚠️ ${i18n.t(
+                      'pending'
+                    )}`,
+                  insight: null,
+                }
+              : null
         );
       } catch (e) {
         console.log('Erro ao calcular insights no dashboard', e);

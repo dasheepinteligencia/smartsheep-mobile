@@ -6,6 +6,7 @@ import * as BackgroundFetch from 'expo-background-fetch';
 import { initializeDatabase } from '../database/db';
 import { useAuthStore } from '../store/useAuthStore';
 import { globalSync } from '../services/syncService';
+import { DevicePreflightGate } from '../components/DevicePreflightGate';
 
 const BACKGROUND_SYNC_TASK = 'BACKGROUND_SYNC_TASK';
 
@@ -108,7 +109,8 @@ export default function RootLayout() {
   }
 
   return (
-    <Stack
+    <DevicePreflightGate>
+      <Stack
       screenOptions={{
         headerShown: false,
         animation: 'slide_from_right',
@@ -132,6 +134,7 @@ export default function RootLayout() {
       <Stack.Screen name="pesquisa/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="pesquisa_avulsa/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="visita/[id]" options={{ headerShown: false }} />
-    </Stack>
+      </Stack>
+    </DevicePreflightGate>
   );
 }

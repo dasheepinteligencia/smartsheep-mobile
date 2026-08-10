@@ -4,10 +4,14 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, ClipboardCheck, X } from 'lucide-react-native';
 import { addAppLog, getDBConnection } from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
-import { globalSync } from '../../services/syncService';
+import { useAuthStore } from '../../store/useAuthStore';
+import { globalSync, addToSyncQueue } from '../../services/syncService';
+import { api } from '../../services/api';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { captureRef } from 'react-native-view-shot';
+import { t } from '../../utils/i18n';
+import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
 
 
 const safeParseArray = (data: any) => {
@@ -257,10 +261,199 @@ const getTaskPhotoConfig = (taskObj: any) => {
   };
 };
 
+
+// OMNI_GENERAL_REPEATABLE_V3
+
+const repeatableMobileText = (
+  language: any,
+  pt: string,
+  en: string,
+  es: string
+) => {
+  if (language === 'en-US') return en;
+  if (language === 'es-ES') return es;
+  return pt;
+};
+
+const repeatableTruthy = (value: any) => {
+  if (value === true) return true;
+
+  const normalized =
+    String(value || '')
+      .trim()
+      .toLowerCase();
+
+  return [
+    'true',
+    '1',
+    'sim',
+    'yes',
+    's',
+    'y'
+  ].includes(normalized);
+};
+
+const repeatableObject = (value: any) => {
+  if (!value) return {};
+
+  if (
+    typeof value === 'object' &&
+    !Array.isArray(value)
+  ) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed =
+        JSON.parse(value);
+
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed)
+      ) {
+        return parsed;
+      }
+    } catch {}
+  }
+
+  return {};
+};
+
+const repeatableTaskIsRepeatable = (
+  taskObj: any,
+  questions: any[]
+) => {
+  const raw =
+    repeatableObject(
+      taskObj?.task_raw_json
+    );
+
+  if (
+    repeatableTruthy(taskObj?.repetivel) ||
+    repeatableTruthy(taskObj?.repeatable) ||
+    repeatableTruthy(raw?.repetivel) ||
+    repeatableTruthy(raw?.repeatable)
+  ) {
+    return true;
+  }
+
+  const scanQuestions = (
+    list: any[]
+  ): boolean => {
+    for (const question of list || []) {
+      const validation =
+        repeatableObject(
+          question?.validacao ||
+          question?.validacoes
+        );
+
+      if (
+        repeatableTruthy(question?.repetivel) ||
+        repeatableTruthy(question?.repeatable) ||
+        repeatableTruthy(validation?.repetivel) ||
+        repeatableTruthy(validation?.repeatable)
+      ) {
+        return true;
+      }
+
+      const children =
+        question?.perguntas ||
+        question?.questions ||
+        question?.questoes ||
+        question?.children ||
+        question?.itens;
+
+      if (
+        Array.isArray(children) &&
+        scanQuestions(children)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  return scanQuestions(
+    questions || []
+  );
+};
+
+const repeatableContext = (
+  taskObj: any,
+  routeId: any,
+  user: any
+) => {
+  const raw =
+    repeatableObject(
+      taskObj?.task_raw_json
+    );
+
+  const pesquisaId =
+    String(
+      taskObj?.pesquisa_id ||
+      taskObj?.pesquisaId ||
+      raw?.pesquisa_id ||
+      raw?.pesquisaId ||
+      raw?.id ||
+      routeId ||
+      ''
+    )
+      .replace(/^task-/, '')
+      .trim();
+
+  const projectId =
+    user?.allowed_project_ids?.[0] ||
+    user?.allowedProjectIds?.[0] ||
+    user?.projectId ||
+    user?.project_id ||
+    user?.projeto_id ||
+    taskObj?.projectId ||
+    taskObj?.project_id ||
+    raw?.projectId ||
+    raw?.project_id ||
+    '';
+
+  const usuarioId =
+    user?.id ||
+    taskObj?.usuario_id ||
+    taskObj?.usuarioId ||
+    raw?.usuario_id ||
+    raw?.usuarioId ||
+    '';
+
+  const dataProgramada =
+    String(
+      taskObj?.data_programada ||
+      taskObj?.dataProgramada ||
+      raw?.data_programada ||
+      raw?.dataProgramada ||
+      taskObj?.data_vencimento ||
+      raw?.data_vencimento ||
+      new Date()
+        .toISOString()
+        .substring(0, 10)
+    )
+      .substring(0, 10);
+
+  return {
+    pesquisaId,
+    projectId:
+      String(projectId),
+    usuarioId:
+      String(usuarioId),
+    dataProgramada
+  };
+};
+
 export default function PesquisaAvulsaScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
-  const { theme } = useSettingsStore();
+  const settings = useSettingsStore() as any;
+  const { theme } = settings;
+  const language = settings.language || 'pt-BR';
   const isDark = theme === 'dark';
 
   const bg = isDark ? '#0B0F19' : '#F4F7FC';
@@ -272,21 +465,210 @@ export default function PesquisaAvulsaScreen() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [
+    generalRepeatableStatus,
+    setGeneralRepeatableStatus
+  ] = useState<any>(null);
   const [task, setTask] = useState<any>(null);
   const [perguntas, setPerguntas] = useState<any[]>([]);
   const [respostas, setRespostas] = useState<Record<string, any>>({});
   const [produtosDoMix, setProdutosDoMix] = useState<any[]>([]);
-  const photosRef = useRef<Record<string, { uri: string; base64: string }[]>>({});
+  const photosRef = useRef<Record<string, any[]>>({});
   const watermarkRef = useRef<View>(null);
   const watermarkResolverRef = useRef<{
     resolve: (value: { uri: string; base64: string }) => void;
     reject: (error: any) => void;
   } | null>(null);
-  const [watermarkJob, setWatermarkJob] = useState<{ uri: string; text: string } | null>(null);
+  const [watermarkJob, setWatermarkJob] = useState<{ uri: string; text: string; width: number; height: number } | null>(null);
+
+  const isStandaloneRepeatable =
+    useMemo(
+      () =>
+        repeatableTaskIsRepeatable(
+          task,
+          perguntas
+        ),
+      [task, perguntas]
+    );
+
+  const repeatableClosed =
+    generalRepeatableStatus
+      ?.closed === true ||
+    generalRepeatableStatus
+      ?.blocked === true;
+
+  const repeatableAtLimit =
+    isStandaloneRepeatable &&
+    generalRepeatableStatus?.max !== null &&
+    generalRepeatableStatus?.max !== undefined &&
+    Number(generalRepeatableStatus?.max) > 0 &&
+    Number(generalRepeatableStatus?.currentCount || 0) >=
+      Number(generalRepeatableStatus?.max);
+
+  const refreshGeneralRepeatableStatus =
+    async (
+      taskOverride?: any
+    ) => {
+      const currentTask =
+        taskOverride ||
+        task;
+
+      if (!currentTask) {
+        return null;
+      }
+
+      const authUser =
+        useAuthStore
+          .getState()
+          .user;
+
+      const ctx =
+        repeatableContext(
+          currentTask,
+          id,
+          authUser
+        );
+
+      if (
+        !ctx.projectId ||
+        !ctx.usuarioId ||
+        !ctx.pesquisaId
+      ) {
+        return null;
+      }
+
+      try {
+        const query =
+          new URLSearchParams();
+
+        query.set(
+          'projectId',
+          ctx.projectId
+        );
+
+        query.set(
+          'pesquisaId',
+          ctx.pesquisaId
+        );
+
+        query.set(
+          'usuarioId',
+          ctx.usuarioId
+        );
+
+        query.set(
+          'dataProgramada',
+          ctx.dataProgramada
+        );
+
+        const response =
+          await api(
+            '/coletas/general-repeatable-status?' +
+            query.toString()
+          );
+
+        if (!response.ok) {
+          return null;
+        }
+
+        const data =
+          await response.json();
+
+        const status = {
+          currentCount:
+            Number(
+              data?.currentCount || 0
+            ),
+
+          closed:
+            data?.closed === true,
+
+          blocked:
+            data?.blocked === true,
+
+          min:
+            Number(
+              data?.min || 1
+            ),
+
+          max:
+            data?.max === null ||
+            data?.max === undefined
+              ? null
+              : Number(data.max)
+        };
+
+        setGeneralRepeatableStatus(
+          status
+        );
+
+        return status;
+      } catch {
+        return null;
+      }
+    };
+
 
   useEffect(() => {
     if (id) loadTask();
   }, [id]);
+
+  useEffect(() => {
+    if (
+      !task ||
+      !isStandaloneRepeatable
+    ) {
+      return;
+    }
+
+    void (
+      async () => {
+        const status =
+          await refreshGeneralRepeatableStatus();
+
+        if (!status) {
+          return;
+        }
+
+        const localStatus =
+          status.closed
+            ? 'REALIZADA'
+            : Number(status.currentCount || 0) > 0
+              ? 'EM_ANDAMENTO'
+              : 'PENDENTE';
+
+        try {
+          const db =
+            await getDBConnection();
+
+          await db.runAsync(
+            `UPDATE other_tasks
+                SET status = ?,
+                    updated_at = ?
+              WHERE id = ?`,
+            [
+              localStatus,
+              new Date()
+                .toISOString(),
+              String(id)
+            ]
+          );
+
+          setTask(
+            (prev: any) => ({
+              ...prev,
+              status:
+                localStatus
+            })
+          );
+        } catch {}
+      }
+    )();
+  }, [
+    task?.id,
+    isStandaloneRepeatable
+  ]);
 
   const loadTask = async () => {
     try {
@@ -401,31 +783,83 @@ export default function PesquisaAvulsaScreen() {
     );
   };
 
+  // MOBILE_PHOTO_EVIDENCE_STRUCTURED_V3
   const buildWatermarkText = () => {
-    const now = new Date();
-    return `${task?.titulo || 'Pesquisa'} • ${now.toLocaleString('pt-BR')}`;
+    /*
+     * SOMENTE marca/contexto configurado.
+     *
+     * GPS e origem NÃO são desenhados na foto.
+     */
+    return (
+      `${task?.titulo || 'Pesquisa'} • ` +
+      `${new Date().toLocaleString()}`
+    );
   };
 
-  const applyWatermarkIfNeeded = async (asset: any) => {
-    const photoConfig = getTaskPhotoConfig(task);
+  const applyWatermarkIfNeeded = async (
+    asset: any
+  ) => {
+    const photoConfig =
+      getTaskPhotoConfig(task);
 
-    if (!photoConfig.watermarkPhotos) {
-      return {
-        uri: asset.uri,
-        base64: `data:image/jpeg;base64,${asset.base64}`,
-      };
+    const originalPhoto = {
+      uri:
+        asset.uri,
+
+      base64:
+        `data:image/jpeg;base64,${asset.base64}`,
+    };
+
+    /*
+     * Marca desligada:
+     * fotografia original permanece intacta.
+     */
+    if (
+      !photoConfig.watermarkPhotos
+    ) {
+      return originalPhoto;
     }
 
-    return new Promise<{ uri: string; base64: string }>((resolve, reject) => {
-      watermarkResolverRef.current = { resolve, reject };
+    const width =
+      Number(asset?.width) > 0
+        ? Number(asset.width)
+        : 1080;
+
+    const height =
+      Number(asset?.height) > 0
+        ? Number(asset.height)
+        : 1440;
+
+    /*
+     * Marca ligada:
+     * fotografia inteira +
+     * faixa adicional ABAIXO da fotografia.
+     *
+     * Nada é desenhado sobre os pixels originais.
+     */
+    return new Promise<{
+      uri: string;
+      base64: string;
+    }>((resolve, reject) => {
+      watermarkResolverRef.current = {
+        resolve,
+        reject
+      };
+
       setWatermarkJob({
-        uri: asset.uri,
-        text: buildWatermarkText(),
+        uri:
+          asset.uri,
+
+        text:
+          buildWatermarkText(),
+
+        width,
+        height,
       });
     });
   };
 
-  const handleWatermarkImageLoaded = async () => {
+const handleWatermarkImageLoaded = async () => {
     try {
       if (!watermarkRef.current || !watermarkResolverRef.current) return;
 
@@ -474,7 +908,11 @@ export default function PesquisaAvulsaScreen() {
     const requiredOrientation = getPhotoOrientationPolicy(pergunta, photoConfig.defaultOrientation);
     const orientationLabel = requiredOrientation === 'HORIZONTAL' ? 'horizontal/paisagem' : 'vertical/retrato';
 
-    const processAsset = async (asset: any) => {
+    const processAsset = async (
+      asset: any,
+      source: 'CAMERA' | 'GALLERY',
+      locationPromise?: Promise<any>
+    ) => {
       if (!asset?.uri || !asset?.base64) return;
 
       if (!assetMatchesOrientation(asset, requiredOrientation)) {
@@ -485,7 +923,71 @@ export default function PesquisaAvulsaScreen() {
         return;
       }
 
-      const photoPayload = await applyWatermarkIfNeeded(asset);
+      const gpsResult =
+        await (
+          locationPromise ||
+          getFastPhotoLocation()
+        );
+
+      const latitude =
+        Number(gpsResult?.latitude);
+
+      const longitude =
+        Number(gpsResult?.longitude);
+
+      if (
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(longitude)
+      ) {
+        Alert.alert(
+          t('photoGpsRequiredTitle'),
+          gpsResult?.error === 'FAKE_GPS'
+            ? t('photoGpsFakeDetected')
+            : t('photoGpsRequiredMessage')
+        );
+
+        return;
+      }
+
+      // PHOTO_ORIGINAL_NO_MOBILE_WATERMARK_V1
+      const rawBase64 =
+        String(asset.base64).startsWith('data:image')
+          ? String(asset.base64)
+          : `data:image/jpeg;base64,${asset.base64}`;
+
+      // PHOTO_STRUCTURED_METADATA_V1
+      const photoPayload = {
+        /*
+         * Preview usa diretamente o arquivo original.
+         */
+        uri:
+          asset.uri,
+
+        /*
+         * Payload para upload.
+         */
+        base64:
+          rawBase64,
+
+        url:
+          rawBase64,
+
+        /*
+         * Metadata técnica.
+         * Nada disso é desenhado sobre a fotografia.
+         */
+        origin:
+          source,
+
+        capturedAt:
+          new Date().toISOString(),
+
+        latitude:
+          latitude,
+
+        longitude:
+          longitude,
+      };
 
       if (!photosRef.current[targetKey]) photosRef.current[targetKey] = [];
 
@@ -505,8 +1007,15 @@ export default function PesquisaAvulsaScreen() {
         return;
       }
 
+      const locationPromise =
+        getFastPhotoLocation();
+
       const res = await ImagePicker.launchCameraAsync({ quality: 0.2, base64: true });
-      if (!res.canceled && res.assets?.[0]) await processAsset(res.assets[0]);
+      if (!res.canceled && res.assets?.[0]) await processAsset(
+          res.assets[0],
+          'CAMERA',
+          locationPromise
+        );
     };
 
     if (photoConfig.blockGallery || photoConfig.forceLiveCamera) {
@@ -525,6 +1034,9 @@ export default function PesquisaAvulsaScreen() {
             return;
           }
 
+          const locationPromise =
+            getFastPhotoLocation();
+
           const res = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ['images'],
             quality: 0.2,
@@ -534,7 +1046,11 @@ export default function PesquisaAvulsaScreen() {
 
           if (!res.canceled && res.assets) {
             for (const asset of res.assets) {
-              await processAsset(asset);
+              await processAsset(
+              asset,
+              'GALLERY',
+              locationPromise
+            );
             }
           }
         },
@@ -555,6 +1071,51 @@ export default function PesquisaAvulsaScreen() {
   };
 
   const handleSave = async () => {
+
+    if (
+      isStandaloneRepeatable &&
+      repeatableClosed
+    ) {
+      Alert.alert(
+        repeatableMobileText(
+          language,
+          'Formulário encerrado',
+          'Form closed',
+          'Formulario cerrado'
+        ),
+        repeatableMobileText(
+          language,
+          'Este formulário não aceita mais respostas neste período.',
+          'This form no longer accepts responses during this period.',
+          'Este formulario ya no acepta respuestas durante este período.'
+        )
+      );
+
+      return;
+    }
+
+    if (
+      isStandaloneRepeatable &&
+      repeatableAtLimit
+    ) {
+      Alert.alert(
+        repeatableMobileText(
+          language,
+          'Limite atingido',
+          'Limit reached',
+          'Límite alcanzado'
+        ),
+        repeatableMobileText(
+          language,
+          'O limite máximo de respostas foi atingido.',
+          'The maximum number of responses has been reached.',
+          'Se alcanzó el número máximo de respuestas.'
+        )
+      );
+
+      return;
+    }
+
     if (perguntas.length > 0 && Object.keys(respostas).length === 0) {
       Alert.alert('Atenção', 'Responda pelo menos uma pergunta.');
       return;
@@ -592,8 +1153,6 @@ export default function PesquisaAvulsaScreen() {
       const db = await getDBConnection();
       const now = new Date().toISOString();
 
-      await db.runAsync(`UPDATE other_tasks SET status = 'REALIZADA' WHERE id = ?`, [String(id)]);
-
       const respostasFormatadas: any[] = [];
 
       for (const pId of Object.keys(respostas).filter(k => !k.includes('::foto_'))) {
@@ -607,7 +1166,25 @@ export default function PesquisaAvulsaScreen() {
           if (fotos.length > 0) {
             respostasFormatadas.push({
               pergunta_id: pId,
-              valor: JSON.stringify(fotos.map(f => f.base64)),
+              valor: JSON.stringify(
+                fotos.map((f: any) => ({
+                  url:
+                    f.url ||
+                    f.base64,
+
+                  origin:
+                    f.origin,
+
+                  capturedAt:
+                    f.capturedAt,
+
+                  latitude:
+                    f.latitude,
+
+                  longitude:
+                    f.longitude,
+                }))
+              ),
             });
           }
           continue;
@@ -634,53 +1211,445 @@ export default function PesquisaAvulsaScreen() {
               const cleanOpt = String(op).replace(/[^a-zA-Z0-9]/g, '');
               respostasFormatadas.push({
                 pergunta_id: `${pId}_${cleanOpt}`,
-                valor: JSON.stringify(fotos.map(f => f.base64)),
+                valor: JSON.stringify(
+                fotos.map((f: any) => ({
+                  url:
+                    f.url ||
+                    f.base64,
+
+                  origin:
+                    f.origin,
+
+                  capturedAt:
+                    f.capturedAt,
+
+                  latitude:
+                    f.latitude,
+
+                  longitude:
+                    f.longitude,
+                }))
+              ),
               });
             }
           }
         }
       }
 
-      const pesquisaId = String(task?.pesquisa_id || safeParseObject(task?.task_raw_json)?.pesquisa_id || id).replace('task-', '');
+      // STANDALONE_TASK_DURABLE_SAVE_V1
+      const taskRaw =
+        safeParseObject(
+          task?.task_raw_json
+        );
+
+      const authUser =
+        useAuthStore
+          .getState()
+          .user;
+
+      const pesquisaId =
+        String(
+          task?.pesquisa_id ||
+          taskRaw?.pesquisa_id ||
+          taskRaw?.pesquisaId ||
+          taskRaw?.id ||
+          id
+        ).replace(
+          'task-',
+          ''
+        );
+
+      const projectId =
+        task?.projectId ||
+        task?.project_id ||
+        taskRaw?.projectId ||
+        taskRaw?.project_id ||
+        authUser
+          ?.allowed_project_ids
+          ?.[0] ||
+        authUser
+          ?.allowedProjectIds
+          ?.[0] ||
+        authUser?.projectId ||
+        authUser?.project_id ||
+        authUser?.projeto_id;
+
+      const usuarioId =
+        task?.usuario_id ||
+        task?.usuarioId ||
+        taskRaw?.usuario_id ||
+        taskRaw?.usuarioId ||
+        authUser?.id;
+
+      if (
+        !projectId ||
+        !usuarioId
+      ) {
+        throw new Error(
+          t(
+            'standaloneTaskSaveContextMissing'
+          )
+        );
+      }
+
+      const operationId =
+        `coleta_avulsa_${pesquisaId}_${Date.now()}`;
 
       const payload = {
-        projectId: task?.projectId || task?.project_id,
-        usuario_id: task?.usuario_id,
-        pesquisa_id: pesquisaId,
-        pesquisa_titulo: task?.titulo || 'Pesquisa Avulsa',
-        respostas: respostasFormatadas,
-        data_inicio: now,
-        data_fim: now,
-        loja_id: 'GERAL',
-        loja_nome: 'Tarefa Extra / Gestão',
-        origem: 'MOBILE_OFFLINE',
-        client_operation_id: `coleta_avulsa_${pesquisaId}_${Date.now()}`,
+        projectId:
+          String(projectId),
+        project_id:
+          String(projectId),
+
+        usuario_id:
+          String(usuarioId),
+
+        usuario_nome:
+          authUser?.nome ||
+          authUser?.name ||
+          taskRaw?.usuario_nome ||
+          '',
+
+        pesquisa_id:
+          pesquisaId,
+
+        pesquisa_titulo:
+          task?.titulo ||
+          taskRaw?.titulo ||
+          'Pesquisa Avulsa',
+
+        respostas:
+          respostasFormatadas,
+
+        status:
+          'COMPLETA',
+
+        data_inicio:
+          now,
+
+        data_fim:
+          now,
+
+        data_programada:
+          now.substring(0, 10),
+
+        loja_id:
+          'GERAL',
+
+        loja_nome:
+          task?.titulo ||
+          taskRaw?.titulo ||
+          taskRaw?.nome ||
+          'Tarefa Avulsa',
+
+        origem:
+          'MOBILE_OFFLINE',
+
+        tipo_registro:
+          'COLETA_AVULSA',
+
+        client_operation_id:
+          operationId,
       };
+
+      let collectionPersistedLocally =
+        false;
+
+      try {
+        const tableExists =
+          await db.getAllAsync(
+            `SELECT name
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = 'coletas'`
+          ) as any[];
+
+        if (
+          Array.isArray(tableExists) &&
+          tableExists.length > 0
+        ) {
+          await db.runAsync(
+            `INSERT OR REPLACE INTO coletas (
+              id,
+              project_id,
+              usuario_id,
+              loja_id,
+              visita_id,
+              pesquisa_id,
+              status,
+              data_inicio,
+              data_fim,
+              data_programada,
+              respostas_json,
+              raw_json,
+              pending_sync,
+              updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              operationId,
+              String(projectId),
+              String(usuarioId),
+              'GERAL',
+              null,
+              pesquisaId,
+              'COMPLETA',
+              now,
+              now,
+              now.substring(0, 10),
+              JSON.stringify(
+                respostasFormatadas
+              ),
+              JSON.stringify(
+                payload
+              ),
+              1,
+              now,
+            ]
+          );
+
+          collectionPersistedLocally =
+            true;
+        }
+      } catch (
+        localCollectionError: any
+      ) {
+        await addAppLog({
+          level:
+            'WARN',
+          module:
+            'PESQUISA_AVULSA',
+          action:
+            'LOCAL_COLLECTION_SAVE',
+          message:
+            'Falha ao persistir espelho local da coleta avulsa.',
+          metadata: {
+            pesquisaId,
+            clientOperationId:
+              operationId,
+            error:
+              localCollectionError
+                ?.message ||
+              String(
+                localCollectionError
+              ),
+          },
+        });
+      }
 
       try {
         await db.runAsync(
-          `INSERT INTO sync_queue (endpoint, payload, method, created_at) VALUES (?, ?, ?, ?)`,
-          ['/coletas', JSON.stringify(payload), 'POST', now]
+          `INSERT INTO sync_queue (
+            endpoint,
+            payload,
+            method,
+            created_at
+          ) VALUES (?, ?, ?, ?)`,
+          [
+            '/coletas',
+            JSON.stringify(
+              payload
+            ),
+            'POST',
+            now
+          ]
         );
-      } catch (queueError: any) {
+      } catch (
+        queueError: any
+      ) {
+        if (
+          collectionPersistedLocally
+        ) {
+          await db
+            .runAsync(
+              `DELETE FROM coletas
+                WHERE id = ?`,
+              [operationId]
+            )
+            .catch(
+              () => {}
+            );
+        }
+
         await addAppLog({
-          level: 'ERROR',
-          module: 'PESQUISA_AVULSA',
-          action: 'SYNC_QUEUE_COLETA',
-          message: 'Falha ao enfileirar coleta avulsa.',
+          level:
+            'ERROR',
+          module:
+            'PESQUISA_AVULSA',
+          action:
+            'SYNC_QUEUE_COLETA',
+          message:
+            'Falha ao enfileirar coleta avulsa.',
           metadata: {
-            endpoint: '/coletas',
+            endpoint:
+              '/coletas',
             pesquisaId,
-            clientOperationId: payload.client_operation_id,
-            error: queueError?.message || String(queueError),
+            clientOperationId:
+              operationId,
+            error:
+              queueError?.message ||
+              String(queueError),
           },
         });
 
-        throw new Error('Não foi possível colocar a pesquisa na fila de sincronização. Não saia da tela; tente salvar novamente em instantes.');
+        throw new Error(
+          t(
+            'standaloneTaskQueueError'
+          )
+        );
       }
 
-      globalSync();
-      Alert.alert('Sucesso', 'Pesquisa finalizada!', [{ text: 'OK', onPress: () => router.back() }]);
+      /*
+       * Só agora a tarefa pode ser marcada como realizada:
+       * - respostas montadas;
+       * - coleta local preservada;
+       * - fila de sincronização criada.
+       */
+      const nextTaskStatus =
+          isStandaloneRepeatable
+            ? 'EM_ANDAMENTO'
+            : 'REALIZADA';
+
+        await db.runAsync(
+          `UPDATE other_tasks
+              SET status = ?,
+                  updated_at = ?
+            WHERE id = ?`,
+          [
+            nextTaskStatus,
+            now,
+            String(id)
+          ]
+        );
+
+        setTask(
+          (prev: any) => ({
+            ...prev,
+            status:
+              nextTaskStatus
+          })
+        );
+
+      if (
+          isStandaloneRepeatable
+        ) {
+          // OMNI_REPEATABLE_SAVE_TO_TASKS_TAB_FINAL_V1
+          const previousRawForRoute =
+            repeatableObject(
+              task?.task_raw_json
+            );
+
+          const nextRepeatableCountForRoute =
+            Math.max(
+              1,
+              Number(
+                generalRepeatableStatus
+                  ?.currentCount ||
+                previousRawForRoute
+                  ?.omni_repeatable_current_count ||
+                previousRawForRoute
+                  ?.general_repeatable_current_count ||
+                0
+              ) + 1
+            );
+
+          const routeRaw = {
+            ...previousRawForRoute,
+
+            omni_repeatable_status:
+              'ABERTO',
+
+            omni_repeatable_current_count:
+              nextRepeatableCountForRoute,
+
+            general_repeatable_current_count:
+              nextRepeatableCountForRoute,
+
+            general_repeatable_closed:
+              false,
+
+            general_repeatable_blocked:
+              false
+          };
+
+          await db.runAsync(
+            `UPDATE other_tasks
+                SET status = 'EM_ANDAMENTO',
+                    task_raw_json = ?,
+                    updated_at = ?
+              WHERE id = ?`,
+            [
+              JSON.stringify(routeRaw),
+              now,
+              String(id)
+            ]
+          );
+
+          setTask(
+            (prev: any) => ({
+              ...prev,
+              status:
+                'EM_ANDAMENTO',
+              task_raw_json:
+                JSON.stringify(routeRaw)
+            })
+          );
+
+          setGeneralRepeatableStatus(
+            (prev: any) => ({
+              currentCount:
+                nextRepeatableCountForRoute,
+
+              closed:
+                false,
+
+              blocked:
+                false,
+
+              min:
+                prev?.min,
+
+              max:
+                prev?.max
+            })
+          );
+
+          setRespostas({});
+          photosRef.current = {};
+
+                  // OMNI_REPEATABLE_SKIP_IMMEDIATE_SYNC_V1
+                  // Nao sincronizar imediatamente apos finalizar uma resposta repetivel.
+                  // O sync instantaneo sobrescrevia o card com snapshot PENDENTE do backend.
+
+          router.replace({
+            pathname:
+              '/roteiro',
+            params: {
+              tab:
+                'TAREFAS',
+              refresh:
+                String(Date.now())
+            }
+          } as any);
+        } else {
+          void globalSync()
+            .catch(
+              () => {}
+            );
+
+          Alert.alert(
+            'Sucesso',
+            'Pesquisa finalizada!',
+            [
+              {
+                text:
+                  'OK',
+                onPress:
+                  () =>
+                    router.back()
+              }
+            ]
+          );
+        }
     } catch (error: any) {
       Alert.alert('Erro', error?.message || 'Falha ao salvar no banco local.');
     } finally {
@@ -688,7 +1657,279 @@ export default function PesquisaAvulsaScreen() {
     }
   };
 
-  const renderPhotoList = (targetKey: string, mini = false) => {
+    const handleCloseRepeatableForm =
+    () => {
+      if (
+        !isStandaloneRepeatable ||
+        repeatableClosed
+      ) {
+        return;
+      }
+
+      Alert.alert(
+        repeatableMobileText(
+          language,
+          'Encerrar formulário?',
+          'Close form?',
+          '¿Cerrar formulario?'
+        ),
+        repeatableMobileText(
+          language,
+          'Após encerrar, novas respostas não poderão ser registradas neste período.',
+          'After closing, no new responses can be registered during this period.',
+          'Después de cerrar, no se podrán registrar nuevas respuestas durante este período.'
+        ),
+        [
+          {
+            text:
+              repeatableMobileText(
+                language,
+                'Cancelar',
+                'Cancel',
+                'Cancelar'
+              ),
+            style:
+              'cancel'
+          },
+          {
+            text:
+              repeatableMobileText(
+                language,
+                'Encerrar',
+                'Close',
+                'Cerrar'
+              ),
+            style:
+              'destructive',
+            onPress:
+              async () => {
+                setClosing(true);
+
+                try {
+                  await globalSync();
+
+                  const authUser =
+                    useAuthStore
+                      .getState()
+                      .user;
+
+                  const ctx =
+                    repeatableContext(
+                      task,
+                      id,
+                      authUser
+                    );
+
+                  if (
+                    !ctx.projectId ||
+                    !ctx.usuarioId ||
+                    !ctx.pesquisaId
+                  ) {
+                    throw new Error(
+                      'GENERAL_REPEATABLE_CONTEXT_MISSING'
+                    );
+                  }
+
+                  const closePayload = {
+                    projectId:
+                      ctx.projectId,
+                    pesquisaId:
+                      ctx.pesquisaId,
+                    usuarioId:
+                      ctx.usuarioId,
+                    dataProgramada:
+                      ctx.dataProgramada,
+                    closed:
+                      true,
+                    status:
+                      'FECHADO',
+                    origem:
+                      'MOBILE'
+                  };
+
+                  // OMNI_REPEATABLE_CLOSE_QUEUE_AFTER_RESPONSES_SINGLE_SOURCE_V1
+                  // A fila garante ordem: respostas primeiro, fechamento depois.
+                  await addToSyncQueue(
+                    '/coletas/general-repeatable-close',
+                    closePayload,
+                    'POST'
+                  );
+
+                  await globalSync();
+
+                  const response =
+                    await api(
+                      '/coletas/general-repeatable-close',
+                      {
+                        method:
+                          'POST',
+                        headers: {
+                          'Content-Type':
+                            'application/json'
+                        },
+                        body:
+                          JSON.stringify(
+                            closePayload
+                          )
+                      }
+                    );
+
+                  if (!response.ok) {
+                    throw new Error(
+                      'GENERAL_REPEATABLE_CLOSE_FAILED'
+                    );
+                  }
+
+                  const db =
+                    await getDBConnection();
+
+                  // OMNI_REPEATABLE_CLOSE_RAW_LOCAL_SINGLE_SOURCE_V1
+                  const previousRawForClose =
+                    repeatableObject(
+                      task?.task_raw_json
+                    );
+
+                  const closedCountForRoute =
+                    Math.max(
+                      0,
+                      Number(
+                        generalRepeatableStatus?.currentCount ||
+                        previousRawForClose?.omni_repeatable_current_count ||
+                        previousRawForClose?.general_repeatable_current_count ||
+                        0
+                      )
+                    );
+
+                  const closedRawForRoute = {
+                    ...previousRawForClose,
+
+                    omni_repeatable_status:
+                      'FECHADO',
+
+                    general_repeatable_status:
+                      'FECHADO',
+
+                    omni_repeatable_current_count:
+                      closedCountForRoute,
+
+                    general_repeatable_current_count:
+                      closedCountForRoute,
+
+                    omni_repeatable_closed:
+                      true,
+
+                    general_repeatable_closed:
+                      true,
+
+                    general_repeatable_blocked:
+                      true
+                  };
+
+                  await db.runAsync(
+                    `UPDATE other_tasks
+                        SET status = 'REALIZADA',
+                            task_raw_json = ?,
+                            updated_at = ?
+                      WHERE id = ?`,
+                    [
+                      JSON.stringify(
+                        closedRawForRoute
+                      ),
+                      new Date()
+                        .toISOString(),
+                      String(id)
+                    ]
+                  );
+
+
+                  setGeneralRepeatableStatus(
+                    (prev: any) => ({
+                      currentCount:
+                        Number(
+                          prev
+                            ?.currentCount || 0
+                        ),
+                      closed:
+                        true,
+                      blocked:
+                        true,
+                      min:
+                        prev?.min,
+                      max:
+                        prev?.max
+                    })
+                  );
+
+                  setTask(
+                    (prev: any) => ({
+                      ...prev,
+                      status:
+                        'REALIZADA'
+                    })
+                  );
+
+                  Alert.alert(
+                    repeatableMobileText(
+                      language,
+                      'Formulário encerrado',
+                      'Form closed',
+                      'Formulario cerrado'
+                    ),
+                    repeatableMobileText(
+                      language,
+                      'O formulário foi encerrado com sucesso.',
+                      'The form was closed successfully.',
+                      'El formulario se cerró correctamente.'
+                    ),
+                    [
+                      {
+                        text:
+                          'OK',
+                        onPress:
+                          () =>
+                            router.replace({
+                            pathname:
+                              '/roteiro',
+                            params: {
+                              tab:
+                                'TAREFAS',
+                              refresh:
+                                String(Date.now())
+                            }
+                          } as any)
+                      }
+                    ]
+                  );
+                } catch (error) {
+                  console.error(
+                    '[GENERAL_REPEATABLE_CLOSE]',
+                    error
+                  );
+
+                  Alert.alert(
+                    repeatableMobileText(
+                      language,
+                      'Não foi possível encerrar',
+                      'Unable to close',
+                      'No se pudo cerrar'
+                    ),
+                    repeatableMobileText(
+                      language,
+                      'Verifique sua conexão e tente novamente.',
+                      'Check your connection and try again.',
+                      'Comprueba tu conexión e inténtalo de nuevo.'
+                    )
+                  );
+                } finally {
+                  setClosing(false);
+                }
+              }
+          }
+        ]
+      );
+    };
+
+const renderPhotoList = (targetKey: string, mini = false) => {
     const currentPhotos = Array.isArray(respostas[targetKey]) ? respostas[targetKey] : [];
 
     if (currentPhotos.length === 0) return null;
@@ -759,7 +2000,7 @@ export default function PesquisaAvulsaScreen() {
               const photoKey = `${pId}::foto_${opcao}`;
               return (
                 <View key={`${opcao}-${i}`}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.optionBtn, { backgroundColor: bg, borderColor: isSelected ? accent : border }]}
                     onPress={() => handleAnswer(pId, opcao)}
                   >
@@ -795,7 +2036,7 @@ export default function PesquisaAvulsaScreen() {
               const photoKey = `${pId}::foto_${opcao}`;
               return (
                 <View key={`${opcao}-${i}`}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.optionBtn, { backgroundColor: bg, borderColor: isSelected ? accent : border }]}
                     onPress={() => toggleMultiSelect(pId, opcao)}
                   >
@@ -842,7 +2083,16 @@ export default function PesquisaAvulsaScreen() {
         <View style={[styles.container, { backgroundColor: bg }]}>
             <View style={[styles.header, { backgroundColor: cardBg, borderBottomColor: border }]}>
                 <View style={styles.headerTop}>
-                    <TouchableOpacity onPress={() => router.back()}><ArrowLeft size={24} color={textPrimary} /></TouchableOpacity>
+                    <TouchableOpacity onPress={() => router.replace({
+                            pathname:
+                              '/roteiro',
+                            params: {
+                              tab:
+                                'TAREFAS',
+                              refresh:
+                                String(Date.now())
+                            }
+                          } as any)}><ArrowLeft size={24} color={textPrimary} /></TouchableOpacity>
                     <Text style={[styles.headerTitle, { color: textPrimary }]} numberOfLines={1}>{task?.titulo || 'Pesquisa'}</Text>
                     <View style={{ width: 24 }} />
                 </View>
@@ -863,19 +2113,131 @@ export default function PesquisaAvulsaScreen() {
 
             {watermarkJob && (
                 <View pointerEvents="none" style={styles.watermarkCanvas}>
-                    <View ref={watermarkRef} collapsable={false} style={styles.watermarkFrame}>
-                        <Image source={{ uri: watermarkJob.uri }} style={styles.watermarkImage} onLoad={handleWatermarkImageLoaded} />
-                        <View style={styles.watermarkOverlay}>
-                            <Text style={styles.watermarkText}>{watermarkJob.text}</Text>
-                        </View>
-                    </View>
+                    <View
+                    ref={watermarkRef}
+                    collapsable={false}
+                    style={{
+                      width: 1080,
+                      backgroundColor: '#000000',
+                      alignSelf: 'flex-start',
+                    }}
+                  >
+                    <Image
+                      source={{
+                        uri:
+                          watermarkJob.uri
+                      }}
+                      resizeMode="contain"
+                      style={{
+                        width: 1080,
+
+                        height:
+                          Math.max(
+                            1,
+                            Math.round(
+                              (
+                                watermarkJob.height /
+                                Math.max(
+                                  1,
+                                  watermarkJob.width
+                                )
+                              ) * 1080
+                            )
+                          ),
+
+                        backgroundColor:
+                          '#000000',
+                      }}
+                      onLoad={
+                        handleWatermarkImageLoaded
+                      }
+                    />
+
+                    {Boolean(
+                      watermarkJob.text
+                    ) && (
+                      <View
+                        style={{
+                          width: 1080,
+                          minHeight: 74,
+                          backgroundColor:
+                            '#0F172A',
+                          paddingHorizontal: 28,
+                          paddingVertical: 18,
+                          justifyContent:
+                            'center',
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color:
+                              '#FFFFFF',
+                            fontSize: 22,
+                            fontWeight:
+                              '700',
+                            lineHeight: 30,
+                          }}
+                        >
+                          {
+                            watermarkJob.text
+                          }
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                 </View>
             )}
 
             <View style={[styles.footer, { backgroundColor: cardBg, borderTopColor: border }]}>
-                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#10B981', opacity: saving ? 0.7 : 1 }]} onPress={handleSave} disabled={saving}>
-                    {saving ? <ActivityIndicator color="#FFF" /> : <><Save size={20} color="#FFF" /><Text style={styles.saveBtnText}>Finalizar</Text></>}
+                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#10B981', opacity: saving || closing || repeatableClosed || repeatableAtLimit ? 0.55 : 1 }]} onPress={handleSave} disabled={saving || closing || repeatableClosed || repeatableAtLimit}>
+                    {saving ? <ActivityIndicator color="#FFF" /> : <><Save size={20} color="#FFF" /><Text style={styles.saveBtnText}>
+                        {
+                          isStandaloneRepeatable
+                            ? repeatableMobileText(
+                                language,
+                                'Finalizar resposta',
+                                'Finish response',
+                                'Finalizar respuesta'
+                              )
+                            : 'Finalizar'
+                        }
+                      </Text></>}
                 </TouchableOpacity>
+
+                {isStandaloneRepeatable && !repeatableClosed && (
+                  <TouchableOpacity
+                    onPress={handleCloseRepeatableForm}
+                    disabled={saving || closing}
+                    style={{
+                      marginTop: 10,
+                      minHeight: 50,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: '#F59E0B',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: saving || closing ? 0.55 : 1
+                    }}
+                  >
+                    {closing
+                      ? <ActivityIndicator color="#F59E0B" />
+                      : (
+                          <Text
+                            style={{
+                              color: '#F59E0B',
+                              fontWeight: '800'
+                            }}
+                          >
+                            {repeatableMobileText(
+                              language,
+                              'Encerrar formulário',
+                              'Close form',
+                              'Cerrar formulario'
+                            )}
+                          </Text>
+                        )}
+                  </TouchableOpacity>
+                )}
             </View>
         </View>
     </KeyboardAvoidingView>

@@ -291,9 +291,36 @@ export default function LoginScreen() {
       </View>
 
       <View style={[styles.content, { paddingTop: Math.max(insets.top, 0) + 24, paddingBottom: Math.max(insets.bottom, 0) + 20 }]}>
-        <Animated.View entering={FadeInDown.delay(200)} style={styles.header}>
-          <Image source={{ uri: isDark ? 'https://fotos-smartsheep.s3.us-east-2.amazonaws.com/logos/pc7fhc.png' : 'https://fotos-smartsheep.s3.us-east-2.amazonaws.com/logos/logo_white.png' }} style={styles.mainLogo} resizeMode="contain" />
-          <Text style={[styles.subtitle, { color: externalTextColor }]}>Omni Field</Text>
+        <Animated.View
+          entering={FadeInDown.delay(200)}
+          style={styles.header}
+        >
+          <Image
+            source={
+              isDark
+                ? require('../../assets/images/smartsheep-login-symbol.png')
+                : require('../../assets/images/smartsheep-login-symbol-light.png')
+            }
+            style={styles.brandIcon}
+            resizeMode="contain"
+            accessibilityLabel="SmartSheep"
+          />
+
+          <Image
+            source={require('../../assets/images/smartsheep-logo-text.png')}
+            style={styles.mainLogo}
+            resizeMode="contain"
+            accessibilityLabel="SmartSheep"
+          />
+
+          <Text
+            style={[
+              styles.subtitle,
+              { color: externalTextColor }
+            ]}
+          >
+            Omni Field
+          </Text>
         </Animated.View>
 
         <Animated.View entering={FadeInUp.delay(400)} style={[styles.form, { backgroundColor: boxBgColor, borderColor }]}>
@@ -385,9 +412,26 @@ const styles = StyleSheet.create({
   flagText: { fontSize: 16 },
   langText: { fontSize: 12, fontWeight: '800' },
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
-  header: { alignItems: 'center', marginBottom: 34 },
-  mainLogo: { width: 240, height: 65, marginBottom: 8 },
-  subtitle: { fontSize: 13, fontWeight: '800', letterSpacing: 4, textTransform: 'uppercase' },
+  header: {
+    alignItems: 'center',
+    marginBottom: 26,
+  },
+  brandIcon: {
+    width: 86,
+    height: 86,
+    marginBottom: 16,
+  },
+  mainLogo: {
+    width: 270,
+    height: 54,
+    marginBottom: 10,
+  },
+  subtitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 5,
+    textTransform: 'uppercase',
+  },
   form: { padding: 28, borderRadius: 26, borderWidth: 1, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 16 },
   formHeader: { marginBottom: 24 },
   formTitle: { fontSize: 24, fontWeight: '900', textAlign: 'center' },

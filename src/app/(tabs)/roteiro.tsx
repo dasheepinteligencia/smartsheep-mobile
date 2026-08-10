@@ -29,6 +29,8 @@ import { getStatusColors } from '../../utils/statusUtils';
 import { globalSync } from '../../services/syncService';
 import { useSyncStore } from '../../store/useSyncStore';
 import { i18n } from '../../utils/i18n';
+import { api } from '../../services/api';
+import { useAuthStore } from '../../store/useAuthStore';
 
 // ============================================================================
 // 🎯 MOTOR DE ESTILO DE STORE INSIGHTS
@@ -739,7 +741,7 @@ export default function RoteiroScreen() {
 
       // Limpeza leve de tarefas que o backend já marcou como inválidas/canceladas.
       await db.runAsync(`
-        DELETE FROM other_tasks 
+        DELETE FROM other_tasks
         WHERE upper(status) IN (
           'NOT_VISITED',
           'CANCELADA',
@@ -753,6 +755,15 @@ export default function RoteiroScreen() {
       const resVisits = (await db.getAllAsync(`SELECT * FROM visits`)) as any[];
       const resTasks = (await db.getAllAsync(`SELECT * FROM other_tasks`)) as any[];
       const resPesquisas = (await db.getAllAsync(`SELECT * FROM pesquisas`)) as any[];
+
+            // OMNI_ROUTE_LOAD_COLETAS_REPEATABLE_FINAL_V1
+            let resColetas: any[] = [];
+
+            try {
+              resColetas = (await db.getAllAsync(`SELECT * FROM coletas`)) as any[];
+            } catch {
+              resColetas = [];
+            }
 
       const pesquisaById = resPesquisas.reduce((acc: Record<string, any>, pesquisa: any) => {
         acc[String(pesquisa.id)] = pesquisa;
@@ -794,8 +805,450 @@ export default function RoteiroScreen() {
 
       let consolidatedTasks: any[] = [];
 
+            // OMNI_ROUTE_REPEATABLE_HELPERS_FINAL_V1
+            const routeObject = (value: any): any => {
+              if (!value) return {};
+
+              if (
+                typeof value === 'object' &&
+                !Array.isArray(value)
+              ) {
+                return value;
+              }
+
+              if (typeof value === 'string') {
+                try {
+                  const parsed =
+                    JSON.parse(value);
+
+                  if (
+                    parsed &&
+                    typeof parsed === 'object' &&
+                    !Array.isArray(parsed)
+                  ) {
+                    return parsed;
+                  }
+                } catch {}
+              }
+
+              return {};
+            };
+
+            const routeTruthy = (value: any) => {
+              if (value === true) return true;
+
+              const normalized =
+                String(value || '')
+                  .trim()
+                  .toLowerCase();
+
+              return [
+                'true',
+                '1',
+                'sim',
+                'yes',
+                's',
+                'y'
+              ].includes(normalized);
+            };
+
+            const hasRepeatableFlag = (value: any): boolean => {
+              if (!value) return false;
+
+              if (typeof value === 'string') {
+                return hasRepeatableFlag(
+                  routeObject(value)
+                );
+              }
+
+              if (Array.isArray(value)) {
+                return value.some(
+                  hasRepeatableFlag
+                );
+              }
+
+              if (typeof value !== 'object') {
+                return false;
+              }
+
+              if (
+                routeTruthy(value?.repetivel) ||
+                routeTruthy(value?.repeatable)
+              ) {
+                return true;
+              }
+
+              return Object.values(value).some(
+                hasRepeatableFlag
+              );
+            };
+
+            const getStandaloneTaskPesquisaId = (task: any, raw: any) =>
+              String(
+                task?.pesquisa_id ||
+                task?.pesquisaId ||
+                raw?.pesquisa_id ||
+                raw?.pesquisaId ||
+                raw?.id ||
+                task?.id ||
+                ''
+              )
+                .replace(/^task-/, '')
+                .trim();
+
+              const countStandaloneResponses = (task: any, raw: any) => {
+                const taskPesquisaId =
+                  getStandaloneTaskPesquisaId(
+                    task,
+                    raw
+                  );
+
+                const taskId =
+                  String(task?.id || '')
+                    .trim();
+
+                if (
+                  !taskPesquisaId &&
+                  !taskId
+                ) {
+                  return 0;
+                }
+
+                return resColetas.filter((coleta: any) => {
+                  const payload =
+                    routeObject(
+                      coleta?.payload ||
+                      coleta?.payload_json ||
+                      coleta?.dados ||
+                      coleta?.raw_json ||
+                      coleta?.respostas_json
+                    );
+
+                  // OMNI_ROUTE_COUNT_ONLY_PENDING_LOCAL_COLETAS_V2
+                  // Para tarefas avulsas repetiveis, o card so pode somar coletas locais
+                  // ainda pendentes de sync. Coletas antigas com pending_sync=0 nao entram.
+                  const pendingSyncValue =
+                    coleta?.pending_sync ??
+                    coleta?.pendingSync ??
+                    payload?.pending_sync ??
+                    payload?.pendingSync ??
+                    0;
+
+                  const isPendingLocalColeta =
+                    pendingSyncValue === 1 ||
+                    pendingSyncValue === true ||
+                    String(pendingSyncValue).trim() === '1';
+
+                  if (!isPendingLocalColeta) {
+                    return false;
+                  }
+
+                  const coletaPesquisaId =
+                    String(
+                      coleta?.pesquisa_id ||
+                      coleta?.pesquisaId ||
+                      coleta?.pesquisa ||
+                      payload?.pesquisa_id ||
+                      payload?.pesquisaId ||
+                      ''
+                    )
+                      .replace(/^task-/, '')
+                      .trim();
+
+                  const coletaTaskId =
+                    String(
+                      coleta?.task_id ||
+                      coleta?.taskId ||
+                      payload?.task_id ||
+                      payload?.taskId ||
+                      ''
+                    )
+                      .trim();
+
+                  const tipoRegistro =
+                    String(
+                      coleta?.tipo_registro ||
+                      coleta?.tipoRegistro ||
+                      payload?.tipo_registro ||
+                      payload?.tipoRegistro ||
+                      ''
+                    )
+                      .toUpperCase();
+
+                  const lojaId =
+                    String(
+                      coleta?.loja_id ||
+                      coleta?.lojaId ||
+                      payload?.loja_id ||
+                      payload?.lojaId ||
+                      ''
+                    )
+                      .toUpperCase();
+
+                  const visitaId =
+                    String(
+                      coleta?.visita_id ||
+                      coleta?.visitaId ||
+                      payload?.visita_id ||
+                      payload?.visitaId ||
+                      ''
+                    )
+                      .trim()
+                      .toLowerCase();
+
+                  const statusColeta =
+                    String(
+                      coleta?.status ||
+                      payload?.status ||
+                      ''
+                    )
+                      .toUpperCase();
+
+                  const deleted =
+                    coleta?.deleted_at ||
+                    coleta?.deletedAt ||
+                    payload?.deleted_at ||
+                    payload?.deletedAt ||
+                    statusColeta === 'EXCLUIDA' ||
+                    statusColeta === 'EXCLUÍDA' ||
+                    statusColeta === 'DELETED';
+
+                  if (deleted) {
+                    return false;
+                  }
+
+                  const isStandalone =
+                    tipoRegistro.includes('AVULSA') ||
+                    lojaId === 'GERAL' ||
+                    !visitaId ||
+                    visitaId === 'null' ||
+                    visitaId === 'undefined';
+
+                  if (!isStandalone) {
+                    return false;
+                  }
+
+                  return (
+                    (!!taskPesquisaId && coletaPesquisaId === taskPesquisaId) ||
+                    (!!taskId && coletaTaskId === taskId)
+                  );
+                }).length;
+              };
+
+
+              // OMNI_ROUTE_BACKEND_REPEATABLE_STATUS_SINGLE_SOURCE_V1
+              const getRouteRepeatableContext = (task: any, raw: any) => {
+                const authUser = useAuthStore.getState().user || {};
+                const authCustom = routeObject(authUser?.custom_data || authUser?.customData);
+
+                const projectId = String(
+                  task?.projectId ||
+                  task?.project_id ||
+                  task?.projetoId ||
+                  task?.projeto_id ||
+                  raw?.projectId ||
+                  raw?.project_id ||
+                  raw?.projetoId ||
+                  raw?.projeto_id ||
+                  authUser?.projectId ||
+                  authUser?.project_id ||
+                  authUser?.projetoId ||
+                  authUser?.projeto_id ||
+                  authCustom?.projectId ||
+                  authCustom?.project_id ||
+                  authCustom?.projetoId ||
+                  authCustom?.projeto_id ||
+                  ''
+                ).trim();
+
+                const usuarioId = String(
+                  task?.usuarioId ||
+                  task?.usuario_id ||
+                  task?.userId ||
+                  task?.user_id ||
+                  raw?.usuarioId ||
+                  raw?.usuario_id ||
+                  raw?.userId ||
+                  raw?.user_id ||
+                  authUser?.id ||
+                  authUser?.usuarioId ||
+                  authUser?.usuario_id ||
+                  authUser?.userId ||
+                  authUser?.user_id ||
+                  ''
+                ).trim();
+
+                const pesquisaId = getStandaloneTaskPesquisaId(task, raw);
+
+                const dataProgramada = String(
+                  task?.dataProgramada ||
+                  task?.data_programada ||
+                  task?.data_vencimento ||
+                  raw?.dataProgramada ||
+                  raw?.data_programada ||
+                  raw?.data_vencimento ||
+                  raw?.data_fim ||
+                  todayStr
+                ).substring(0, 10);
+
+                return {
+                  projectId,
+                  usuarioId,
+                  pesquisaId,
+                  dataProgramada
+                };
+              };
+
+              const fetchRouteRepeatableStatus = async (task: any, raw: any) => {
+                const ctx = getRouteRepeatableContext(task, raw);
+
+                if (!ctx.projectId || !ctx.usuarioId || !ctx.pesquisaId) {
+                  return null;
+                }
+
+                try {
+                  const query = new URLSearchParams();
+
+                  query.set('projectId', ctx.projectId);
+                  query.set('pesquisaId', ctx.pesquisaId);
+                  query.set('usuarioId', ctx.usuarioId);
+                  query.set('dataProgramada', ctx.dataProgramada);
+
+                  const response = await api(
+                    '/coletas/general-repeatable-status?' + query.toString()
+                  );
+
+                  if (!response.ok) {
+                    return null;
+                  }
+
+                  const data = await response.json();
+
+                  return {
+                    currentCount: Number(data?.currentCount || 0),
+                    closed: data?.closed === true,
+                    blocked: data?.blocked === true
+                  };
+                } catch {
+                  return null;
+                }
+              };
+
+              const backendRepeatableStatusByTaskId: Record<string, any> = {};
+
+              for (const task of resTasks) {
+                const raw = safeParseJson(task.task_raw_json, {});
+
+                const isRepeatableCandidate =
+                  hasRepeatableFlag(task) ||
+                  hasRepeatableFlag(raw) ||
+                  hasRepeatableFlag(
+                    pesquisaById[
+                      getStandaloneTaskPesquisaId(task, raw)
+                    ]
+                  );
+
+                if (!isRepeatableCandidate) {
+                  continue;
+                }
+
+                const backendStatus = await fetchRouteRepeatableStatus(task, raw);
+
+                if (backendStatus) {
+                  backendRepeatableStatusByTaskId[String(task.id)] = backendStatus;
+                }
+              }
+
       resTasks.forEach((task) => {
         const raw = safeParseJson(task.task_raw_json, {});
+
+                // OMNI_ROUTE_STATUS_FROM_COLETAS_FINAL_V1
+                const standaloneResponsesFromColetas =
+                  countStandaloneResponses(
+                    task,
+                    raw
+                  );
+
+                  // OMNI_ROUTE_REPEATABLE_COUNTER_FALLBACK_V3
+                  // Fonte unica do card: backend + respostas locais ainda pendentes.
+                  const backendRepeatableStatus =
+                    backendRepeatableStatusByTaskId[String(task.id)] || null;
+
+                  const backendRepeatableResponseCount =
+                    Number(backendRepeatableStatus?.currentCount || 0);
+
+                  const originalStandaloneStatusForCount =
+                    normalizeStatus(
+                      task.status ||
+                      raw.status ||
+                      'PENDENTE'
+                    );
+
+                  const rawRepeatableResponseCount =
+                    Number(
+                      task?.omni_repeatable_current_count ??
+                      raw?.omni_repeatable_current_count ??
+                      task?.general_repeatable_current_count ??
+                      raw?.general_repeatable_current_count ??
+                      task?.repeatableCurrentCount ??
+                      raw?.repeatableCurrentCount ??
+                      task?.currentCount ??
+                      raw?.currentCount ??
+                      0
+                    ) || 0;
+
+                  const rawRepeatableCountAllowed =
+                    originalStandaloneStatusForCount !== 'PENDENTE'
+                      ? rawRepeatableResponseCount
+                      : 0;
+
+                  const standaloneResponseCount =
+                    Math.max(
+                      backendRepeatableResponseCount + standaloneResponsesFromColetas,
+                      rawRepeatableCountAllowed,
+                      backendRepeatableResponseCount,
+                      standaloneResponsesFromColetas
+                    );
+
+
+              const isRepeatableForRoute =
+                hasRepeatableFlag(task) ||
+                hasRepeatableFlag(raw) ||
+                hasRepeatableFlag(
+                  pesquisaById[
+                    getStandaloneTaskPesquisaId(
+                      task,
+                      raw
+                    )
+                  ]
+                ) ||
+                standaloneResponseCount > 0;
+
+              const rawClosed =
+                backendRepeatableStatus?.closed === true ||
+                raw?.omni_repeatable_closed === true ||
+                raw?.general_repeatable_closed === true ||
+                String(raw?.omni_repeatable_status || '').toUpperCase() === 'FECHADO' ||
+                String(raw?.general_repeatable_status || '').toUpperCase() === 'FECHADO';
+
+              const originalStandaloneStatus =
+                normalizeStatus(
+                  task.status ||
+                  raw.status ||
+                  'PENDENTE'
+                );
+
+              const taskStatusForRoute =
+                isRepeatableForRoute &&
+                (
+                  rawClosed ||
+                  isDoneStatus(originalStandaloneStatus)
+                )
+                  ? 'REALIZADA'
+                  : isRepeatableForRoute &&
+                    standaloneResponseCount > 0
+                    ? 'EM_ANDAMENTO'
+                    : originalStandaloneStatus;
 
         if (isSystemConfigTask(task, raw)) {
           return;
@@ -813,10 +1266,14 @@ export default function RoteiroScreen() {
           ...raw,
           id: task.id,
           titulo: task.titulo || raw.titulo || raw.nome || '',
-          status: normalizeStatus(task.status || raw.status || 'PENDENTE'),
+          status: taskStatusForRoute,
           frequencia: task.frequencia || raw.frequencia || '',
           data_vencimento: task.data_vencimento || raw.data_vencimento || raw.data_fim || raw.deadline || '',
           isLinkedToVisit: false,
+                omni_repeatable_current_count: standaloneResponseCount,
+                general_repeatable_current_count: standaloneResponseCount,
+                omni_repeatable_closed: rawClosed,
+                general_repeatable_closed: rawClosed,
           _baseDate: baseDate,
         });
       });
@@ -1201,7 +1658,46 @@ export default function RoteiroScreen() {
   const renderTaskCard = ({ item }: { item: any }) => {
     const isDone = isDoneStatus(item.status);
     const isVisitSurvey = item.isLinkedToVisit === true;
-    const colors = getStatusColors(item.status, !isDone);
+    // OMNI_OPEN_REPEATABLE_BADGE_V3
+    const rawRepeatableResponsesCount =
+      Number(
+        item.omni_repeatable_current_count ??
+        item.general_repeatable_current_count ??
+        item.repeatableCurrentCount ??
+        item.currentCount ??
+        0
+      );
+
+    const baseTaskStatus =
+      normalizeStatus(item.status);
+
+    const displayTaskStatus =
+      isDone
+        ? baseTaskStatus
+        : rawRepeatableResponsesCount > 0
+          ? 'EM_ANDAMENTO'
+          : baseTaskStatus;
+
+    const isOpenRepeatable =
+      !isVisitSurvey &&
+      !isDone &&
+      ['EM_ANDAMENTO', 'INICIADA'].includes(
+        displayTaskStatus
+      );
+
+    const repeatableResponsesCount =
+      rawRepeatableResponsesCount;
+
+    // OMNI_ROUTE_BADGE_OPEN_CLOSED_FINAL_V1
+    const isClosedRepeatable =
+      !isVisitSurvey &&
+      isDone &&
+      repeatableResponsesCount > 0;
+
+    const colors = getStatusColors(
+      displayTaskStatus,
+      false
+    );
     const traffic = getTrafficLightProps(item);
     const TrafficIcon = traffic.icon;
 
@@ -1246,9 +1742,25 @@ export default function RoteiroScreen() {
             <Text style={[styles.badgeText, { color: disabledCard ? textSecondary : colors.text }]}>
               {isVisitSurvey
                 ? rt('taskInStore', language)
-                : isDone
-                  ? i18n.t('statusCompleted')
-                  : i18n.t('statusPending')}
+                : isClosedRepeatable
+                  ? (
+                      language === 'en-US'
+                        ? `Closed - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'response' : 'responses'}`
+                        : language === 'es-ES'
+                          ? `Cerrado - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'respuesta' : 'respuestas'}`
+                          : `Fechado - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'resposta' : 'respostas'}`
+                    )
+                  : isDone
+                    ? i18n.t('statusCompleted')
+                    : isOpenRepeatable
+                      ? (
+                          language === 'en-US'
+                            ? `Open - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'response' : 'responses'}`
+                            : language === 'es-ES'
+                              ? `Abierto - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'respuesta' : 'respuestas'}`
+                              : `Aberto - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'resposta' : 'respostas'}`
+                        )
+                      : i18n.t('statusPending')}
             </Text>
           </View>
 
