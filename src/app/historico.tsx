@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -27,7 +27,6 @@ import {
   ChevronRight,
   TrendingUp,
   ListChecks,
-  FileText,
   SearchCheck,
 } from 'lucide-react-native';
 
@@ -392,6 +391,481 @@ const safeParseJson = (value: any, fallback: any = {}) => {
     return fallback;
   }
 };
+
+
+// MOBILE_HISTORY_TASK_DETAIL_RESPONSES_ISOLATED_V1
+//
+// Esta funcionalidade NÃO participa do loadHistorico.
+// Só é executada depois que o usuário clica em uma tarefa.
+
+const taskDetailStringId = (
+  value: any
+) => {
+  const normalized =
+    String(
+      value ?? ''
+    ).trim();
+
+  if (
+    !normalized ||
+    normalized === 'null' ||
+    normalized === 'undefined'
+  ) {
+    return '';
+  }
+
+  return normalized;
+};
+
+
+// MOBILE_HISTORY_TASK_RESPONSE_IDS_V2
+
+const getTaskDetailSurveyIdCandidates = (
+  task: any
+) => {
+  const raw =
+    task?.raw ||
+    {};
+
+  const survey =
+    task?.kind === 'VISITA'
+      ? raw?.survey
+      : raw?.template;
+
+  const coletaRaw =
+    safeParseJson(
+      raw?.coleta?.raw_json,
+      {}
+    );
+
+  const values = [
+    /*
+     * A coleta que efetivamente determinou
+     * o status da tarefa é a primeira fonte.
+     */
+    raw?.coleta?.pesquisa_id,
+    raw?.coleta?.pesquisaId,
+    raw?.coleta?.survey_id,
+    raw?.coleta?.surveyId,
+
+    coletaRaw?.pesquisa_id,
+    coletaRaw?.pesquisaId,
+    coletaRaw?.survey_id,
+    coletaRaw?.surveyId,
+
+    /*
+     * Depois usamos a definição da pesquisa.
+     */
+    survey?.pesquisa_id,
+    survey?.pesquisaId,
+    survey?.survey_id,
+    survey?.surveyId,
+    survey?.id
+  ]
+    .map(
+      taskDetailStringId
+    )
+    .filter(Boolean);
+
+  return Array.from(
+    new Set(values)
+  );
+};
+
+
+const getTaskDetailSurveyId = (
+  task: any
+) => {
+  return (
+    getTaskDetailSurveyIdCandidates(
+      task
+    )[0] ||
+    ''
+  );
+};
+
+
+const getTaskDetailAnswers = (
+  coleta: any
+) => {
+  if (!coleta) {
+    return [];
+  }
+
+  const raw =
+    safeParseJson(
+      coleta?.raw_json,
+      {}
+    );
+
+  const candidates = [
+    coleta?.respostas,
+    coleta?.respostas_json,
+    coleta?.answers,
+
+    raw?.respostas,
+    raw?.respostas_json,
+    raw?.answers
+  ];
+
+  for (
+    const candidate of candidates
+  ) {
+    if (
+      Array.isArray(candidate)
+    ) {
+      return candidate;
+    }
+
+    if (
+      candidate &&
+      typeof candidate === 'object'
+    ) {
+      return Object.entries(
+        candidate
+      ).map(
+        ([key, value]) => ({
+          pergunta_id:
+            key,
+
+          valor:
+            value
+        })
+      );
+    }
+
+    if (
+      typeof candidate === 'string'
+    ) {
+      try {
+        const parsed =
+          JSON.parse(
+            candidate
+          );
+
+        if (
+          Array.isArray(parsed)
+        ) {
+          return parsed;
+        }
+
+        if (
+          parsed &&
+          typeof parsed === 'object'
+        ) {
+          return Object.entries(
+            parsed
+          ).map(
+            ([key, value]) => ({
+              pergunta_id:
+                key,
+
+              valor:
+                value
+            })
+          );
+        }
+      } catch {}
+    }
+  }
+
+  return [];
+};
+
+
+const getTaskDetailCollectionDate = (
+  coleta: any
+) => {
+  const raw =
+    safeParseJson(
+      coleta?.raw_json,
+      {}
+    );
+
+  return formatToYMD(
+    coleta?.data_programada ||
+    coleta?.dataProgramada ||
+
+    coleta?.data_fim ||
+    coleta?.dataFim ||
+
+    coleta?.data_inicio ||
+    coleta?.dataInicio ||
+
+    coleta?.updated_at ||
+    coleta?.updatedAt ||
+
+    raw?.data_programada ||
+    raw?.dataProgramada ||
+
+    raw?.data_fim ||
+    raw?.dataFim ||
+
+    raw?.data_inicio ||
+    raw?.dataInicio ||
+
+    raw?.updated_at ||
+    raw?.updatedAt
+  );
+};
+
+
+const getTaskDetailStoreId = (
+  value: any
+) => {
+  const raw =
+    safeParseJson(
+      value?.raw_json,
+      {}
+    );
+
+  return taskDetailStringId(
+    value?.loja_id ||
+    value?.lojaId ||
+    value?.store_id ||
+    value?.storeId ||
+
+    raw?.loja_id ||
+    raw?.lojaId ||
+    raw?.store_id ||
+    raw?.storeId
+  );
+};
+
+
+const getTaskDetailVisitIds = (
+  value: any
+) => {
+  const raw =
+    safeParseJson(
+      value?.raw_json,
+      {}
+    );
+
+  return [
+    value?.id,
+
+    value?.registroVisitaId,
+    value?.registro_visita_id,
+
+    value?.visita_id,
+    value?.visitaId,
+
+    value?.visitaAgendadaId,
+    value?.visita_agendada_id,
+
+    raw?.registroVisitaId,
+    raw?.registro_visita_id,
+
+    raw?.visita_id,
+    raw?.visitaId,
+
+    raw?.visitaAgendadaId,
+    raw?.visita_agendada_id
+  ]
+    .map(
+      taskDetailStringId
+    )
+    .filter(Boolean);
+};
+
+
+const flattenTaskDetailQuestions = (
+  value: any
+) => {
+  const result: any[] =
+    [];
+
+  const walk =
+    (node: any) => {
+      if (!node) {
+        return;
+      }
+
+      if (
+        Array.isArray(node)
+      ) {
+        node.forEach(
+          walk
+        );
+
+        return;
+      }
+
+      if (
+        typeof node !== 'object'
+      ) {
+        return;
+      }
+
+      const children =
+        node?.perguntas ||
+        node?.questions ||
+        node?.questoes ||
+        node?.children ||
+        node?.itens;
+
+      if (
+        node?.id &&
+        !Array.isArray(
+          children
+        ) &&
+        (
+          node?.texto ||
+          node?.titulo ||
+          node?.pergunta ||
+          node?.label ||
+          node?.nome ||
+          node?.tipo
+        )
+      ) {
+        result.push(
+          node
+        );
+      }
+
+      if (
+        Array.isArray(
+          children
+        )
+      ) {
+        children.forEach(
+          walk
+        );
+      }
+    };
+
+  walk(value);
+
+  return result;
+};
+
+
+const getTaskDetailQuestionMap = (
+  task: any,
+  definitionSource?: any
+) => {
+  const raw =
+    task?.raw ||
+    {};
+
+  const fallbackSource =
+    task?.kind === 'VISITA'
+      ? raw?.survey
+      : raw?.template;
+
+  const source =
+    definitionSource ||
+    fallbackSource;
+
+  const map =
+    new Map<string, any>();
+
+  flattenTaskDetailQuestions(
+    source
+  ).forEach(
+    (question: any) => {
+      const id =
+        taskDetailStringId(
+          question?.id ||
+          question?.pergunta_id ||
+          question?.perguntaId
+        );
+
+      if (id) {
+        map.set(
+          id,
+          question
+        );
+      }
+    }
+  );
+
+  return map;
+};
+
+
+const formatTaskDetailAnswer = (
+  value: any
+) => {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ''
+  ) {
+    return '—';
+  }
+
+  if (
+    Array.isArray(value)
+  ) {
+    return value
+      .map(String)
+      .join(', ');
+  }
+
+  const text =
+    String(value);
+
+  try {
+    const parsed =
+      JSON.parse(text);
+
+    if (
+      Array.isArray(parsed)
+    ) {
+      const photos =
+        parsed.filter(
+          (item: any) =>
+            item &&
+            typeof item === 'object' &&
+            (
+              item?.url ||
+              item?.uri
+            )
+        );
+
+      if (
+        parsed.length > 0 &&
+        photos.length ===
+        parsed.length
+      ) {
+        return `${parsed.length} foto${parsed.length === 1 ? '' : 's'} enviada${parsed.length === 1 ? '' : 's'}`;
+      }
+
+      return parsed
+        .map(
+          (item: any) =>
+            typeof item === 'object'
+              ? (
+                  item?.label ||
+                  item?.value ||
+                  JSON.stringify(
+                    item
+                  )
+                )
+              : String(item)
+        )
+        .join(', ');
+    }
+
+    if (
+      parsed &&
+      typeof parsed === 'object'
+    ) {
+      return String(
+        parsed?.label ||
+        parsed?.value ||
+        JSON.stringify(
+          parsed
+        )
+      );
+    }
+  } catch {}
+
+  return text;
+};
+
 
 const safeNumber = (value: any) => {
   const n = Number(value || 0);
@@ -1355,6 +1829,1263 @@ export default function HistoricoScreen() {
   const [selectedVisit, setSelectedVisit] = useState<VisitHistoryItem | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskHistoryItem | null>(null);
 
+  const [
+    selectedTaskResponses,
+    setSelectedTaskResponses
+  ] = useState<any[]>([]);
+
+  // MOBILE_HISTORY_TASK_QUESTION_DEFINITION_V2
+  const [
+    selectedTaskQuestionDefinition,
+    setSelectedTaskQuestionDefinition
+  ] = useState<any>(null);
+
+  useEffect(() => {
+    let cancelled =
+      false;
+
+    const loadSelectedTaskResponses =
+      async () => {
+
+        if (!selectedTask) {
+          if (!cancelled) {
+            setSelectedTaskResponses(
+              []
+            );
+
+            setSelectedTaskQuestionDefinition(
+              null
+            );
+          }
+
+          return;
+        }
+
+        try {
+          const db =
+            await getDBConnection();
+
+          // MOBILE_HISTORY_REPEATABLE_ALL_RESPONSES_V2
+          // MOBILE_HISTORY_TASK_REAL_SURVEY_IDS_V3
+          const surveyIds =
+            Array.from(
+              new Set(
+                getTaskDetailSurveyIdCandidates(
+                  selectedTask
+                )
+                  .flatMap(
+                    (value: any) => {
+                      const rawId =
+                        taskDetailStringId(
+                          value
+                        );
+
+                      if (!rawId) {
+                        return [];
+                      }
+
+                      const cleanId =
+                        rawId.startsWith(
+                          'task-'
+                        )
+                          ? rawId.slice(5)
+                          : rawId;
+
+                      return [
+                        rawId,
+                        cleanId
+                      ];
+                    }
+                  )
+                  .filter(Boolean)
+              )
+            );
+
+          const surveyId =
+            surveyIds[0] ||
+            '';
+
+          const taskRaw =
+            selectedTask?.raw ||
+            {};
+
+          /*
+           * A coleta que o Histórico já encontrou continua
+           * sendo fallback, mas não é mais a única fonte.
+           */
+          const baseCollections =
+            taskRaw?.coleta
+              ? [
+                  taskRaw.coleta
+                ]
+              : [];
+
+          let localCollections:
+            any[] = [];
+
+          /*
+           * Busca TODAS as coletas relacionadas a qualquer
+           * ID válido desta pesquisa.
+           *
+           * Isto é essencial para pesquisas repetitivas:
+           *
+           * Envio 1
+           * Envio 2
+           * Envio 3
+           * ...
+           */
+          // MOBILE_HISTORY_TASK_SERVER_RESPONSES_V3
+          let serverCollections:
+            any[] = [];
+
+          if (
+            surveyIds.length >
+            0
+          ) {
+
+            /*
+             * LOCAL:
+             * mantém respostas ainda não sincronizadas.
+             */
+            try {
+              const placeholders =
+                surveyIds
+                  .map(() => '?')
+                  .join(',');
+
+              localCollections =
+                await db.getAllAsync(
+                  `
+                  SELECT *
+                  FROM coletas
+                  WHERE pesquisa_id IN (${placeholders})
+                  ORDER BY
+                    COALESCE(
+                      data_fim,
+                      updated_at,
+                      data_inicio
+                    ) DESC
+                  `,
+                  surveyIds
+                );
+
+            } catch (collectionError: any) {
+              console.log(
+                '[Histórico] detalhe: coletas locais não disponíveis:',
+                collectionError?.message ||
+                collectionError
+              );
+
+              localCollections =
+                [];
+            }
+
+
+            /*
+             * SERVIDOR:
+             * mesma fonte autoritativa usada pelo
+             * loadHistorico().
+             */
+            const currentProjectId =
+              getMainProjectId(
+                user
+              );
+
+            if (currentProjectId) {
+              try {
+                const response =
+                  await api(
+                    `/coletas/${currentProjectId}?t=${Date.now()}`,
+                    {
+                      method:
+                        'GET'
+                    }
+                  );
+
+                if (response.ok) {
+                  const payload =
+                    await response.json();
+
+                  const allServerCollections =
+                    Array.isArray(
+                      payload
+                    )
+                      ? payload
+                      : safeArray(
+                          payload?.data ||
+                          payload?.coletas ||
+                          payload?.items
+                        );
+
+                  serverCollections =
+                    allServerCollections
+                      .map(
+                        (item: any) => {
+                          const embedded =
+                            safeParseJson(
+                              item?.raw_json ||
+                              item?.rawJson ||
+                              item?.payload ||
+                              item?.payload_json,
+                              {}
+                            );
+
+                          return {
+                            ...embedded,
+                            ...item
+                          };
+                        }
+                      )
+                      .filter(
+                        (item: any) => {
+                          const embedded =
+                            safeParseJson(
+                              item?.raw_json ||
+                              item?.rawJson ||
+                              item?.payload ||
+                              item?.payload_json,
+                              {}
+                            );
+
+                          const itemSurveyId =
+                            taskDetailStringId(
+                              item?.pesquisa_id ||
+                              item?.pesquisaId ||
+                              item?.survey_id ||
+                              item?.surveyId ||
+
+                              embedded?.pesquisa_id ||
+                              embedded?.pesquisaId ||
+                              embedded?.survey_id ||
+                              embedded?.surveyId
+                            );
+
+                          const cleanItemSurveyId =
+                            itemSurveyId.startsWith(
+                              'task-'
+                            )
+                              ? itemSurveyId.slice(5)
+                              : itemSurveyId;
+
+                          return (
+                            surveyIds.includes(
+                              itemSurveyId
+                            ) ||
+                            surveyIds.includes(
+                              cleanItemSurveyId
+                            )
+                          );
+                        }
+                      );
+                }
+
+              } catch (serverError: any) {
+                console.log(
+                  '[Histórico] detalhe: coletas do servidor não disponíveis:',
+                  serverError?.message ||
+                  serverError
+                );
+
+                serverCollections =
+                  [];
+              }
+            }
+
+
+            /*
+             * Merge:
+             *
+             * local primeiro;
+             * servidor depois;
+             * servidor vence quando a chave coincide.
+             */
+            const collectionMap =
+              new Map<string, any>();
+
+            const getCollectionKey =
+              (
+                item: any,
+                origin: string,
+                index: number
+              ) => {
+                const embedded =
+                  safeParseJson(
+                    item?.raw_json ||
+                    item?.rawJson ||
+                    item?.payload ||
+                    item?.payload_json,
+                    {}
+                  );
+
+                const realId =
+                  taskDetailStringId(
+                    item?.id ||
+                    item?.coleta_id ||
+                    item?.coletaId ||
+
+                    item?.client_operation_id ||
+                    item?.clientOperationId ||
+
+                    embedded?.id ||
+                    embedded?.coleta_id ||
+                    embedded?.coletaId ||
+
+                    embedded?.client_operation_id ||
+                    embedded?.clientOperationId
+                  );
+
+                if (realId) {
+                  return `ID:${realId}`;
+                }
+
+                return `${origin}:${index}`;
+              };
+
+
+            localCollections.forEach(
+              (
+                item: any,
+                index: number
+              ) => {
+                collectionMap.set(
+                  getCollectionKey(
+                    item,
+                    'LOCAL',
+                    index
+                  ),
+                  item
+                );
+              }
+            );
+
+
+            serverCollections.forEach(
+              (
+                item: any,
+                index: number
+              ) => {
+                collectionMap.set(
+                  getCollectionKey(
+                    item,
+                    'SERVER',
+                    index
+                  ),
+                  item
+                );
+              }
+            );
+
+
+            localCollections =
+              Array.from(
+                collectionMap.values()
+              );
+
+
+            console.log(
+              '[Histórico] detalhe da tarefa: coletas consolidadas',
+              {
+                surveyIds,
+                local:
+                  localCollections.length -
+                  serverCollections.length,
+
+                server:
+                  serverCollections.length,
+
+                merged:
+                  localCollections.length
+              }
+            );
+          }
+
+
+          /*
+           * Carrega a definição COMPLETA da pesquisa somente
+           * para descobrir o label real das perguntas.
+           *
+           * Não interfere na lista de tarefas nem no histórico.
+           */
+          let questionDefinition:
+            any = null;
+
+
+          // MOBILE_HISTORY_EXACT_SERVER_QUESTION_MAPPING_V5
+          //
+          // Fonte autoritativa:
+          //
+          // GET /pesquisas/:projectId
+          //
+          // A API devolve:
+          //
+          // pesquisa.perguntas[
+          //   {
+          //     id,
+          //     texto,
+          //     ...
+          //   }
+          // ]
+          //
+          // O PostgreSQL já confirmou:
+          //
+          // RespostaColeta.pergunta_id
+          //     ===
+          // PerguntaPesquisa.id
+          //
+          // Portanto NÃO existe resolução por ordem/posição.
+          try {
+            const questionProjectId =
+              getMainProjectId(
+                user
+              );
+
+            if (
+              questionProjectId &&
+              surveyIds.length > 0
+            ) {
+              const surveyResponse =
+                await api(
+                  `/pesquisas/${questionProjectId}?t=${Date.now()}`,
+                  {
+                    method:
+                      'GET'
+                  }
+                );
+
+              if (surveyResponse.ok) {
+                const surveyPayload =
+                  await surveyResponse.json();
+
+                const serverSurveys =
+                  Array.isArray(
+                    surveyPayload
+                  )
+                    ? surveyPayload
+                    : Array.isArray(
+                        surveyPayload?.data
+                      )
+                      ? surveyPayload.data
+                      : Array.isArray(
+                          surveyPayload?.pesquisas
+                        )
+                        ? surveyPayload.pesquisas
+                        : Array.isArray(
+                            surveyPayload?.items
+                          )
+                            ? surveyPayload.items
+                            : [];
+
+                const serverSurvey =
+                  serverSurveys.find(
+                    (survey: any) => {
+                      const serverId =
+                        taskDetailStringId(
+                          survey?.id ||
+                          survey?.pesquisa_id ||
+                          survey?.pesquisaId
+                        );
+
+                      const cleanServerId =
+                        serverId.startsWith(
+                          'task-'
+                        )
+                          ? serverId.slice(5)
+                          : serverId;
+
+                      return (
+                        surveyIds.includes(
+                          serverId
+                        ) ||
+                        surveyIds.includes(
+                          cleanServerId
+                        )
+                      );
+                    }
+                  );
+
+                if (
+                  serverSurvey &&
+                  Array.isArray(
+                    serverSurvey?.perguntas
+                  ) &&
+                  serverSurvey.perguntas.length > 0
+                ) {
+                  questionDefinition =
+                    serverSurvey;
+
+                  console.log(
+                    '[Histórico] definição autoritativa da pesquisa carregada',
+                    {
+                      pesquisaId:
+                        serverSurvey?.id,
+
+                      titulo:
+                        serverSurvey?.titulo,
+
+                      perguntas:
+                        serverSurvey.perguntas.map(
+                          (question: any) => ({
+                            id:
+                              question?.id,
+
+                            texto:
+                              question?.texto,
+
+                            tipo:
+                              question?.tipo
+                          })
+                        )
+                    }
+                  );
+                }
+              }
+            }
+          } catch (serverSurveyError: any) {
+            console.log(
+              '[Histórico] definição da pesquisa no servidor indisponível:',
+              serverSurveyError?.message ||
+              serverSurveyError
+            );
+          }
+
+
+          /*
+           * Fallback offline:
+           *
+           * Os blocos existentes abaixo só executam
+           * quando questionDefinition continua null.
+           */
+
+
+          // MOBILE_HISTORY_TASK_QUESTION_TABLE_V3
+          //
+          // Mesma fonte usada pela tela de execução real.
+          for (
+            const candidateId of
+            surveyIds
+          ) {
+            if (questionDefinition) {
+              break;
+            }
+
+            try {
+              const bdPerguntas:
+                any[] =
+                await db.getAllAsync(
+                  `
+                  SELECT *
+                  FROM perguntas_pesquisas
+                  WHERE pesquisaId = ?
+                  ORDER BY ordem ASC
+                  `,
+                  [
+                    candidateId
+                  ]
+                );
+
+              if (
+                Array.isArray(
+                  bdPerguntas
+                ) &&
+                bdPerguntas.length >
+                0
+              ) {
+
+                const normalizedQuestions =
+                  bdPerguntas.map(
+                    (row: any) => {
+                      const embedded =
+                        safeParseJson(
+                          row?.raw_json ||
+                          row?.rawJson ||
+                          row?.pergunta_json ||
+                          row?.perguntaJson ||
+                          row?.question_json ||
+                          row?.questionJson ||
+                          row?.payload_json,
+                          {}
+                        );
+
+                      return {
+                        ...embedded,
+                        ...row,
+
+                        id:
+                          row?.id ||
+                          row?.pergunta_id ||
+                          row?.perguntaId ||
+                          embedded?.id ||
+                          embedded?.pergunta_id ||
+                          embedded?.perguntaId,
+
+                        texto:
+                          row?.texto ||
+                          row?.titulo ||
+                          row?.pergunta ||
+                          row?.label ||
+                          row?.nome ||
+
+                          embedded?.texto ||
+                          embedded?.titulo ||
+                          embedded?.pergunta ||
+                          embedded?.label ||
+                          embedded?.nome
+                      };
+                    }
+                  );
+
+                questionDefinition = {
+                  id:
+                    candidateId,
+
+                  perguntas:
+                    normalizedQuestions
+                };
+
+                console.log(
+                  '[Histórico] detalhe da tarefa: perguntas reais carregadas',
+                  {
+                    pesquisaId:
+                      candidateId,
+
+                    quantidade:
+                      normalizedQuestions.length,
+
+                    labels:
+                      normalizedQuestions
+                        .slice(
+                          0,
+                          10
+                        )
+                        .map(
+                          (question: any) =>
+                            question?.texto ||
+                            question?.titulo ||
+                            question?.pergunta ||
+                            question?.label ||
+                            question?.nome ||
+                            question?.id
+                        )
+                  }
+                );
+              }
+
+            } catch {}
+          }
+
+
+          /*
+           * Fallback antigo permanece disponível:
+           * pesquisas / other_tasks / raw da tarefa.
+           */
+          for (
+            const candidateId of
+            surveyIds
+          ) {
+            if (questionDefinition) {
+              break;
+            }
+
+            try {
+              const definitionRow:
+                any =
+                await db.getFirstAsync(
+                  `
+                  SELECT *
+                  FROM pesquisas
+                  WHERE id = ?
+                  LIMIT 1
+                  `,
+                  [
+                    candidateId
+                  ]
+                );
+
+              if (definitionRow) {
+                const definitionRaw =
+                  safeParseJson(
+                    definitionRow?.raw_json ||
+                    definitionRow?.pesquisa_json,
+                    {}
+                  );
+
+                questionDefinition = {
+                  ...definitionRaw,
+                  ...definitionRow
+                };
+
+                /*
+                 * Algumas versões persistem perguntas
+                 * serializadas como string.
+                 */
+                for (
+                  const key of [
+                    'perguntas',
+                    'questions',
+                    'questoes'
+                  ]
+                ) {
+                  if (
+                    typeof questionDefinition?.[key] ===
+                    'string'
+                  ) {
+                    questionDefinition = {
+                      ...questionDefinition,
+
+                      [key]:
+                        safeParseJson(
+                          questionDefinition[key],
+                          []
+                        )
+                    };
+                  }
+                }
+              }
+            } catch {}
+          }
+
+          /*
+           * Fallback para other_tasks caso a definição
+           * ainda não esteja em pesquisas.
+           */
+          if (
+            !questionDefinition
+          ) {
+            for (
+              const candidateId of
+              surveyIds
+            ) {
+              if (questionDefinition) {
+                break;
+              }
+
+              try {
+                const definitionRow:
+                  any =
+                  await db.getFirstAsync(
+                    `
+                    SELECT *
+                    FROM other_tasks
+                    WHERE id = ?
+                    LIMIT 1
+                    `,
+                    [
+                      candidateId
+                    ]
+                  );
+
+                if (definitionRow) {
+                  const definitionRaw =
+                    safeParseJson(
+                      definitionRow?.raw_json ||
+                      definitionRow?.task_raw_json,
+                      {}
+                    );
+
+                  questionDefinition = {
+                    ...definitionRaw,
+                    ...definitionRow
+                  };
+                }
+              } catch {}
+            }
+          }
+
+          if (!cancelled) {
+            setSelectedTaskQuestionDefinition(
+              questionDefinition
+            );
+          }
+
+          const expectedUserId =
+            taskDetailStringId(
+              user?.id
+            );
+
+          const expectedStoreId =
+            taskDetailStringId(
+              selectedTask?.loja_id ||
+              taskRaw?.lojaId ||
+              taskRaw?.loja_id ||
+              taskRaw?.coleta?.loja_id ||
+              taskRaw?.coleta?.lojaId
+            );
+
+          const periodStart =
+            formatToYMD(
+              taskRaw?.periodStart ||
+              selectedTask?.dataKey
+            );
+
+          const periodEnd =
+            formatToYMD(
+              taskRaw?.periodEnd ||
+              selectedTask?.dataKey
+            );
+
+          const visit =
+            taskRaw?.visit ||
+            {};
+
+          const expectedVisitIds =
+            new Set(
+              [
+                ...getTaskDetailVisitIds(
+                  visit
+                ),
+
+                ...getTaskDetailVisitIds(
+                  taskRaw?.coleta
+                )
+              ]
+            );
+
+          const matches =
+            localCollections.filter(
+              (coleta: any) => {
+
+                const coletaUserId =
+                  taskDetailStringId(
+                    coleta?.usuario_id ||
+                    coleta?.usuarioId
+                  );
+
+                if (
+                  expectedUserId &&
+                  coletaUserId &&
+                  expectedUserId !==
+                  coletaUserId
+                ) {
+                  return false;
+                }
+
+                if (
+                  selectedTask.kind ===
+                  'VISITA'
+                ) {
+                  const coletaVisitIds =
+                    getTaskDetailVisitIds(
+                      coleta
+                    );
+
+                  if (
+                    coletaVisitIds.some(
+                      (visitId) =>
+                        expectedVisitIds.has(
+                          visitId
+                        )
+                    )
+                  ) {
+                    return true;
+                  }
+
+                  /*
+                   * Fallback legado:
+                   * mesma pesquisa + loja + data.
+                   */
+                  const coletaStoreId =
+                    getTaskDetailStoreId(
+                      coleta
+                    );
+
+                  const coletaDate =
+                    getTaskDetailCollectionDate(
+                      coleta
+                    );
+
+                  return (
+                    !!expectedStoreId &&
+                    coletaStoreId ===
+                      expectedStoreId &&
+                    coletaDate ===
+                      selectedTask.dataKey
+                  );
+                }
+
+                /*
+                 * AVULSO / LOJA_CICLO
+                 */
+                const coletaStoreId =
+                  getTaskDetailStoreId(
+                    coleta
+                  );
+
+                if (
+                  expectedStoreId &&
+                  coletaStoreId &&
+                  expectedStoreId !==
+                  coletaStoreId
+                ) {
+                  return false;
+                }
+
+                const coletaDate =
+                  getTaskDetailCollectionDate(
+                    coleta
+                  );
+
+                if (
+                  periodStart &&
+                  coletaDate &&
+                  coletaDate <
+                    periodStart
+                ) {
+                  return false;
+                }
+
+                if (
+                  periodEnd &&
+                  coletaDate &&
+                  coletaDate >
+                    periodEnd
+                ) {
+                  return false;
+                }
+
+                return true;
+              }
+            );
+
+          const merged =
+            [
+              ...baseCollections,
+              ...matches
+            ];
+
+          const unique =
+            new Map<string, any>();
+
+          merged.forEach(
+            (
+              coleta: any,
+              index: number
+            ) => {
+              const answers =
+                getTaskDetailAnswers(
+                  coleta
+                );
+
+              if (
+                answers.length ===
+                0
+              ) {
+                return;
+              }
+
+              const raw =
+                safeParseJson(
+                  coleta?.raw_json,
+                  {}
+                );
+
+              const key =
+                taskDetailStringId(
+                  coleta?.client_operation_id ||
+                  coleta?.clientOperationId ||
+                  raw?.client_operation_id ||
+                  raw?.clientOperationId ||
+                  coleta?.id
+                ) ||
+                `response_${index}`;
+
+              unique.set(
+                key,
+                coleta
+              );
+            }
+          );
+
+          const responses =
+            Array.from(
+              unique.values()
+            ).sort(
+              (a: any, b: any) =>
+                String(
+                  b?.data_fim ||
+                  b?.updated_at ||
+                  b?.data_inicio ||
+                  ''
+                ).localeCompare(
+                  String(
+                    a?.data_fim ||
+                    a?.updated_at ||
+                    a?.data_inicio ||
+                    ''
+                  )
+                )
+            );
+
+          // MOBILE_HISTORY_NONREPEATABLE_SINGLE_RESPONSE_V1
+          //
+          // O detalhe do Histórico reúne dados de várias fontes:
+          // - coleta embutida na obrigação;
+          // - SQLite local;
+          // - servidor.
+          //
+          // Para formulários repetitivos precisamos preservar todos
+          // os envios reais.
+          //
+          // Para formulários NÃO repetitivos existe apenas uma
+          // resposta válida por obrigação/ciclo. Mesmo que a mesma
+          // coleta apareça em duas representações durante o merge,
+          // o Histórico deve exibir somente uma resposta.
+
+          const historyRepeatableTruthy =
+            (value: any): boolean => {
+
+              if (
+                value === true ||
+                value === 1
+              ) {
+                return true;
+              }
+
+              const normalized =
+                String(
+                  value ?? ''
+                )
+                  .normalize('NFD')
+                  .replace(
+                    /[\u0300-\u036f]/g,
+                    ''
+                  )
+                  .trim()
+                  .toLowerCase();
+
+              return [
+                '1',
+                'true',
+                'sim',
+                'yes',
+                'si'
+              ].includes(
+                normalized
+              );
+            };
+
+
+          const historyRepeatableObject =
+            (value: any): any => {
+
+              if (
+                value &&
+                typeof value ===
+                  'object' &&
+                !Array.isArray(
+                  value
+                )
+              ) {
+                return value;
+              }
+
+              return safeParseJson(
+                value,
+                {}
+              );
+            };
+
+
+          const historyHasRepeatableQuestion =
+            (
+              questions: any[]
+            ): boolean => {
+
+              for (
+                const question
+                of questions || []
+              ) {
+
+                const validation =
+                  historyRepeatableObject(
+                    question?.validacao ||
+                    question?.validacoes
+                  );
+
+                if (
+                  historyRepeatableTruthy(
+                    question?.repetivel
+                  ) ||
+                  historyRepeatableTruthy(
+                    question?.repeatable
+                  ) ||
+                  historyRepeatableTruthy(
+                    validation?.repetivel
+                  ) ||
+                  historyRepeatableTruthy(
+                    validation?.repeatable
+                  )
+                ) {
+                  return true;
+                }
+
+                const children =
+                  question?.perguntas ||
+                  question?.questions ||
+                  question?.questoes ||
+                  question?.children ||
+                  question?.itens;
+
+                if (
+                  Array.isArray(
+                    children
+                  ) &&
+                  historyHasRepeatableQuestion(
+                    children
+                  )
+                ) {
+                  return true;
+                }
+              }
+
+              return false;
+            };
+
+
+          const repeatableSources =
+            [
+              selectedTask,
+              taskRaw,
+
+              taskRaw?.survey,
+              taskRaw?.embeddedSurvey,
+              taskRaw?.operationalTask,
+              taskRaw?.task,
+
+              questionDefinition,
+
+              historyRepeatableObject(
+                (selectedTask as any)
+                  ?.task_raw_json
+              ),
+
+              historyRepeatableObject(
+                taskRaw?.task_raw_json
+              )
+            ]
+              .map(
+                historyRepeatableObject
+              )
+              .filter(
+                Boolean
+              );
+
+
+          const isRepeatableTaskHistory =
+            repeatableSources.some(
+              (source: any) => {
+
+                const validation =
+                  historyRepeatableObject(
+                    source?.validacao ||
+                    source?.validacoes
+                  );
+
+                if (
+                  historyRepeatableTruthy(
+                    source?.repetivel
+                  ) ||
+                  historyRepeatableTruthy(
+                    source?.repeatable
+                  ) ||
+                  historyRepeatableTruthy(
+                    validation?.repetivel
+                  ) ||
+                  historyRepeatableTruthy(
+                    validation?.repeatable
+                  )
+                ) {
+                  return true;
+                }
+
+                const questions =
+                  source?.perguntas ||
+                  source?.questions ||
+                  source?.questoes ||
+                  [];
+
+                return (
+                  Array.isArray(
+                    questions
+                  ) &&
+                  historyHasRepeatableQuestion(
+                    questions
+                  )
+                );
+              }
+            );
+
+
+          const visibleResponses =
+            isRepeatableTaskHistory
+              ? responses
+              : responses.slice(
+                  0,
+                  1
+                );
+
+
+          console.log(
+            '[Histórico] detalhe: regra de multiplicidade',
+            {
+              pesquisaId:
+                surveyId,
+
+              repetivel:
+                isRepeatableTaskHistory,
+
+              respostasConsolidadas:
+                responses.length,
+
+              respostasExibidas:
+                visibleResponses.length
+            }
+          );
+
+
+          if (!cancelled) {
+            setSelectedTaskResponses(
+              visibleResponses
+            );
+          }
+
+        } catch (error: any) {
+
+          console.log(
+            '[Histórico] Falha somente ao carregar respostas da tarefa:',
+            error?.message ||
+            error
+          );
+
+          /*
+           * CRÍTICO:
+           * falha das respostas NÃO pode derrubar
+           * o Histórico principal.
+           */
+          if (!cancelled) {
+            setSelectedTaskResponses(
+              []
+            );
+
+            setSelectedTaskQuestionDefinition(
+              null
+            );
+          }
+        }
+      };
+
+    void loadSelectedTaskResponses();
+
+    return () => {
+      cancelled =
+        true;
+    };
+
+  }, [
+    selectedTask?.id,
+    user?.id
+  ]);
+
+
   const projectId = getMainProjectId(user);
   const userId = user?.id;
 
@@ -1531,24 +3262,190 @@ export default function HistoricoScreen() {
         h7d = await fetchResumoMobile7d(projectId, userId);
       }
 
-      let rawColetas: any[] = [];
+      // MOBILE_HISTORY_AUTHORITATIVE_COLLECTIONS_V1
+      //
+      // Histórico não pode depender de um cache SQLite parcial.
+      //
+      // Estratégia:
+      // 1. lê coletas locais;
+      // 2. SEMPRE busca as coletas autoritativas no servidor quando online;
+      // 3. faz merge;
+      // 4. servidor vence quando a mesma coleta existe nos dois lados;
+      // 5. coleta local ainda não sincronizada continua disponível como complemento.
+      let localColetas: any[] = [];
+      let serverColetas: any[] = [];
 
       try {
-        rawColetas = (await db.getAllAsync(`SELECT * FROM coletas`)) as any[];
-      } catch {}
+        localColetas =
+          (await db.getAllAsync(
+            `SELECT * FROM coletas`
+          )) as any[];
+      } catch {
+        localColetas = [];
+      }
 
-      if (rawColetas.length === 0 && projectId) {
+      if (projectId) {
         try {
-          const resColetas = await api(`/coletas/${projectId}?t=${Date.now()}`, { method: 'GET' });
+          const resColetas =
+            await api(
+              `/coletas/${projectId}?t=${Date.now()}`,
+              {
+                method: 'GET'
+              }
+            );
 
           if (resColetas.ok) {
-            const dataColetas = await resColetas.json();
-            rawColetas = Array.isArray(dataColetas) ? dataColetas : safeArray(dataColetas?.data || dataColetas?.coletas || dataColetas?.items);
+            const dataColetas =
+              await resColetas.json();
+
+            serverColetas =
+              Array.isArray(dataColetas)
+                ? dataColetas
+                : safeArray(
+                    dataColetas?.data ||
+                    dataColetas?.coletas ||
+                    dataColetas?.items
+                  );
           }
         } catch (error: any) {
-          console.log('[Histórico] coletas não disponíveis:', error?.message || error);
+          console.log(
+            '[Histórico] coletas do servidor não disponíveis:',
+            error?.message ||
+            error
+          );
         }
       }
+
+      const normalizeHistoryCollection =
+        (item: any) => {
+          const embedded =
+            safeParseJson(
+              item?.raw_json ||
+              item?.rawJson ||
+              item?.payload ||
+              item?.payload_json,
+              {}
+            );
+
+          return {
+            ...embedded,
+            ...item
+          };
+        };
+
+      const getHistoryCollectionKey =
+        (item: any) => {
+          const normalized =
+            normalizeHistoryCollection(
+              item
+            );
+
+          const realId =
+            normalized?.id ||
+            normalized?.coleta_id ||
+            normalized?.coletaId ||
+            normalized?.client_operation_id ||
+            normalized?.clientOperationId;
+
+          if (realId) {
+            return `ID:${String(realId)}`;
+          }
+
+          return [
+            'FALLBACK',
+            normalized?.projectId ||
+              normalized?.project_id ||
+              '',
+            normalized?.pesquisa_id ||
+              normalized?.pesquisaId ||
+              '',
+            normalized?.usuario_id ||
+              normalized?.usuarioId ||
+              '',
+            normalized?.loja_id ||
+              normalized?.lojaId ||
+              'GERAL',
+            normalized?.registroVisitaId ||
+              normalized?.registro_visita_id ||
+              normalized?.visitaId ||
+              normalized?.visita_id ||
+              '',
+            normalized?.data_programada ||
+              normalized?.dataProgramada ||
+              '',
+            normalized?.data_inicio ||
+              normalized?.dataInicio ||
+              '',
+            normalized?.data_fim ||
+              normalized?.dataFim ||
+              ''
+          ]
+            .map((value) =>
+              String(value || '')
+            )
+            .join('|');
+        };
+
+      const collectionMap =
+        new Map<string, any>();
+
+      /*
+       * Local primeiro:
+       * mantém respostas offline ainda não enviadas.
+       */
+      localColetas.forEach(
+        (item: any) => {
+          const normalized =
+            normalizeHistoryCollection(
+              item
+            );
+
+          collectionMap.set(
+            getHistoryCollectionKey(
+              normalized
+            ),
+            normalized
+          );
+        }
+      );
+
+      /*
+       * Servidor depois:
+       * para registros já sincronizados,
+       * o backend é a fonte da verdade.
+       */
+      serverColetas.forEach(
+        (item: any) => {
+          const normalized =
+            normalizeHistoryCollection(
+              item
+            );
+
+          collectionMap.set(
+            getHistoryCollectionKey(
+              normalized
+            ),
+            normalized
+          );
+        }
+      );
+
+      const rawColetas =
+        Array.from(
+          collectionMap.values()
+        );
+
+      console.log(
+        '[Histórico] coletas consolidadas',
+        {
+          local:
+            localColetas.length,
+          server:
+            serverColetas.length,
+          total:
+            rawColetas.length
+        }
+      );
 
 
       let visitItems: VisitHistoryItem[] = rawVisits
@@ -1592,7 +3489,36 @@ export default function HistoricoScreen() {
 
           if (res.ok) {
             const data = await res.json();
+            // MOBILE_HISTORY_REAL_VISITS_ONLY_V1
+            //
+            // Uma tarefa POR_VISITA só pode nascer de uma visita REAL.
+            //
+            // Portanto esta fonte complementar só aceita registros que
+            // possuam VisitaAgendadaId ou RegistroVisitaId.
+            //
+            // LOJA_CICLO, coleta avulsa, snapshot de Perfect Store
+            // ou JSON antigo de roteiro NÃO podem criar visita.
             const backendVisits = safeArray(data?.historico)
+              .filter((item: any) => {
+                const visitaAgendadaId =
+                  String(
+                    item?.visitaAgendadaId ||
+                    item?.visita_agendada_id ||
+                    ''
+                  ).trim();
+
+                const registroVisitaId =
+                  String(
+                    item?.registroVisitaId ||
+                    item?.registro_visita_id ||
+                    ''
+                  ).trim();
+
+                return Boolean(
+                  visitaAgendadaId ||
+                  registroVisitaId
+                );
+              })
               .map((item: any) => {
                 const dataKey =
                   formatToYMD(item?.dataKey || item?.data || item?.criado_em || item?.data_programada) ||
@@ -1691,9 +3617,39 @@ export default function HistoricoScreen() {
 
       const getTemplateId = (item: any) => normalizeId(item?.pesquisa_id || item?.pesquisaId || item?.id || item?.codigo || item?.titulo || item?.nome);
 
-      const getColetaPesquisaId = (item: any) => normalizeId(item?.pesquisa_id || item?.pesquisaId || item?.survey_id || item?.surveyId || item?.id_pesquisa);
+      // MOBILE_HISTORY_COLETA_IDENTITY_V2
+      const getColetaPesquisaId = (item: any) => {
+        const normalized =
+          normalizeHistoryCollection(
+            item
+          );
 
-      const getColetaUserId = (item: any) => normalizeId(item?.usuario_id || item?.usuarioId || item?.promotor_id || item?.promotorId || item?.usuario?.id);
+        return normalizeId(
+          normalized?.pesquisa_id ||
+          normalized?.pesquisaId ||
+          normalized?.survey_id ||
+          normalized?.surveyId ||
+          normalized?.id_pesquisa ||
+          normalized?.pesquisa?.id ||
+          normalized?.survey?.id
+        );
+      };
+
+      const getColetaUserId = (item: any) => {
+        const normalized =
+          normalizeHistoryCollection(
+            item
+          );
+
+        return normalizeId(
+          normalized?.usuario_id ||
+          normalized?.usuarioId ||
+          normalized?.promotor_id ||
+          normalized?.promotorId ||
+          normalized?.usuario?.id ||
+          normalized?.user?.id
+        );
+      };
 
       const getVisitUserId = (visit: VisitHistoryItem) => {
         const raw = visit.raw || {};
@@ -1702,17 +3658,22 @@ export default function HistoricoScreen() {
       };
 
       const getColetaDate = (item: any) => {
+        const normalized =
+          normalizeHistoryCollection(
+            item
+          );
+
         return (
           formatToYMD(
-            item?.data_programada ||
-              item?.dataProgramada ||
-              item?.data_inicio ||
-              item?.dataInicio ||
-              item?.data_fim ||
-              item?.dataFim ||
-              item?.criado_em ||
-              item?.created_at ||
-              item?.createdAt
+            normalized?.data_programada ||
+            normalized?.dataProgramada ||
+            normalized?.data_inicio ||
+            normalized?.dataInicio ||
+            normalized?.data_fim ||
+            normalized?.dataFim ||
+            normalized?.criado_em ||
+            normalized?.created_at ||
+            normalized?.createdAt
           ) || null
         );
       };
@@ -1748,55 +3709,499 @@ export default function HistoricoScreen() {
         return 'PENDENTE';
       };
 
-      const findGeneralColetaForPeriod = (template: any, frequency: string, periodStart: string) => {
-        return rawColetas.find((coleta) => {
-          if (!coletaMatchesTemplate(coleta, template)) return false;
-          if (!coletaMatchesCurrentUser(coleta)) return false;
+      // MOBILE_HISTORY_STORE_CYCLE_IDENTITY_V1
+      const getHistoryExecutionScope =
+        (item: any) =>
+          String(
+            item?.escopo_execucao ||
+            item?.escopoExecucao ||
+            item?.execution_scope ||
+            item?.executionScope ||
+            'AVULSO'
+          )
+            .trim()
+            .toUpperCase();
 
-          const coletaDate = getColetaDate(coleta);
-          if (!coletaDate) return false;
+      const getHistoryStoreId =
+        (item: any) =>
+          normalizeId(
+            item?.loja_id ||
+            item?.lojaId ||
+            item?.store_id ||
+            item?.storeId ||
+            item?.loja?.id
+          );
 
-          const coletaPeriod = getSurveyPeriod(coletaDate, frequency);
+      const isGeneralHistoryStore =
+        (value: any) => {
+          const storeId =
+            normalizeId(value)
+              .toUpperCase();
 
-          return coletaPeriod.start === periodStart;
-        });
+          return (
+            !storeId ||
+            storeId === 'GERAL' ||
+            storeId === 'NULL' ||
+            storeId === 'UNDEFINED'
+          );
+        };
+
+      const findGeneralColetaForPeriod = (
+        template: any,
+        frequency: string,
+        periodStart: string,
+        expectedStoreId?: string | null
+      ) => {
+        const executionScope =
+          getHistoryExecutionScope(
+            template
+          );
+
+        return rawColetas.find(
+          (coleta) => {
+            if (
+              !coletaMatchesTemplate(
+                coleta,
+                template
+              )
+            ) {
+              return false;
+            }
+
+            if (
+              !coletaMatchesCurrentUser(
+                coleta
+              )
+            ) {
+              return false;
+            }
+
+            const coletaDate =
+              getColetaDate(
+                coleta
+              );
+
+            if (!coletaDate) {
+              return false;
+            }
+
+            const coletaPeriod =
+              getSurveyPeriod(
+                coletaDate,
+                frequency
+              );
+
+            if (
+              coletaPeriod.start !==
+              periodStart
+            ) {
+              return false;
+            }
+
+            const coletaStoreId =
+              getHistoryStoreId(
+                coleta
+              );
+
+            /*
+             * LOJA_CICLO:
+             * resposta pertence especificamente
+             * à loja daquele ciclo.
+             */
+            if (
+              executionScope ===
+              'LOJA_CICLO'
+            ) {
+              const wantedStoreId =
+                normalizeId(
+                  expectedStoreId
+                );
+
+              if (!wantedStoreId) {
+                return false;
+              }
+
+              return (
+                coletaStoreId ===
+                wantedStoreId
+              );
+            }
+
+            /*
+             * AVULSO:
+             * nunca deve consumir coleta
+             * vinculada a uma loja real.
+             */
+            return isGeneralHistoryStore(
+              coletaStoreId
+            );
+          }
+        );
       };
 
-      const findVisitColeta = (visit: VisitHistoryItem, template: any) => {
-        const visitRaw = visit.raw || {};
-        const visitIds = [
-          visit.id,
-          visitRaw.id,
-          visitRaw.registroVisitaId,
-          visitRaw.registro_visita_id,
-          visitRaw.visita_id,
-          visitRaw.visitaId,
-          visitRaw.visitaAgendadaId,
-          visitRaw.visita_agendada_id,
-        ].map(normalizeId).filter(Boolean);
+      // MOBILE_HISTORY_EMBEDDED_SURVEY_STATE_V2
+      const historyTruthy = (value: any) => {
+        if (
+          value === true ||
+          value === 1
+        ) {
+          return true;
+        }
 
-        return rawColetas.find((coleta) => {
-          if (!coletaMatchesTemplate(coleta, template)) return false;
-          if (!coletaMatchesCurrentUser(coleta, getVisitUserId(visit))) return false;
-
-          const coletaVisitIds = [
-            coleta?.registroVisitaId,
-            coleta?.registro_visita_id,
-            coleta?.visita_id,
-            coleta?.visitaId,
-            coleta?.visitaAgendadaId,
-            coleta?.visita_agendada_id,
-          ].map(normalizeId).filter(Boolean);
-
-          if (coletaVisitIds.some((id) => visitIds.includes(id))) return true;
-
-          const coletaDate = getColetaDate(coleta);
-          const coletaLojaId = normalizeId(coleta?.loja_id || coleta?.lojaId || coleta?.loja?.id);
-          const visitLojaId = normalizeId(visit.loja_id || visitRaw.loja_id || visitRaw.lojaId);
-
-          return !!coletaDate && coletaDate === visit.dataKey && !!coletaLojaId && !!visitLojaId && coletaLojaId === visitLojaId;
-        });
+        return [
+          'true',
+          '1',
+          'sim',
+          'yes'
+        ].includes(
+          String(value || '')
+            .trim()
+            .toLowerCase()
+        );
       };
+
+      const getVisitSurveyPayload = (
+        visit: VisitHistoryItem
+      ) => {
+        const row =
+          visit?.raw || {};
+
+        const nestedRaw =
+          safeParseJson(
+            row?.visit_raw_json ||
+            row?.raw_json,
+            {}
+          );
+
+        const candidates = [
+          row?.pesquisa_json,
+          row?.pesquisaJson,
+          row?.pesquisas,
+          nestedRaw?.pesquisa_json,
+          nestedRaw?.pesquisaJson,
+          nestedRaw?.pesquisas
+        ];
+
+        for (const candidate of candidates) {
+          const parsed =
+            typeof candidate === 'string'
+              ? safeParseJson(
+                  candidate,
+                  []
+                )
+              : candidate;
+
+          if (
+            Array.isArray(parsed) &&
+            parsed.length > 0
+          ) {
+            return parsed;
+          }
+        }
+
+        return [];
+      };
+
+      const getEmbeddedSurveyState = (
+        visit: VisitHistoryItem,
+        template: any
+      ) => {
+        const templateId =
+          getTemplateId(
+            template
+          );
+
+        const templateTitle =
+          normalizeKeyText(
+            template?.titulo ||
+            template?.nome ||
+            template?.title
+          );
+
+        const payload =
+          getVisitSurveyPayload(
+            visit
+          );
+
+        const direct =
+          payload.find(
+            (item: any) => {
+              const itemId =
+                normalizeId(
+                  item?.id ||
+                  item?.pesquisa_id ||
+                  item?.pesquisaId ||
+                  item?.survey_id ||
+                  item?.surveyId ||
+                  item?.formulario_id ||
+                  item?.formularioId
+                );
+
+              const itemTitle =
+                normalizeKeyText(
+                  item?.titulo ||
+                  item?.nome ||
+                  item?.title ||
+                  item?.surveyTitle ||
+                  item?.survey_title
+                );
+
+              return (
+                (
+                  templateId &&
+                  itemId &&
+                  templateId ===
+                    itemId
+                ) ||
+                (
+                  templateTitle &&
+                  itemTitle &&
+                  templateTitle ===
+                    itemTitle
+                )
+              );
+            }
+          );
+
+        if (!direct) {
+          return null;
+        }
+
+        const currentCount =
+          Number(
+            direct?.currentCount ??
+            direct?.current_count ??
+            direct?.coletasCount ??
+            direct?.coletas_count ??
+            0
+          ) || 0;
+
+        const status =
+          String(
+            direct?.statusOnline ||
+            direct?.status ||
+            direct?.coletaStatus ||
+            direct?.coleta_status ||
+            ''
+          )
+            .trim()
+            .toUpperCase();
+
+        const explicitDone =
+          historyTruthy(
+            direct?.concluida
+          ) ||
+          historyTruthy(
+            direct?.completed
+          ) ||
+          historyTruthy(
+            direct?.realizada
+          );
+
+        const hasResponse =
+          explicitDone ||
+          isTaskDoneStatus(
+            status
+          ) ||
+          status ===
+            'EM_ANDAMENTO' ||
+          currentCount > 0 ||
+          Boolean(
+            direct?.coletaId ||
+            direct?.coleta_id
+          );
+
+        return {
+          item:
+            direct,
+          status,
+          currentCount,
+          explicitDone,
+          hasResponse
+        };
+      };
+
+
+      // MOBILE_HISTORY_VISIT_COLLECTION_MATCH_V2
+      const findVisitColeta = (
+        visit: VisitHistoryItem,
+        template: any
+      ) => {
+        const visitRaw =
+          visit.raw || {};
+
+        const nestedVisitRaw =
+          safeParseJson(
+            visitRaw?.visit_raw_json ||
+            visitRaw?.raw_json,
+            {}
+          );
+
+        const visitIds =
+          [
+            visit.id,
+
+            visitRaw.id,
+            visitRaw.registroVisitaId,
+            visitRaw.registro_visita_id,
+            visitRaw.visita_id,
+            visitRaw.visitaId,
+            visitRaw.visitaAgendadaId,
+            visitRaw.visita_agendada_id,
+
+            nestedVisitRaw.id,
+            nestedVisitRaw.registroVisitaId,
+            nestedVisitRaw.registro_visita_id,
+            nestedVisitRaw.visita_id,
+            nestedVisitRaw.visitaId,
+            nestedVisitRaw.visitaAgendadaId,
+            nestedVisitRaw.visita_agendada_id
+          ]
+            .map(normalizeId)
+            .filter(Boolean);
+
+        const visitLojaId =
+          normalizeId(
+            visit.loja_id ||
+            visitRaw.loja_id ||
+            visitRaw.lojaId ||
+            nestedVisitRaw.loja_id ||
+            nestedVisitRaw.lojaId
+          );
+
+        const candidates =
+          rawColetas.filter(
+            (coleta) => {
+              if (
+                !coletaMatchesTemplate(
+                  coleta,
+                  template
+                )
+              ) {
+                return false;
+              }
+
+              if (
+                !coletaMatchesCurrentUser(
+                  coleta,
+                  getVisitUserId(
+                    visit
+                  )
+                )
+              ) {
+                return false;
+              }
+
+              return true;
+            }
+          );
+
+        /*
+         * 1. Match mais forte:
+         * vínculo explícito com RegistroVisita/
+         * VisitaAgendada.
+         */
+        const exact =
+          candidates.find(
+            (coleta) => {
+              const normalized =
+                normalizeHistoryCollection(
+                  coleta
+                );
+
+              const coletaVisitIds =
+                [
+                  normalized?.registroVisitaId,
+                  normalized?.registro_visita_id,
+                  normalized?.visita_id,
+                  normalized?.visitaId,
+                  normalized?.visitaAgendadaId,
+                  normalized?.visita_agendada_id
+                ]
+                  .map(normalizeId)
+                  .filter(Boolean);
+
+              return coletaVisitIds.some(
+                (id) =>
+                  visitIds.includes(
+                    id
+                  )
+              );
+            }
+          );
+
+        if (exact) {
+          return exact;
+        }
+
+        /*
+         * 2. Match operacional:
+         * mesma pesquisa + usuário + loja + dia.
+         *
+         * Isso resolve históricos em que um lado
+         * guardou VisitaAgendadaId e o outro
+         * RegistroVisitaId.
+         */
+        const sameStoreDate =
+          candidates.find(
+            (coleta) => {
+              const normalized =
+                normalizeHistoryCollection(
+                  coleta
+                );
+
+              const coletaDate =
+                getColetaDate(
+                  normalized
+                );
+
+              const coletaLojaId =
+                normalizeId(
+                  normalized?.loja_id ||
+                  normalized?.lojaId ||
+                  normalized?.loja?.id
+                );
+
+              return (
+                Boolean(coletaDate) &&
+                coletaDate ===
+                  visit.dataKey &&
+                Boolean(coletaLojaId) &&
+                Boolean(visitLojaId) &&
+                coletaLojaId ===
+                  visitLojaId
+              );
+            }
+          );
+
+        if (sameStoreDate) {
+          return sameStoreDate;
+        }
+
+        /*
+         * 3. Último fallback seguro:
+         * se naquela data existe apenas UMA
+         * coleta daquela pesquisa para o usuário,
+         * não há ambiguidade.
+         */
+        const sameDate =
+          candidates.filter(
+            (coleta) =>
+              getColetaDate(
+                coleta
+              ) ===
+                visit.dataKey
+          );
+
+        if (
+          sameDate.length === 1
+        ) {
+          return sameDate[0];
+        }
+
+        return null;
+      };
+
 
       const standaloneTemplatesMap = new Map<string, any>();
 
@@ -1818,132 +4223,980 @@ export default function HistoricoScreen() {
         const merged = { ...raw, ...row };
         const key = `${getTemplateId(merged)}__${String(merged.frequencia || '').toUpperCase()}__${normalizeKeyText(merged.titulo || merged.nome || merged.title)}`;
 
-        if (!standaloneTemplatesMap.has(key)) {
-          standaloneTemplatesMap.set(key, merged);
-        }
+        // MOBILE_HISTORY_STANDALONE_TEMPLATE_MERGE_V1
+        const existing =
+          standaloneTemplatesMap.get(
+            key
+          );
+
+        standaloneTemplatesMap.set(
+          key,
+          existing
+            ? {
+                ...existing,
+                ...merged
+              }
+            : merged
+        );
       });
 
       const standaloneTemplates = Array.from(standaloneTemplatesMap.values());
 
-      const standaloneTasks: TaskHistoryItem[] = standaloneTemplates.flatMap((template) => {
-        const raw = safeParseJson(template.task_raw_json || template.raw_json, {});
-        const merged = { ...raw, ...template };
+      // MOBILE_HISTORY_STANDALONE_REAL_OBLIGATIONS_V1
+      const standaloneTasks: TaskHistoryItem[] =
+        standaloneTemplates.flatMap(
+          (template) => {
+            const raw =
+              safeParseJson(
+                template.task_raw_json ||
+                template.raw_json,
+                {}
+              );
 
-        const title = String(getTaskTitle(merged, merged));
-        const freq = String(merged.frequencia || '').trim().toUpperCase();
-        const baseId = String(getTemplateId(merged) || title);
-        const baseSubtitle = String(merged?.descricao || merged?.description || historyText('standaloneTask', language));
+            const merged = {
+              ...raw,
+              ...template
+            };
 
-        const buildTask = (periodStart: string, periodEnd: string, subtitle: string) => {
-          const coleta = findGeneralColetaForPeriod(merged, freq, periodStart);
-          const status = statusFromPeriod(periodEnd, coleta);
+            const title =
+              String(
+                getTaskTitle(
+                  merged,
+                  merged
+                )
+              );
 
-          return {
-            id: `${baseId}_${freq}_${periodStart}_${periodEnd}`,
-            title,
-            subtitle,
-            loja_id: null,
-            lojaNome: null,
-            dataKey: periodEnd,
-            status,
-            done: isTaskDoneStatus(status),
-            kind: 'AVULSA',
-            raw: { template: merged, coleta, periodStart, periodEnd },
-          } as TaskHistoryItem;
-        };
+            const freq =
+              String(
+                merged.frequencia ||
+                ''
+              )
+                .trim()
+                .toUpperCase();
 
-        if (freq === 'DIARIA' || freq === 'DIÁRIA') {
-          return visitDates
-            .filter((dateKey) => isWithinRange(dateKey, startKey, endKey))
-            .map((dateKey) => buildTask(dateKey, dateKey, baseSubtitle || historyText('dailyTask', language)));
-        }
+            const executionScope =
+              getHistoryExecutionScope(
+                merged
+              );
 
-        if (freq === 'SEMANAL') {
-          const periods = new Map<string, string>();
+            const baseId =
+              String(
+                getTemplateId(
+                  merged
+                ) ||
+                title
+              );
 
-          visitDates.forEach((dateKey) => {
-            if (!isWithinRange(dateKey, startKey, endKey)) return;
+            const baseSubtitle =
+              String(
+                merged?.descricao ||
+                merged?.description ||
+                historyText(
+                  'standaloneTask',
+                  language
+                )
+              );
 
-            const period = getSurveyPeriod(dateKey, 'SEMANAL');
-            periods.set(period.start, period.end);
-          });
+            const getStoresForPeriod =
+              (
+                periodStart: string,
+                periodEnd: string
+              ) => {
+                const map =
+                  new Map<
+                    string,
+                    string
+                  >();
 
-          return Array.from(periods.entries()).map(([periodStart, periodEnd]) =>
-            buildTask(periodStart, periodEnd, historyText('weekPeriod', language, { start: formatShortDate(periodStart, language), end: formatShortDate(periodEnd, language) }))
-          );
-        }
+                visitItems
+                  .filter(
+                    (visit) =>
+                      visit.dataKey >=
+                        periodStart &&
+                      visit.dataKey <=
+                        periodEnd
+                  )
+                  .forEach(
+                    (visit) => {
+                      const storeId =
+                        normalizeId(
+                          visit.loja_id
+                        );
 
-        if (freq === 'QUINZENAL') {
-          const periods = new Map<string, string>();
+                      if (!storeId) {
+                        return;
+                      }
 
-          visitDates.forEach((dateKey) => {
-            if (!isWithinRange(dateKey, startKey, endKey)) return;
+                      if (
+                        !map.has(
+                          storeId
+                        )
+                      ) {
+                        map.set(
+                          storeId,
+                          visit.lojaNome ||
+                            historyText(
+                              'store',
+                              language
+                            )
+                        );
+                      }
+                    }
+                  );
 
-            const period = getSurveyPeriod(dateKey, 'QUINZENAL');
-            periods.set(period.start, period.end);
-          });
+                return Array.from(
+                  map.entries()
+                ).map(
+                  (
+                    [
+                      storeId,
+                      storeName
+                    ]
+                  ) => ({
+                    storeId,
+                    storeName
+                  })
+                );
+              };
 
-          return Array.from(periods.entries()).map(([periodStart, periodEnd]) =>
-            buildTask(periodStart, periodEnd, historyText('halfMonthPeriod', language, { start: formatShortDate(periodStart, language), end: formatShortDate(periodEnd, language) }))
-          );
-        }
+            const buildTask =
+              (
+                periodStart: string,
+                periodEnd: string,
+                subtitle: string,
+                storeId:
+                  string | null =
+                  null,
+                storeName:
+                  string | null =
+                  null
+              ) => {
+                const coleta =
+                  findGeneralColetaForPeriod(
+                    merged,
+                    freq,
+                    periodStart,
+                    storeId
+                  );
 
-        if (freq === 'MENSAL') {
-          const periods = new Map<string, string>();
+                // MOBILE_HISTORY_STANDALONE_AUTHORITATIVE_STATUS_V2
+                //
+                // A obrigação operacional existente em other_tasks é a
+                // fonte autoritativa para o ESTADO da tarefa standalone.
+                //
+                // A coleta continua sendo usada para:
+                // - respostas;
+                // - detalhe histórico;
+                // - fallback quando não existe obrigação operacional.
+                //
+                // Isso evita que uma tarefa já REALIZADA no roteiro volte
+                // para PENDENTE apenas porque o matching da coleta não
+                // conseguiu reconstruir sozinho o estado da obrigação.
+                const operationalTask =
+                  rawTasks
+                    .map((row: any) => {
+                      const rawTask =
+                        safeParseJson(
+                          row?.task_raw_json ||
+                          row?.raw_json,
+                          {}
+                        );
 
-          visitDates.forEach((dateKey) => {
-            if (!isWithinRange(dateKey, startKey, endKey)) return;
+                      return {
+                        row,
+                        rawTask,
+                        mergedTask: {
+                          ...rawTask,
+                          ...row
+                        }
+                      };
+                    })
+                    .find((candidate: any) => {
+                      const row =
+                        candidate.row;
 
-            const period = getSurveyPeriod(dateKey, 'MENSAL');
-            periods.set(period.start, period.end);
-          });
+                      const rawTask =
+                        candidate.rawTask;
 
-          return Array.from(periods.entries()).map(([periodStart, periodEnd]) =>
-            buildTask(periodStart, periodEnd, historyText('monthPeriod', language, { start: formatShortDate(periodStart, language), end: formatShortDate(periodEnd, language) }))
-          );
-        }
+                      const candidateMerged =
+                        candidate.mergedTask;
 
-        const dueDate = getTaskBaseDateKey(merged, merged);
+                      if (
+                        !isRealStandaloneTask(
+                          row,
+                          rawTask
+                        )
+                      ) {
+                        return false;
+                      }
 
-        if (!isWithinRange(dueDate, startKey, endKey)) return [];
+                      const templateId =
+                        normalizeId(
+                          getTemplateId(
+                            merged
+                          )
+                        );
 
-        return [buildTask(dueDate, dueDate, baseSubtitle)];
-      });
+                      const candidateTemplateId =
+                        normalizeId(
+                          getTemplateId(
+                            candidateMerged
+                          )
+                        );
 
-      const visitTasks: TaskHistoryItem[] = visitItems.flatMap((visit) => {
-        const surveys = pesquisasPorVisita.length > 0 ? pesquisasPorVisita : [];
-        const items: TaskHistoryItem[] = [];
+                      if (
+                        templateId &&
+                        candidateTemplateId &&
+                        templateId !==
+                          candidateTemplateId
+                      ) {
+                        return false;
+                      }
 
-        surveys.forEach((survey, index) => {
-          const mergedSurvey = { ...safeParseJson(survey?.raw_json || survey?.task_raw_json, {}), ...survey };
-          const title = String(
-            mergedSurvey?.titulo ||
-              mergedSurvey?.nome ||
-              mergedSurvey?.title ||
-              mergedSurvey?.name ||
-              (surveys.length > 1 ? `${historyText('visitTask', language)} ${index + 1}` : historyText('visitTask', language))
-          );
+                      const templateTitle =
+                        normalizeKeyText(
+                          title
+                        );
 
-          const coleta = findVisitColeta(visit, mergedSurvey);
-          const backendStatus = statusFromPeriod(visit.dataKey, coleta);
-          const done = isTaskDoneStatus(backendStatus);
+                      const candidateTitle =
+                        normalizeKeyText(
+                          getTaskTitle(
+                            candidateMerged,
+                            candidateMerged
+                          )
+                        );
 
-          items.push({
-            id: `${visit.id}_pesquisa_${mergedSurvey?.id || mergedSurvey?.pesquisa_id || index}`,
-            title,
-            subtitle: visit.lojaNome,
-            loja_id: visit.loja_id,
-            lojaNome: visit.lojaNome,
-            dataKey: visit.dataKey || getLocalDateKey(new Date()),
-            status: backendStatus,
-            done,
-            kind: 'VISITA',
-            raw: { visit: visit.raw, survey: mergedSurvey, coleta, backendStatus },
-          });
-        });
+                      if (
+                        (
+                          !templateId ||
+                          !candidateTemplateId
+                        ) &&
+                        templateTitle &&
+                        candidateTitle &&
+                        templateTitle !==
+                          candidateTitle
+                      ) {
+                        return false;
+                      }
 
-        return items;
-      });
+                      const candidateFreq =
+                        String(
+                          candidateMerged?.frequencia ||
+                          ''
+                        )
+                          .trim()
+                          .toUpperCase();
+
+                      if (
+                        freq &&
+                        candidateFreq &&
+                        freq !== candidateFreq
+                      ) {
+                        return false;
+                      }
+
+                      const candidateScope =
+                        getHistoryExecutionScope(
+                          candidateMerged
+                        );
+
+                      if (
+                        candidateScope !==
+                        executionScope
+                      ) {
+                        return false;
+                      }
+
+                      const candidateDate =
+                        getTaskBaseDateKey(
+                          candidateMerged,
+                          candidateMerged
+                        );
+
+                      if (
+                        !candidateDate ||
+                        candidateDate <
+                          periodStart ||
+                        candidateDate >
+                          periodEnd
+                      ) {
+                        return false;
+                      }
+
+                      if (
+                        executionScope ===
+                        'LOJA_CICLO'
+                      ) {
+                        const wantedStoreId =
+                          normalizeId(
+                            storeId
+                          );
+
+                        const candidateStoreId =
+                          normalizeId(
+                            candidateMerged?.loja_id ||
+                            candidateMerged?.lojaId ||
+                            candidateMerged?.store_id ||
+                            candidateMerged?.storeId
+                          );
+
+                        if (
+                          !wantedStoreId ||
+                          !candidateStoreId ||
+                          wantedStoreId !==
+                            candidateStoreId
+                        ) {
+                          return false;
+                        }
+                      }
+
+                      return true;
+                    });
+
+                const operationalMerged =
+                  operationalTask?.mergedTask ||
+                  null;
+
+                const operationalStatus =
+                  String(
+                    operationalMerged?.status ||
+                    operationalMerged?.status_tarefa ||
+                    operationalMerged?.task_status ||
+                    operationalMerged?.situacao ||
+                    operationalMerged?.state ||
+                    operationalMerged?.status_pesquisa ||
+                    ''
+                  )
+                    .normalize('NFD')
+                    .replace(
+                      /[\u0300-\u036f]/g,
+                      ''
+                    )
+                    .trim()
+                    .toUpperCase()
+                    .replace(
+                      /[\s-]+/g,
+                      '_'
+                    );
+
+                const operationalDoneFlag =
+                  [
+                    operationalMerged?.done,
+                    operationalMerged?.concluida,
+                    operationalMerged?.completed,
+                    operationalMerged?.realizada,
+                    operationalMerged?.respondida
+                  ].some((value: any) => {
+                    if (
+                      value === true ||
+                      value === 1
+                    ) {
+                      return true;
+                    }
+
+                    const normalized =
+                      String(
+                        value ?? ''
+                      )
+                        .normalize('NFD')
+                        .replace(
+                          /[\u0300-\u036f]/g,
+                          ''
+                        )
+                        .trim()
+                        .toUpperCase();
+
+                    return [
+                      'TRUE',
+                      '1',
+                      'SIM',
+                      'YES',
+                      'SI'
+                    ].includes(
+                      normalized
+                    );
+                  });
+
+                const fallbackStatus =
+                  statusFromPeriod(
+                    periodEnd,
+                    coleta
+                  );
+
+                let status =
+                  fallbackStatus;
+
+                if (
+                  operationalDoneFlag ||
+                  isTaskDoneStatus(
+                    operationalStatus
+                  ) ||
+                  [
+                    'REALIZADA',
+                    'REALIZADO',
+                    'COMPLETA',
+                    'COMPLETO',
+                    'CONCLUIDA',
+                    'CONCLUIDO',
+                    'FINALIZADA',
+                    'FINALIZADO',
+                    'FECHADA',
+                    'FECHADO'
+                  ].includes(
+                    operationalStatus
+                  )
+                ) {
+                  status =
+                    'REALIZADA';
+                } else if (
+                  [
+                    'EM_ANDAMENTO',
+                    'INICIADA',
+                    'INICIADO'
+                  ].includes(
+                    operationalStatus
+                  )
+                ) {
+                  status =
+                    'EM_ANDAMENTO';
+                } else if (
+                  [
+                    'NAO_REALIZADA',
+                    'NAO_REALIZADO',
+                    'CANCELADA',
+                    'CANCELADO'
+                  ].includes(
+                    operationalStatus
+                  )
+                ) {
+                  status =
+                    'NAO_REALIZADA';
+                }
+
+                return {
+                  id:
+                    `${baseId}_${freq}_${storeId || 'GERAL'}_${periodStart}_${periodEnd}`,
+
+                  title,
+
+                  subtitle:
+                    executionScope ===
+                      'LOJA_CICLO' &&
+                    storeName
+                      ? `${storeName} · ${subtitle}`
+                      : subtitle,
+
+                  loja_id:
+                    storeId,
+
+                  lojaNome:
+                    storeName,
+
+                  dataKey:
+                    periodEnd,
+
+                  status,
+
+                  done:
+                    isTaskDoneStatus(
+                      status
+                    ),
+
+                  kind:
+                    'AVULSA',
+
+                  raw: {
+                    template:
+                      merged,
+                    coleta,
+                    periodStart,
+                    periodEnd,
+                    executionScope,
+                    lojaId:
+                      storeId,
+                    lojaNome:
+                      storeName
+                  }
+                } as TaskHistoryItem;
+              };
+
+            const buildPeriodTasks =
+              (
+                periodStart: string,
+                periodEnd: string,
+                subtitle: string
+              ) => {
+                if (
+                  executionScope !==
+                  'LOJA_CICLO'
+                ) {
+                  return [
+                    buildTask(
+                      periodStart,
+                      periodEnd,
+                      subtitle
+                    )
+                  ];
+                }
+
+                return getStoresForPeriod(
+                  periodStart,
+                  periodEnd
+                ).map(
+                  ({
+                    storeId,
+                    storeName
+                  }) =>
+                    buildTask(
+                      periodStart,
+                      periodEnd,
+                      subtitle,
+                      storeId,
+                      storeName
+                    )
+                );
+              };
+
+            if (
+              freq === 'DIARIA' ||
+              freq === 'DIÁRIA'
+            ) {
+              return visitDates
+                .filter(
+                  (dateKey) =>
+                    isWithinRange(
+                      dateKey,
+                      startKey,
+                      endKey
+                    )
+                )
+                .flatMap(
+                  (dateKey) =>
+                    buildPeriodTasks(
+                      dateKey,
+                      dateKey,
+                      baseSubtitle ||
+                        historyText(
+                          'dailyTask',
+                          language
+                        )
+                    )
+                );
+            }
+
+            if (
+              freq === 'SEMANAL'
+            ) {
+              const periods =
+                new Map<
+                  string,
+                  string
+                >();
+
+              visitDates.forEach(
+                (dateKey) => {
+                  if (
+                    !isWithinRange(
+                      dateKey,
+                      startKey,
+                      endKey
+                    )
+                  ) {
+                    return;
+                  }
+
+                  const period =
+                    getSurveyPeriod(
+                      dateKey,
+                      'SEMANAL'
+                    );
+
+                  periods.set(
+                    period.start,
+                    period.end
+                  );
+                }
+              );
+
+              return Array.from(
+                periods.entries()
+              ).flatMap(
+                (
+                  [
+                    periodStart,
+                    periodEnd
+                  ]
+                ) =>
+                  buildPeriodTasks(
+                    periodStart,
+                    periodEnd,
+                    historyText(
+                      'weekPeriod',
+                      language,
+                      {
+                        start:
+                          formatShortDate(
+                            periodStart,
+                            language
+                          ),
+
+                        end:
+                          formatShortDate(
+                            periodEnd,
+                            language
+                          )
+                      }
+                    )
+                  )
+              );
+            }
+
+            if (
+              freq === 'QUINZENAL'
+            ) {
+              const periods =
+                new Map<
+                  string,
+                  string
+                >();
+
+              visitDates.forEach(
+                (dateKey) => {
+                  if (
+                    !isWithinRange(
+                      dateKey,
+                      startKey,
+                      endKey
+                    )
+                  ) {
+                    return;
+                  }
+
+                  const period =
+                    getSurveyPeriod(
+                      dateKey,
+                      'QUINZENAL'
+                    );
+
+                  periods.set(
+                    period.start,
+                    period.end
+                  );
+                }
+              );
+
+              return Array.from(
+                periods.entries()
+              ).flatMap(
+                (
+                  [
+                    periodStart,
+                    periodEnd
+                  ]
+                ) =>
+                  buildPeriodTasks(
+                    periodStart,
+                    periodEnd,
+                    historyText(
+                      'halfMonthPeriod',
+                      language,
+                      {
+                        start:
+                          formatShortDate(
+                            periodStart,
+                            language
+                          ),
+
+                        end:
+                          formatShortDate(
+                            periodEnd,
+                            language
+                          )
+                      }
+                    )
+                  )
+              );
+            }
+
+            if (
+              freq === 'MENSAL'
+            ) {
+              const periods =
+                new Map<
+                  string,
+                  string
+                >();
+
+              visitDates.forEach(
+                (dateKey) => {
+                  if (
+                    !isWithinRange(
+                      dateKey,
+                      startKey,
+                      endKey
+                    )
+                  ) {
+                    return;
+                  }
+
+                  const period =
+                    getSurveyPeriod(
+                      dateKey,
+                      'MENSAL'
+                    );
+
+                  periods.set(
+                    period.start,
+                    period.end
+                  );
+                }
+              );
+
+              return Array.from(
+                periods.entries()
+              ).flatMap(
+                (
+                  [
+                    periodStart,
+                    periodEnd
+                  ]
+                ) =>
+                  buildPeriodTasks(
+                    periodStart,
+                    periodEnd,
+                    historyText(
+                      'monthPeriod',
+                      language,
+                      {
+                        start:
+                          formatShortDate(
+                            periodStart,
+                            language
+                          ),
+
+                        end:
+                          formatShortDate(
+                            periodEnd,
+                            language
+                          )
+                      }
+                    )
+                  )
+              );
+            }
+
+            const dueDate =
+              getTaskBaseDateKey(
+                merged,
+                merged
+              );
+
+            if (
+              !isWithinRange(
+                dueDate,
+                startKey,
+                endKey
+              )
+            ) {
+              return [];
+            }
+
+            return buildPeriodTasks(
+              dueDate,
+              dueDate,
+              baseSubtitle
+            );
+          }
+        );
+
+      // MOBILE_HISTORY_VISIT_TASK_AUTHORITATIVE_V2
+      const visitTasks: TaskHistoryItem[] =
+        visitItems.flatMap(
+          (visit) => {
+            const surveys =
+              pesquisasPorVisita.length > 0
+                ? pesquisasPorVisita
+                : [];
+
+            const items:
+              TaskHistoryItem[] = [];
+
+            surveys.forEach(
+              (
+                survey,
+                index
+              ) => {
+                const mergedSurvey = {
+                  ...safeParseJson(
+                    survey?.raw_json ||
+                    survey?.task_raw_json,
+                    {}
+                  ),
+                  ...survey
+                };
+
+                const title =
+                  String(
+                    mergedSurvey?.titulo ||
+                    mergedSurvey?.nome ||
+                    mergedSurvey?.title ||
+                    mergedSurvey?.name ||
+                    (
+                      surveys.length > 1
+                        ? `${historyText(
+                            'visitTask',
+                            language
+                          )} ${index + 1}`
+                        : historyText(
+                            'visitTask',
+                            language
+                          )
+                    )
+                  );
+
+                const coleta =
+                  findVisitColeta(
+                    visit,
+                    mergedSurvey
+                  );
+
+                const embedded =
+                  getEmbeddedSurveyState(
+                    visit,
+                    mergedSurvey
+                  );
+
+                const coletaStatus =
+                  String(
+                    coleta?.status ||
+                    coleta?.situacao ||
+                    coleta?.state ||
+                    coleta?.status_pesquisa ||
+                    ''
+                  )
+                    .trim()
+                    .toUpperCase();
+
+                const coletaConcluida =
+                  Boolean(coleta) &&
+                  isTaskDoneStatus(
+                    coletaStatus
+                  );
+
+                const embeddedConcluido =
+                  Boolean(
+                    embedded
+                  ) &&
+                  (
+                    embedded?.explicitDone ===
+                      true ||
+                    isTaskDoneStatus(
+                      embedded?.status
+                    )
+                  );
+
+                const existeResposta =
+                  Boolean(coleta) ||
+                  Boolean(
+                    embedded?.hasResponse
+                  );
+
+                /*
+                 * Regra histórica POR_VISITA:
+                 *
+                 * 1. servidor/embedded concluiu -> REALIZADA
+                 * 2. coleta concluída -> REALIZADA
+                 * 3. visita terminou e existe resposta ->
+                 *    REALIZADA
+                 *
+                 * O terceiro caso é essencial para pesquisas
+                 * repetitivas: enquanto a visita está aberta
+                 * elas ficam EM_ANDAMENTO; após checkout
+                 * pertencem a uma execução concluída.
+                 */
+                let backendStatus =
+                  'PENDENTE';
+
+                if (
+                  embeddedConcluido ||
+                  coletaConcluida ||
+                  (
+                    visit.done &&
+                    existeResposta
+                  )
+                ) {
+                  backendStatus =
+                    'REALIZADA';
+                } else if (
+                  existeResposta
+                ) {
+                  backendStatus =
+                    'EM_ANDAMENTO';
+                } else {
+                  backendStatus =
+                    statusFromPeriod(
+                      visit.dataKey,
+                      null
+                    );
+                }
+
+                const done =
+                  isTaskDoneStatus(
+                    backendStatus
+                  );
+
+                items.push({
+                  id:
+                    `${visit.id}_pesquisa_${mergedSurvey?.id || mergedSurvey?.pesquisa_id || index}`,
+
+                  title,
+
+                  subtitle:
+                    visit.lojaNome,
+
+                  loja_id:
+                    visit.loja_id,
+
+                  lojaNome:
+                    visit.lojaNome,
+
+                  dataKey:
+                    visit.dataKey ||
+                    getLocalDateKey(
+                      new Date()
+                    ),
+
+                  status:
+                    backendStatus,
+
+                  done,
+
+                  kind:
+                    'VISITA',
+
+                  raw: {
+                    visit:
+                      visit.raw,
+
+                    survey:
+                      mergedSurvey,
+
+                    coleta,
+
+                    embeddedSurvey:
+                      embedded,
+
+                    coletaStatus,
+
+                    backendStatus
+                  }
+                });
+              }
+            );
+
+            return items;
+          }
+        );
 
       let taskItems = [...standaloneTasks, ...visitTasks].sort((a, b) => String(b.dataKey).localeCompare(String(a.dataKey)));
 
@@ -2547,6 +5800,8 @@ export default function HistoricoScreen() {
         onRequestClose={() => {
           setSelectedVisit(null);
           setSelectedTask(null);
+          setSelectedTaskResponses([]);
+          setSelectedTaskQuestionDefinition(null);
         }}
       >
         <View style={styles.modalOverlay}>
@@ -2566,6 +5821,8 @@ export default function HistoricoScreen() {
                 onPress={() => {
                   setSelectedVisit(null);
                   setSelectedTask(null);
+                  setSelectedTaskResponses([]);
+          setSelectedTaskQuestionDefinition(null);
                 }}
               >
                 <Text style={[styles.closeText, { color: textPrimary }]}>×</Text>
@@ -2650,13 +5907,230 @@ export default function HistoricoScreen() {
                 </View>
               ) : null}
 
-              <View style={[styles.emptySmall, { backgroundColor: surfaceAlt, borderColor: border }]}>
-                <FileText size={28} color={accent} />
-                <Text style={[styles.emptySmallTitle, { color: textPrimary }]}>{historyText('operationalHistory', language)}</Text>
-                <Text style={[styles.emptySmallText, { color: textSecondary }]}>
-                  {historyText('operationalHistoryText', language)}
-                </Text>
-              </View>
+
+              {/* MOBILE_HISTORY_TASK_DETAIL_RESPONSES_UI_ISOLATED_V1 */}
+              {selectedTask && selectedTaskResponses.length > 0 ? (
+                <View
+                  style={[
+                    styles.summaryCard,
+                    {
+                      backgroundColor:
+                        surfaceAlt,
+
+                      borderColor:
+                        border
+                    }
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color:
+                        textPrimary,
+
+                      fontSize:
+                        17,
+
+                      fontWeight:
+                        '900',
+
+                      marginBottom:
+                        14
+                    }}
+                  >
+                    Respostas enviadas
+                  </Text>
+
+                  {(() => {
+                    const questionMap =
+                      getTaskDetailQuestionMap(
+                        selectedTask,
+                        selectedTaskQuestionDefinition
+                      );
+
+
+                    return selectedTaskResponses.map(
+                      (
+                        coleta: any,
+                        collectionIndex: number
+                      ) => {
+
+                        const answers =
+                          getTaskDetailAnswers(
+                            coleta
+                          );
+
+                        const envio =
+                          selectedTaskResponses.length -
+                          collectionIndex;
+
+                        return (
+                          <View
+                            key={
+                              String(
+                                coleta?.id ||
+                                `response_${collectionIndex}`
+                              )
+                            }
+                            style={{
+                              borderTopWidth:
+                                collectionIndex === 0
+                                  ? 0
+                                  : 1,
+
+                              borderTopColor:
+                                border,
+
+                              paddingTop:
+                                collectionIndex === 0
+                                  ? 0
+                                  : 16,
+
+                              marginTop:
+                                collectionIndex === 0
+                                  ? 0
+                                  : 16
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color:
+                                  '#10B981',
+
+                                fontSize:
+                                  13,
+
+                                fontWeight:
+                                  '900',
+
+                                marginBottom:
+                                  12
+                              }}
+                            >
+                              {selectedTaskResponses.length > 1
+                                ? `Envio ${envio}`
+                                : 'Resposta enviada'}
+                            </Text>
+
+                            {answers.map(
+                              (
+                                answer: any,
+                                answerIndex: number
+                              ) => {
+
+                                const questionId =
+                                  taskDetailStringId(
+                                    answer?.pergunta_id ||
+                                    answer?.perguntaId ||
+                                    answer?.id_pergunta ||
+                                    answer?.idPergunta ||
+                                    answer?.question_id ||
+                                    answer?.questionId ||
+                                    answer?.pergunta?.id ||
+                                    answer?.question?.id
+                                  );
+
+                                // MOBILE_HISTORY_QUESTION_ID_EXACT_MATCH_V5
+                                //
+                                // Única regra válida:
+                                //
+                                // resposta.pergunta_id === pergunta.id
+                                //
+                                const question =
+                                  questionMap.get(
+                                    questionId
+                                  );
+
+                                // MOBILE_HISTORY_USE_PERGUNTAS_PESQUISAS_TEXTO_V4
+                                const label =
+                                  String(
+                                    question?.texto ||
+
+                                    answer?.pergunta_texto ||
+                                    answer?.perguntaTexto ||
+                                    answer?.pergunta_titulo ||
+                                    answer?.perguntaTitulo ||
+                                    answer?.pergunta_label ||
+                                    answer?.perguntaLabel ||
+                                    answer?.question_text ||
+                                    answer?.questionText ||
+                                    answer?.question_label ||
+                                    answer?.questionLabel ||
+                                    answer?.label ||
+                                    answer?.titulo ||
+                                    answer?.texto ||
+                                    ''
+                                  ) ||
+                                  (
+                                    questionId
+                                      ? `Pergunta não encontrada (${questionId})`
+                                      : 'Pergunta não identificada'
+                                  );
+
+                                return (
+                                  <View
+                                    key={
+                                      `${questionId || 'answer'}_${answerIndex}`
+                                    }
+                                    style={{
+                                      marginBottom:
+                                        answerIndex ===
+                                        answers.length - 1
+                                          ? 0
+                                          : 14
+                                    }}
+                                  >
+                                    <Text
+                                      style={{
+                                        color:
+                                          textSecondary,
+
+                                        fontSize:
+                                          12,
+
+                                        fontWeight:
+                                          '800',
+
+                                        marginBottom:
+                                          4
+                                      }}
+                                    >
+                                      {label}
+                                    </Text>
+
+                                    <Text
+                                      style={{
+                                        color:
+                                          textPrimary,
+
+                                        fontSize:
+                                          15,
+
+                                        fontWeight:
+                                          '700',
+
+                                        lineHeight:
+                                          21
+                                      }}
+                                    >
+                                      {formatTaskDetailAnswer(
+                                        answer?.valor ??
+                                        answer?.value ??
+                                        answer?.resposta
+                                      )}
+                                    </Text>
+                                  </View>
+                                );
+                              }
+                            )}
+                          </View>
+                        );
+                      }
+                    );
+                  })()}
+                </View>
+              ) : null}
+
+              {/* MOBILE_HISTORY_REMOVE_TECHNICAL_MESSAGE_V1 */}
             </ScrollView>
           </View>
         </View>

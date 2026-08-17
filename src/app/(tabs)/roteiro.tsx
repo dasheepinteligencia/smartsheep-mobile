@@ -495,69 +495,315 @@ const getSurveyTitleFromQuestion = (question: any) => {
   );
 };
 
-const extractVisitSurveys = (visit: any, pesquisaById: Record<string, any>, language: string) => {
-  const parsed = safeParseJson(visit?.pesquisa_json, []);
-  const surveysMap = new Map<string, { id: string; titulo: string; qtdPerguntas: number }>();
+// MOBILE_ROUTE_REAL_SURVEY_STATE_V1
+const extractVisitSurveys = (
+  visit: any,
+  pesquisaById: Record<string, any>,
+  language: string
+) => {
+  const parsed =
+    safeParseJson(
+      visit?.pesquisa_json,
+      []
+    );
+
+  const surveysMap =
+    new Map<
+      string,
+      {
+        id: string;
+        titulo: string;
+        qtdPerguntas: number;
+        status: string;
+        repetivel: boolean;
+        currentCount: number;
+      }
+    >();
+
+  const routeBool = (
+    value: any
+  ) => {
+    if (
+      value === true ||
+      value === 1
+    ) {
+      return true;
+    }
+
+    return [
+      'true',
+      '1',
+      'sim',
+      'yes'
+    ].includes(
+      String(value || '')
+        .trim()
+        .toLowerCase()
+    );
+  };
+
+  const resolveSurveyStatus = (
+    source: any,
+    repeatable: boolean,
+    currentCount: number
+  ) => {
+    const explicit = String(
+      source?.status ||
+        source?.statusOnline ||
+        ''
+    )
+      .trim()
+      .toUpperCase();
+
+    if (explicit) {
+      return normalizeStatus(
+        explicit
+      );
+    }
+
+    const completed =
+      routeBool(
+        source?.concluida
+      ) ||
+      routeBool(
+        source?.completed
+      ) ||
+      routeBool(
+        source?.realizada
+      );
+
+    if (completed) {
+      return 'REALIZADA';
+    }
+
+    if (
+      repeatable &&
+      currentCount > 0
+    ) {
+      return 'EM_ANDAMENTO';
+    }
+
+    return 'PENDENTE';
+  };
 
   if (Array.isArray(parsed)) {
-    parsed.forEach((item: any, index: number) => {
-      // Caso o JSON já venha como lista de pesquisas/formulários.
-      const directId =
-        item?.id ||
-        item?.pesquisaId ||
-        item?.pesquisa_id ||
-        item?.formularioId ||
-        item?.formulario_id ||
-        item?.surveyId ||
-        item?.survey_id;
+    parsed.forEach(
+      (
+        item: any,
+        index: number
+      ) => {
+        const directId =
+          item?.id ||
+          item?.pesquisaId ||
+          item?.pesquisa_id ||
+          item?.formularioId ||
+          item?.formulario_id ||
+          item?.surveyId ||
+          item?.survey_id;
 
-      const hasQuestions = Array.isArray(item?.perguntas) || Array.isArray(item?.questions) || Array.isArray(item?.questoes);
+        const questions =
+          item?.perguntas ||
+          item?.questions ||
+          item?.questoes ||
+          [];
 
-      if (directId && (item?.titulo || item?.nome || hasQuestions)) {
-        const id = String(directId);
-        const questions = item?.perguntas || item?.questions || item?.questoes || [];
-        surveysMap.set(id, {
+        const hasQuestions =
+          Array.isArray(
+            questions
+          );
+
+        if (
+          directId &&
+          (
+            item?.titulo ||
+            item?.nome ||
+            hasQuestions
+          )
+        ) {
+          const id =
+            String(directId);
+
+          const currentCount =
+            Number(
+              item?.currentCount ??
+                item?.current_count ??
+                item?.coletasCount ??
+                item?.coletas_count ??
+                0
+            ) || 0;
+
+          const repetivel =
+            routeBool(
+              item?.repetivel
+            ) ||
+            routeBool(
+              item?.repeatable
+            );
+
+          surveysMap.set(
+            id,
+            {
+              id,
+              titulo:
+                normalizeSurveyTitle(
+                  item?.titulo ||
+                    item?.nome ||
+                    pesquisaById[id]
+                      ?.titulo ||
+                    pesquisaById[id]
+                      ?.nome,
+                  language
+                ),
+
+              qtdPerguntas:
+                Array.isArray(
+                  questions
+                )
+                  ? questions.length
+                  : 0,
+
+              status:
+                resolveSurveyStatus(
+                  item,
+                  repetivel,
+                  currentCount
+                ),
+
+              repetivel,
+
+              currentCount
+            }
+          );
+
+          return;
+        }
+
+        const questionSurveyId =
+          getSurveyIdFromQuestion(
+            item
+          ) ||
+          visit?.pesquisa_id ||
+          visit?.pesquisaId ||
+          `visit_survey_${index}`;
+
+        const id =
+          String(
+            questionSurveyId
+          );
+
+        const current =
+          surveysMap.get(id);
+
+        const currentCount =
+          Math.max(
+            Number(
+              current?.currentCount ||
+                0
+            ),
+            Number(
+              item?.currentCount ??
+                item?.current_count ??
+                0
+            ) || 0
+          );
+
+        const repetivel =
+          Boolean(
+            current?.repetivel
+          ) ||
+          routeBool(
+            item?.repetivel
+          ) ||
+          routeBool(
+            item?.repeatable
+          );
+
+        surveysMap.set(
           id,
-          titulo: normalizeSurveyTitle(item?.titulo || item?.nome || pesquisaById[id]?.titulo || pesquisaById[id]?.nome, language),
-          qtdPerguntas: Array.isArray(questions) ? questions.length : 0,
-        });
-        return;
+          {
+            id,
+
+            titulo:
+              current?.titulo ||
+              normalizeSurveyTitle(
+                getSurveyTitleFromQuestion(
+                  item
+                ) ||
+                  pesquisaById[id]
+                    ?.titulo ||
+                  pesquisaById[id]
+                    ?.nome,
+                language
+              ),
+
+            qtdPerguntas:
+              (
+                current
+                  ?.qtdPerguntas ||
+                0
+              ) + 1,
+
+            status:
+              resolveSurveyStatus(
+                item,
+                repetivel,
+                currentCount
+              ),
+
+            repetivel,
+
+            currentCount
+          }
+        );
       }
-
-      // Caso o JSON venha como lista de perguntas.
-      const questionSurveyId = getSurveyIdFromQuestion(item) || visit?.pesquisa_id || visit?.pesquisaId || `visit_survey_${index}`;
-      const id = String(questionSurveyId);
-      const current = surveysMap.get(id);
-
-      surveysMap.set(id, {
-        id,
-        titulo: current?.titulo || normalizeSurveyTitle(getSurveyTitleFromQuestion(item) || pesquisaById[id]?.titulo || pesquisaById[id]?.nome, language),
-        qtdPerguntas: (current?.qtdPerguntas || 0) + 1,
-      });
-    });
+    );
   }
 
-  const fallbackSurveyId = visit?.pesquisa_id || visit?.pesquisaId;
+  const fallbackSurveyId =
+    visit?.pesquisa_id ||
+    visit?.pesquisaId;
 
-  if (surveysMap.size === 0 && fallbackSurveyId) {
-    const id = String(fallbackSurveyId);
+  if (
+    surveysMap.size === 0 &&
+    fallbackSurveyId
+  ) {
+    const id =
+      String(
+        fallbackSurveyId
+      );
 
-    surveysMap.set(id, {
+    surveysMap.set(
       id,
-      titulo: normalizeSurveyTitle(pesquisaById[id]?.titulo || pesquisaById[id]?.nome, language),
-      qtdPerguntas: 0,
-    });
+      {
+        id,
+
+        titulo:
+          normalizeSurveyTitle(
+            pesquisaById[id]
+              ?.titulo ||
+              pesquisaById[id]
+                ?.nome,
+            language
+          ),
+
+        qtdPerguntas:
+          0,
+
+        status:
+          'PENDENTE',
+
+        repetivel:
+          false,
+
+        currentCount:
+          0
+      }
+    );
   }
 
-  if (surveysMap.size === 0) {
-    surveysMap.set(`visit_survey_${visit?.id || visit?.loja_id}`, {
-      id: `visit_survey_${visit?.id || visit?.loja_id}`,
-      titulo: rt('taskSurveyDefault', language),
-      qtdPerguntas: 0,
-    });
-  }
-
-  return Array.from(surveysMap.values());
+  return Array.from(
+    surveysMap.values()
+  );
 };
 
 
@@ -1037,65 +1283,115 @@ export default function RoteiroScreen() {
 
 
               // OMNI_ROUTE_BACKEND_REPEATABLE_STATUS_SINGLE_SOURCE_V1
-              const getRouteRepeatableContext = (task: any, raw: any) => {
-                const authUser = useAuthStore.getState().user || {};
-                const authCustom = routeObject(authUser?.custom_data || authUser?.customData);
+              // MOBILE_ROUTE_STANDALONE_STORE_SCOPE_V1
+              const getRouteRepeatableContext = (
+                task: any,
+                raw: any
+              ) => {
+                const authUser =
+                  useAuthStore
+                    .getState()
+                    .user || {};
 
-                const projectId = String(
-                  task?.projectId ||
-                  task?.project_id ||
-                  task?.projetoId ||
-                  task?.projeto_id ||
-                  raw?.projectId ||
-                  raw?.project_id ||
-                  raw?.projetoId ||
-                  raw?.projeto_id ||
-                  authUser?.projectId ||
-                  authUser?.project_id ||
-                  authUser?.projetoId ||
-                  authUser?.projeto_id ||
-                  authCustom?.projectId ||
-                  authCustom?.project_id ||
-                  authCustom?.projetoId ||
-                  authCustom?.projeto_id ||
-                  ''
-                ).trim();
+                const authCustom =
+                  routeObject(
+                    authUser?.custom_data ||
+                    authUser?.customData
+                  );
 
-                const usuarioId = String(
-                  task?.usuarioId ||
-                  task?.usuario_id ||
-                  task?.userId ||
-                  task?.user_id ||
-                  raw?.usuarioId ||
-                  raw?.usuario_id ||
-                  raw?.userId ||
-                  raw?.user_id ||
-                  authUser?.id ||
-                  authUser?.usuarioId ||
-                  authUser?.usuario_id ||
-                  authUser?.userId ||
-                  authUser?.user_id ||
-                  ''
-                ).trim();
+                const projectId =
+                  String(
+                    task?.projectId ||
+                    task?.project_id ||
+                    task?.projetoId ||
+                    task?.projeto_id ||
+                    raw?.projectId ||
+                    raw?.project_id ||
+                    raw?.projetoId ||
+                    raw?.projeto_id ||
+                    authUser?.projectId ||
+                    authUser?.project_id ||
+                    authUser?.projetoId ||
+                    authUser?.projeto_id ||
+                    authCustom?.projectId ||
+                    authCustom?.project_id ||
+                    authCustom?.projetoId ||
+                    authCustom?.projeto_id ||
+                    ''
+                  ).trim();
 
-                const pesquisaId = getStandaloneTaskPesquisaId(task, raw);
+                const usuarioId =
+                  String(
+                    task?.usuarioId ||
+                    task?.usuario_id ||
+                    task?.userId ||
+                    task?.user_id ||
+                    raw?.usuarioId ||
+                    raw?.usuario_id ||
+                    raw?.userId ||
+                    raw?.user_id ||
+                    authUser?.id ||
+                    authUser?.usuarioId ||
+                    authUser?.usuario_id ||
+                    authUser?.userId ||
+                    authUser?.user_id ||
+                    ''
+                  ).trim();
 
-                const dataProgramada = String(
-                  task?.dataProgramada ||
-                  task?.data_programada ||
-                  task?.data_vencimento ||
-                  raw?.dataProgramada ||
-                  raw?.data_programada ||
-                  raw?.data_vencimento ||
-                  raw?.data_fim ||
-                  todayStr
-                ).substring(0, 10);
+                const pesquisaId =
+                  getStandaloneTaskPesquisaId(
+                    task,
+                    raw
+                  );
+
+                const dataProgramada =
+                  String(
+                    task?.dataProgramada ||
+                    task?.data_programada ||
+                    raw?.dataProgramada ||
+                    raw?.data_programada ||
+                    task?.data_vencimento ||
+                    raw?.data_vencimento ||
+                    raw?.data_fim ||
+                    todayStr
+                  ).substring(
+                    0,
+                    10
+                  );
+
+                const executionScope =
+                  String(
+                    task?.escopo_execucao ||
+                    task?.escopoExecucao ||
+                    raw?.escopo_execucao ||
+                    raw?.escopoExecucao ||
+                    'AVULSO'
+                  )
+                    .trim()
+                    .toUpperCase();
+
+                const rawLojaId =
+                  task?.loja_id ||
+                  task?.lojaId ||
+                  raw?.loja_id ||
+                  raw?.lojaId ||
+                  '';
+
+                const lojaId =
+                  executionScope ===
+                  'LOJA_CICLO'
+                    ? String(
+                        rawLojaId
+                      ).trim()
+                    : 'GERAL';
 
                 return {
                   projectId,
                   usuarioId,
                   pesquisaId,
-                  dataProgramada
+                  dataProgramada,
+                  executionScope,
+                  lojaId
                 };
               };
 
@@ -1114,8 +1410,13 @@ export default function RoteiroScreen() {
                   query.set('usuarioId', ctx.usuarioId);
                   query.set('dataProgramada', ctx.dataProgramada);
 
+                  query.set(
+                    'lojaId',
+                    ctx.lojaId || 'GERAL'
+                  );
+
                   const response = await api(
-                    '/coletas/general-repeatable-status?' + query.toString()
+                    '/standalone-task-status?' + query.toString()
                   );
 
                   if (!response.ok) {
@@ -1278,28 +1579,104 @@ export default function RoteiroScreen() {
         });
       });
 
+      // MOBILE_ROUTE_VISIT_TASK_INDIVIDUAL_STATE_V1
       visitsNormalized.forEach((visit) => {
-        const vDate = String(visit.data_programada || '').substring(0, 10);
+        const vDate =
+          String(
+            visit.data_programada ||
+              ''
+          ).substring(
+            0,
+            10
+          );
 
-        if (vDate === todayStr) {
-          const visitSurveys = extractVisitSurveys(visit, pesquisaById, language);
-
-          visitSurveys.forEach((survey) => {
-            consolidatedTasks.push({
-              id: `visit_task_${visit.id}_${survey.id}`,
-              titulo: survey.titulo,
-              surveyTitle: survey.titulo,
-              qtdPerguntas: survey.qtdPerguntas,
-              status: visit.pesquisa_realizada === 1 ? 'REALIZADA' : normalizeStatus(visit.status),
-              frequencia: 'POR_VISITA',
-              isLinkedToVisit: true,
-              loja_nome: visit.loja_nome,
-              visitaId: visit.id,
-              data_vencimento: vDate,
-              _baseDate: vDate,
-            });
-          });
+        if (
+          vDate !== todayStr
+        ) {
+          return;
         }
+
+        /*
+         * Visita justificada não deixa
+         * formulários POR_VISITA pendentes.
+         */
+        if (
+          normalizeStatus(
+            visit.status
+          ) === 'JUSTIFICADA'
+        ) {
+          return;
+        }
+
+        const visitSurveys =
+          extractVisitSurveys(
+            visit,
+            pesquisaById,
+            language
+          );
+
+        visitSurveys.forEach(
+          (survey) => {
+            consolidatedTasks.push({
+              id:
+                `visit_task_${visit.id}_${survey.id}`,
+
+              titulo:
+                survey.titulo,
+
+              surveyTitle:
+                survey.titulo,
+
+                            pesquisaId:
+                survey.id,
+
+qtdPerguntas:
+                survey.qtdPerguntas,
+
+              /*
+               * Nunca usar o status geral da visita
+               * para decidir o status do formulário.
+               */
+              status:
+                normalizeStatus(
+                  survey.status
+                ),
+
+              frequencia:
+                'POR_VISITA',
+
+              isLinkedToVisit:
+                true,
+
+              loja_nome:
+                visit.loja_nome,
+
+              visitaId:
+                visit.id,
+
+              data_vencimento:
+                vDate,
+
+              repetivel:
+                survey.repetivel,
+
+              repeatable:
+                survey.repetivel,
+
+              currentCount:
+                survey.currentCount,
+
+              repeatableCurrentCount:
+                survey.currentCount,
+
+              omni_repeatable_current_count:
+                survey.currentCount,
+
+              _baseDate:
+                vDate,
+            });
+          }
+        );
       });
 
       consolidatedTasks = consolidatedTasks
@@ -1678,9 +2055,10 @@ export default function RoteiroScreen() {
           ? 'EM_ANDAMENTO'
           : baseTaskStatus;
 
+    // MOBILE_ROUTE_REPEATABLE_VISIT_PROGRESS_V1
     const isOpenRepeatable =
-      !isVisitSurvey &&
       !isDone &&
+      rawRepeatableResponsesCount > 0 &&
       ['EM_ANDAMENTO', 'INICIADA'].includes(
         displayTaskStatus
       );
@@ -1713,7 +2091,8 @@ export default function RoteiroScreen() {
           styles.cardWrapper,
           {
             backgroundColor: surface,
-            borderLeftColor: disabledCard ? '#94A3B8' : colors.text,
+            // Status individual também define a cor do POR_VISITA.
+            borderLeftColor: colors.text,
             borderColor: border,
             padding: 18,
             opacity: cardOpacity,
@@ -1738,10 +2117,41 @@ export default function RoteiroScreen() {
         }}
       >
         <View style={styles.cardHeader}>
-          <View style={[styles.badge, { backgroundColor: disabledCard ? (isDark ? 'rgba(148, 163, 184, 0.18)' : 'rgba(148, 163, 184, 0.12)') : colors.bg }]}>
-            <Text style={[styles.badgeText, { color: disabledCard ? textSecondary : colors.text }]}>
+          <View
+            style={[
+              styles.badge,
+              {
+                backgroundColor:
+                  colors.bg
+              }
+            ]}
+          >
+            <Text
+              style={[
+                styles.badgeText,
+                {
+                  color:
+                    colors.text
+                }
+              ]}
+            >
               {isVisitSurvey
-                ? rt('taskInStore', language)
+                ? isDone
+                  ? i18n.t(
+                      'statusCompleted'
+                    )
+                  : isOpenRepeatable
+                    ? (
+                        language === 'en-US'
+                          ? `In progress - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'response' : 'responses'}`
+                          : language === 'es-ES'
+                            ? `En curso - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'respuesta' : 'respuestas'}`
+                            : `Em andamento - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'resposta' : 'respostas'}`
+                      )
+                    : rt(
+                        'taskInStore',
+                        language
+                      )
                 : isClosedRepeatable
                   ? (
                       language === 'en-US'
@@ -1751,7 +2161,9 @@ export default function RoteiroScreen() {
                           : `Fechado - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'resposta' : 'respostas'}`
                     )
                   : isDone
-                    ? i18n.t('statusCompleted')
+                    ? i18n.t(
+                        'statusCompleted'
+                      )
                     : isOpenRepeatable
                       ? (
                           language === 'en-US'
@@ -1760,7 +2172,9 @@ export default function RoteiroScreen() {
                               ? `Abierto - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'respuesta' : 'respuestas'}`
                               : `Aberto - ${repeatableResponsesCount} ${repeatableResponsesCount === 1 ? 'resposta' : 'respostas'}`
                         )
-                      : i18n.t('statusPending')}
+                      : i18n.t(
+                          'statusPending'
+                        )}
             </Text>
           </View>
 

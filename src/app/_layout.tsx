@@ -8,6 +8,7 @@ import { useAuthStore } from '../store/useAuthStore';
 import { globalSync } from '../services/syncService';
 import { DevicePreflightGate } from '../components/DevicePreflightGate';
 
+import { AppAlertProvider } from '../components/AppAlert';
 const BACKGROUND_SYNC_TASK = 'BACKGROUND_SYNC_TASK';
 
 if (!TaskManager.isTaskDefined(BACKGROUND_SYNC_TASK)) {
@@ -110,7 +111,9 @@ export default function RootLayout() {
 
   return (
     <DevicePreflightGate>
-      <Stack
+      {/* MOBILE_GLOBAL_APP_ALERT_PROVIDER_V2 */}
+<AppAlertProvider>
+<Stack
       screenOptions={{
         headerShown: false,
         animation: 'slide_from_right',
@@ -135,6 +138,7 @@ export default function RootLayout() {
       <Stack.Screen name="pesquisa_avulsa/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="visita/[id]" options={{ headerShown: false }} />
       </Stack>
+</AppAlertProvider>
     </DevicePreflightGate>
   );
 }

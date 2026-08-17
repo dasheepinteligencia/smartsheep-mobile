@@ -456,6 +456,10 @@ export const enUS = {
   surveyEvaluatedItems: 'EVALUATED ITEMS',
   surveyNoQuestionsAvailable: 'No questions available.',
   surveyFinishButton: 'FINISH SURVEY',
+  'surveySelectOptionsPlaceholder': 'Select options',
+  'surveyOneOptionSelected': '1 option selected',
+  'surveyManyOptionsSelected': '{{count}} options selected',
+  'surveyApplySelection': 'Apply',
   surveySearchOptionPlaceholder: 'Search option...',
 
   preflightTitle: 'Action required',
@@ -491,4 +495,8 @@ export const enUS = {
   photoGpsFakeDetected: 'A mocked location was detected. The photo will not be attached.',
   standaloneTaskSaveContextMissing: 'The project or user could not be identified to save this task.',
   standaloneTaskQueueError: 'The survey could not be added to the synchronization queue. Do not leave this screen; try saving again in a moment.',
+
+  repeatableLimitReachedTitle: 'Limit reached',
+  repeatableLimitReachedMessage: 'This survey already has {{current}}/{{max}} {{label}}. A new response cannot be registered.',
+  repeatableRecordsPlural: 'records',
 };

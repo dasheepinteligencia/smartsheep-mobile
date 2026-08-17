@@ -1485,6 +1485,7 @@ export const globalSync = async () => {
     const [
       resLojas,
       resCategorias,
+      resProdutos,
       fetchedJustificativas,
       fetchedAlertas,
       fetchedGamificationCampaigns,
@@ -1492,6 +1493,10 @@ export const globalSync = async () => {
     ] = await Promise.all([
       api(`/lojas/${projectId}?t=${urlTS}`, fetchOptions).catch(() => null),
       api(`/categorias?projectId=${projectId}&t=${urlTS}`, fetchOptions).catch(() => null),
+
+      // MOBILE_DYNAMIC_CATALOG_SYNC_V3
+      api(`/produtos/${projectId}?t=${urlTS}`, fetchOptions).catch(() => null),
+
       fetchJustificativas(projectId, urlTS, fetchOptions).catch(() => []),
       fetchAlertas(projectId, promotorId, urlTS, fetchOptions).catch(() => []),
       fetchGamificationCampaigns(projectId, urlTS, fetchOptions).catch(() => null),
@@ -1535,6 +1540,7 @@ export const globalSync = async () => {
 
     let lojas: any[] = [];
     let categorias: any[] = [];
+    let produtosCatalogo: any[] = [];
 
     if (resLojas && resLojas.ok) {
       const lojasData = await resLojas.json();
@@ -1543,8 +1549,170 @@ export const globalSync = async () => {
 
     if (resCategorias && resCategorias.ok) {
       const categoriasData = await resCategorias.json();
-      categorias = Array.isArray(categoriasData) ? categoriasData : (categoriasData.data || categoriasData.categorias || []);
+
+      categorias =
+        Array.isArray(categoriasData)
+          ? categoriasData
+          : (
+              categoriasData.data ||
+              categoriasData.categorias ||
+              []
+            );
     }
+
+    if (resProdutos && resProdutos.ok) {
+      const produtosData =
+        await resProdutos.json();
+
+      produtosCatalogo =
+        Array.isArray(produtosData)
+          ? produtosData
+          : (
+              produtosData.data ||
+              produtosData.produtos ||
+              produtosData.products ||
+              []
+            );
+    }
+
+
+    /*
+     * MOBILE_DYNAMIC_CATALOG_SYNC_V3
+     *
+     * Normaliza produto com os nomes reais da categoria
+     * e subcategoria. Assim o catálogo permanece útil
+     * mesmo se a rota de produtos devolver somente IDs.
+     */
+    const categoriasPorId =
+      new Map<string, any>();
+
+    const subcategoriasPorId =
+      new Map<string, any>();
+
+    safeArray(categorias).forEach(
+      (categoria: any) => {
+
+        const categoriaId =
+          String(
+            categoria?.id ||
+            ''
+          ).trim();
+
+        if (categoriaId) {
+          categoriasPorId.set(
+            categoriaId,
+            categoria
+          );
+        }
+
+        safeArray(
+          categoria?.subcategorias ||
+          categoria?.subcategories
+        ).forEach(
+          (subcategoria: any) => {
+
+            const subcategoriaId =
+              String(
+                subcategoria?.id ||
+                ''
+              ).trim();
+
+            if (subcategoriaId) {
+              subcategoriasPorId.set(
+                subcategoriaId,
+                {
+                  ...subcategoria,
+                  categoria:
+                    categoria
+                }
+              );
+            }
+          }
+        );
+      }
+    );
+
+
+    produtosCatalogo =
+      safeArray(produtosCatalogo).map(
+        (produto: any) => {
+
+          const categoriaId =
+            String(
+              produto?.categoriaId ||
+              produto?.categoria_id ||
+              produto?.categoria?.id ||
+              ''
+            ).trim();
+
+          const subcategoriaId =
+            String(
+              produto?.subcategoriaId ||
+              produto?.subcategoria_id ||
+              produto?.subcategoria?.id ||
+              ''
+            ).trim();
+
+          const categoria =
+            categoriasPorId.get(
+              categoriaId
+            );
+
+          const subcategoria =
+            subcategoriasPorId.get(
+              subcategoriaId
+            );
+
+          return {
+            ...produto,
+
+            categoria_nome:
+              produto?.categoria_nome ||
+              produto?.categoriaNome ||
+              produto?.categoria?.nome ||
+              categoria?.nome ||
+              (
+                typeof produto?.categoria ===
+                  'string'
+                  ? produto.categoria
+                  : ''
+              ),
+
+            subcategoria_nome:
+              produto?.subcategoria_nome ||
+              produto?.subcategoriaNome ||
+              produto?.subcategoria?.nome ||
+              subcategoria?.nome ||
+              (
+                typeof produto?.subcategoria ===
+                  'string'
+                  ? produto.subcategoria
+                  : ''
+              ),
+
+            marca_nome:
+              produto?.marca_nome ||
+              produto?.marcaNome ||
+              (
+                typeof produto?.marca ===
+                  'string'
+                  ? produto.marca
+                  : produto?.marca?.nome ||
+                    produto?.brand?.name ||
+                    ''
+              )
+          };
+        }
+      );
+
+
+    const mobileCatalog = {
+      categorias:
+        safeArray(categorias),
+
+      produtos:
+        safeArray(produtosCatalogo)
+    };
 
     if (lojas.length > 0) {
       v_list = safeArray(v_list).map((v: any) => {
@@ -1577,11 +1745,67 @@ export const globalSync = async () => {
       v_list = safeArray(v_list);
     }
 
+    /*
+     * Persiste catálogo no project_config da visita.
+     * saveRoteiroCompletoOffline já grava project_config_json.
+     */
+    v_list =
+      safeArray(v_list).map(
+        (visit: any) => ({
+          ...visit,
+
+          produtos:
+            safeArray(produtosCatalogo),
+
+          categorias:
+            safeArray(categorias),
+
+          project_config: {
+            ...(
+              visit?.project_config ||
+              visit?.projectConfig ||
+              {}
+            ),
+
+            mobile_catalog:
+              mobileCatalog
+          }
+        })
+      );
+
+
     t_list = safeArray(t_list).map((task: any) => ({
       ...task,
-      titulo: String(task.titulo || task.nome || ''),
-      frequencia: String(task.frequencia || ''),
-      data_vencimento: String(task.data_vencimento || task.data_fim || task.deadline || ''),
+
+      titulo:
+        String(
+          task.titulo ||
+          task.nome ||
+          ''
+        ),
+
+      frequencia:
+        String(
+          task.frequencia ||
+          ''
+        ),
+
+      data_vencimento:
+        String(
+          task.data_vencimento ||
+          task.data_fim ||
+          task.deadline ||
+          ''
+        ),
+
+      produtos:
+        safeArray(produtosCatalogo),
+
+      categorias:
+        safeArray(categorias),
+
+      mobile_catalog:
+        mobileCatalog
     }));
 
     c_list = safeArray(c_list).map(normalizeGamificationCampaign).filter(Boolean);

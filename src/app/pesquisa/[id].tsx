@@ -1,9 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  TextInput, Alert, Image, ActivityIndicator, StatusBar,
-  KeyboardAvoidingView, Platform, Modal
-} from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, ActivityIndicator, StatusBar, KeyboardAvoidingView, Platform, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -22,6 +18,7 @@ import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
 
+import { AppAlert } from '../../components/AppAlert';
 const normalizar = (val: any) => String(val || '').normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 
 const safeParseArray = (data: any) => {
@@ -78,6 +75,412 @@ const isDynamicCatalogOption = (value: any) => {
         normalized.includes('BRAND')
     );
 };
+
+
+// MOBILE_DYNAMIC_CATALOG_SOURCE_V2
+type MobileDynamicCatalogSource =
+  | 'PRODUTOS'
+  | 'CATEGORIAS'
+  | 'SUBCATEGORIAS'
+  | 'MARCAS';
+
+const getDynamicCatalogSource = (
+  rawOptions: any[]
+): MobileDynamicCatalogSource | null => {
+  for (const rawValue of rawOptions || []) {
+    const normalized =
+      String(rawValue ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toUpperCase();
+
+    if (
+      normalized.includes(
+        'DYNAMIC_SOURCE'
+      ) === false
+    ) {
+      continue;
+    }
+
+    /*
+     * SUBCATEGORIA vem antes de CATEGORIA
+     * porque contém a mesma palavra.
+     */
+    if (
+      normalized.includes(
+        'SUBCATEG'
+      )
+    ) {
+      return 'SUBCATEGORIAS';
+    }
+
+    if (
+      normalized.includes(
+        'CATEG'
+      )
+    ) {
+      return 'CATEGORIAS';
+    }
+
+    if (
+      normalized.includes(
+        'MARCA'
+      ) ||
+      normalized.includes(
+        'BRAND'
+      )
+    ) {
+      return 'MARCAS';
+    }
+
+    if (
+      normalized.includes(
+        'PRODUT'
+      )
+    ) {
+      return 'PRODUTOS';
+    }
+  }
+
+  return null;
+};
+
+
+const dynamicCatalogScalar = (
+  value: any
+): string => {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return '';
+  }
+
+  if (
+    typeof value === 'object'
+  ) {
+    return String(
+      value?.nome ||
+      value?.name ||
+      value?.label ||
+      value?.descricao ||
+      ''
+    ).trim();
+  }
+
+  return String(
+    value
+  ).trim();
+};
+
+
+const dynamicCatalogProductLabel = (
+  product: any,
+  source: MobileDynamicCatalogSource
+): string => {
+  if (
+    source ===
+    'CATEGORIAS'
+  ) {
+    return (
+      dynamicCatalogScalar(
+        product?.categoria_nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoriaNome
+      ) ||
+      dynamicCatalogScalar(
+        product?.catRel?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoria?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.category_name
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoryName
+      ) ||
+      dynamicCatalogScalar(
+        product?.category?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.category?.name
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoria
+      )
+    );
+  }
+
+  if (
+    source ===
+    'SUBCATEGORIAS'
+  ) {
+    return (
+      dynamicCatalogScalar(
+        product?.subcategoria_nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoriaNome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subRel?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoria?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategory_name
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoryName
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategory?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategory?.name
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoria
+      )
+    );
+  }
+
+  if (
+    source ===
+    'MARCAS'
+  ) {
+    return (
+      dynamicCatalogScalar(
+        product?.marca_nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.marcaNome
+      ) ||
+      dynamicCatalogScalar(
+        product?.marca
+      ) ||
+      dynamicCatalogScalar(
+        product?.brand_name
+      ) ||
+      dynamicCatalogScalar(
+        product?.brandName
+      ) ||
+      dynamicCatalogScalar(
+        product?.brand
+      )
+    );
+  }
+
+  return (
+    dynamicCatalogScalar(
+      product?.nome
+    ) ||
+    dynamicCatalogScalar(
+      product?.name
+    ) ||
+    dynamicCatalogScalar(
+      product?.descricao
+    ) ||
+    dynamicCatalogScalar(
+      product?.id
+    )
+  );
+};
+
+
+const buildDynamicCatalogOptions = (
+  products: any[],
+  source: MobileDynamicCatalogSource,
+  categories: any[] = []
+) => {
+  // MOBILE_DYNAMIC_CATALOG_RENDER_V3
+  const unique =
+    new Map<string, any>();
+
+  const addOption = (
+    labelValue: any,
+    raw: any
+  ) => {
+    const label =
+      dynamicCatalogScalar(
+        labelValue
+      );
+
+    if (label.length === 0) {
+      return;
+    }
+
+    const key =
+      normalizeOptionSortText(
+        label
+      );
+
+    if (
+      key.length === 0 ||
+      unique.has(key)
+    ) {
+      return;
+    }
+
+    unique.set(
+      key,
+      {
+        label,
+        value: label,
+        raw
+      }
+    );
+  };
+
+
+  /*
+   * CATEGORIAS:
+   * usa diretamente /categorias do backend,
+   * igual ao web.
+   */
+  if (
+    source ===
+    'CATEGORIAS'
+  ) {
+    for (
+      const category
+      of categories || []
+    ) {
+      addOption(
+        category?.nome ||
+        category?.name,
+        {
+          dynamicSource:
+            source,
+          category
+        }
+      );
+    }
+
+    return (
+      sortOptionObjectsAlphabetically(
+        Array.from(
+          unique.values()
+        )
+      )
+    );
+  }
+
+
+  /*
+   * SUBCATEGORIAS:
+   * o endpoint de categorias já traz
+   * subcategorias incluídas.
+   */
+  if (
+    source ===
+    'SUBCATEGORIAS'
+  ) {
+    for (
+      const category
+      of categories || []
+    ) {
+      for (
+        const subcategory
+        of (
+          category?.subcategorias ||
+          category?.subcategories ||
+          []
+        )
+      ) {
+        addOption(
+          subcategory?.nome ||
+          subcategory?.name,
+          {
+            dynamicSource:
+              source,
+            category,
+            subcategory
+          }
+        );
+      }
+    }
+
+    return (
+      sortOptionObjectsAlphabetically(
+        Array.from(
+          unique.values()
+        )
+      )
+    );
+  }
+
+
+  /*
+   * PRODUTOS e MARCAS:
+   * usam snapshot real de produtos.
+   */
+  for (
+    const product
+    of products || []
+  ) {
+    const label =
+      dynamicCatalogProductLabel(
+        product,
+        source
+      );
+
+    if (label.length === 0) {
+      continue;
+    }
+
+    const key =
+      normalizeOptionSortText(
+        label
+      );
+
+    if (key.length === 0) {
+      continue;
+    }
+
+    if (unique.has(key)) {
+      continue;
+    }
+
+    unique.set(
+      key,
+      {
+        label,
+        value:
+          label,
+        raw: {
+          dynamicSource:
+            source,
+          sourceProduct:
+            product
+        }
+      }
+    );
+  }
+
+  return (
+    sortOptionObjectsAlphabetically(
+      Array.from(
+        unique.values()
+      )
+    )
+  );
+};
+
+
+const removeDynamicCatalogTokens = (
+  options: any[]
+) =>
+  (options || []).filter(
+    (value: any) =>
+      isDynamicCatalogOption(
+        value
+      ) === false
+  );
 
 const normalizeOptionSortText = (value: any) =>
     String(value ?? '')
@@ -674,6 +1077,7 @@ const getPhotoConfigFromVisit = (visitObj: any) => {
     };
 };
 
+
 export default function SurveyExecutionScreen() {
   const { id, pesquisaId, serverCount, repeatMax, repeatLabelPlural, repeatLabelSingular } = useLocalSearchParams();
   const router = useRouter();
@@ -681,6 +1085,7 @@ export default function SurveyExecutionScreen() {
   const insets = useSafeAreaInsets();
   const { theme, language } = useSettingsStore();
   const isDark = theme === 'dark';
+
 
   const translate = useCallback(
       (key: string, fallback: string, params?: Record<string, string | number>) => {
@@ -705,9 +1110,11 @@ export default function SurveyExecutionScreen() {
   const [visita, setVisita] = useState<any>(null);
 
   const [produtosDoMix, setProdutosDoMix] = useState<any[]>([]);
+  const [categoriasCatalogo, setCategoriasCatalogo] = useState<any[]>([]);
   const [pesquisasRaw, setPesquisasRaw] = useState<any[]>([]);
 
   const [answers, setAnswers] = useState<Record<string, any>>({});
+
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
 
@@ -721,6 +1128,54 @@ export default function SurveyExecutionScreen() {
       reject: (error: any) => void;
   } | null>(null);
   const [watermarkJob, setWatermarkJob] = useState<{ uri: string; text: string; width: number; height: number } | null>(null);
+
+  /*
+   * MOBILE_DYNAMIC_CATALOG_RENDER_V3
+   *
+   * project_config_json é persistido offline na visita.
+   */
+  useEffect(() => {
+    if (!visita) {
+      return;
+    }
+
+    const projectConfig =
+      safeParseObject(
+        visita?.project_config_json ||
+        visita?.projectConfigJson ||
+        visita?.project_config ||
+        visita?.projectConfig
+      );
+
+    const mobileCatalog =
+      safeParseObject(
+        projectConfig?.mobile_catalog ||
+        projectConfig?.mobileCatalog
+      );
+
+    const categories =
+      safeParseArray(
+        mobileCatalog?.categorias ||
+        mobileCatalog?.categories
+      );
+
+    const products =
+      safeParseArray(
+        mobileCatalog?.produtos ||
+        mobileCatalog?.products
+      );
+
+    setCategoriasCatalogo(
+      categories
+    );
+
+    if (products.length > 0) {
+      setProdutosDoMix(
+        products
+      );
+    }
+  }, [visita]);
+
 
   const [customAlert, setCustomAlert] = useState<{
       visible: boolean;
@@ -741,12 +1196,20 @@ export default function SurveyExecutionScreen() {
 
   const closeCustomAlert = () => setCustomAlert(prev => ({ ...prev, visible: false }));
 
+  // MOBILE_DYNAMIC_CATALOG_DROPDOWN_VISIT_V1
   const [selectionSheet, setSelectionSheet] = useState<{
       visible: boolean;
       title: string;
       answerKey: string;
-      options: Array<{ label: string; value: string; raw?: any }>;
+      options: Array<{
+          label: string;
+          value: string;
+          raw?: any;
+      }>;
       selectedValue?: string;
+      selectedValues: string[];
+      multi: boolean;
+      showSearch: boolean;
       search: string;
   }>({
       visible: false,
@@ -754,27 +1217,134 @@ export default function SurveyExecutionScreen() {
       answerKey: '',
       options: [],
       selectedValue: '',
+      selectedValues: [],
+      multi: false,
+      showSearch: false,
       search: '',
   });
 
   const closeSelectionSheet = () => {
-      setSelectionSheet(prev => ({ ...prev, visible: false }));
+      setSelectionSheet(
+          prev => ({
+              ...prev,
+              visible: false,
+              search: '',
+          })
+      );
   };
 
-  const openSelectionSheet = (title: string, answerKey: string, options: Array<{ label: string; value: string; raw?: any }>, selectedValue?: string) => {
+  const openSelectionSheet = (
+      title: string,
+      answerKey: string,
+      options: Array<{
+          label: string;
+          value: string;
+          raw?: any;
+      }>,
+      selectedValue?: string,
+      config?: {
+          multi?: boolean;
+          selectedValues?: any[];
+          showSearch?: boolean;
+      }
+  ) => {
       setSelectionSheet({
           visible: true,
           title,
           answerKey,
           options,
-          selectedValue: selectedValue || '',
+          selectedValue:
+              selectedValue || '',
+          selectedValues:
+              Array.isArray(
+                  config?.selectedValues
+              )
+                  ? config!.selectedValues!
+                      .map(
+                          value =>
+                              String(value)
+                      )
+                  : [],
+          multi:
+              config?.multi === true,
+          showSearch:
+              config?.showSearch === true,
           search: '',
       });
   };
 
-  const selectOptionFromSheet = (option: { label: string; value: string; raw?: any }) => {
-      if (!selectionSheet.answerKey) return;
-      handleTextChange(selectionSheet.answerKey, option.value);
+  const selectOptionFromSheet = (
+      option: {
+          label: string;
+          value: string;
+          raw?: any;
+      }
+  ) => {
+      if (
+          !selectionSheet.answerKey
+      ) {
+          return;
+      }
+
+      if (selectionSheet.multi) {
+          setSelectionSheet(
+              prev => {
+                  const value =
+                      String(
+                          option.value
+                      );
+
+                  const exists =
+                      prev.selectedValues
+                          .includes(
+                              value
+                          );
+
+                  return {
+                      ...prev,
+
+                      selectedValues:
+                          exists
+                              ? prev
+                                  .selectedValues
+                                  .filter(
+                                      current =>
+                                          current !==
+                                          value
+                                  )
+                              : [
+                                  ...prev
+                                      .selectedValues,
+                                  value
+                                ]
+                  };
+              }
+          );
+
+          return;
+      }
+
+      handleTextChange(
+          selectionSheet.answerKey,
+          option.value
+      );
+
+      closeSelectionSheet();
+  };
+
+  const applySelectionSheet = () => {
+      if (
+          !selectionSheet.answerKey ||
+          !selectionSheet.multi
+      ) {
+          return;
+      }
+
+      handleTextChange(
+          selectionSheet.answerKey,
+          selectionSheet.selectedValues as any
+      );
+
       closeSelectionSheet();
   };
 
@@ -1391,7 +1961,7 @@ const handleWatermarkImageLoaded = async () => {
           return;
       }
 
-      Alert.alert(
+      AppAlert.alert(
           translate('photoAttachTitle', 'Anexar imagem'),
           isOptionPhoto
               ? translate('photoAttachOptionMessage', 'Origem da foto para: {{option}}', { option: optionName || '' })
@@ -1699,9 +2269,24 @@ const handleWatermarkImageLoaded = async () => {
                (effectiveMax && effectiveCount >= effectiveMax)
            ) {
                setSaving(false);
-               Alert.alert(
-                   'Limite atingido',
-                   `Esta pesquisa já possui ${effectiveCount}/${effectiveMax} ${String(repeatLabelPlural || serverStatus?.labelPlural || 'registros')}. Não é possível registrar nova resposta.`
+               AppAlert.alert(
+                   translate('repeatableLimitReachedTitle', 'Limite atingido'),
+                   translate(
+                     'repeatableLimitReachedMessage',
+                     'Esta pesquisa já possui {{current}}/{{max}} {{label}}. Não é possível registrar nova resposta.',
+                     {
+                       current: effectiveCount,
+                       max: effectiveMax,
+                       label: String(
+                         repeatLabelPlural ||
+                         serverStatus?.labelPlural ||
+                         translate(
+                           'repeatableRecordsPlural',
+                           'registros'
+                         )
+                       )
+                     }
+                   )
                );
                return;
            }
@@ -2128,18 +2713,73 @@ const finalizadoAt = new Date().toISOString();
       const isExplicitSelection = ['SELECAO', 'DROPDOWN', 'RADIO', 'SINGLE_CHOICE', 'UNICA_ESCOLHA'].includes(tipo);
       const isProductSelection = ['PRODUTO', 'PRODUCT'].includes(tipo);
 
-      const rawOptions = parseOptionsForMobile(pergunta.opcoes);
-      const usesDynamicProducts = rawOptions.some(isDynamicProductOption);
-      const canUseProductOptions = isExplicitSelection || isMultipla || isProductSelection || usesDynamicProducts;
-      const productOptions = canUseProductOptions ? buildProductOptionsForQuestion(pergunta) : [];
+      const rawOptions =
+          parseOptionsForMobile(
+              pergunta.opcoes
+          );
 
-      const rawOptionObjects = (usesDynamicProducts || isProductSelection)
-          ? productOptions
-          : (
-              rawOptions.length > 0
-                  ? rawOptions.map((op: any) => ({ label: String(op), value: String(op) }))
-                  : productOptions
-            );
+      const dynamicCatalogSource =
+          getDynamicCatalogSource(
+              rawOptions
+          );
+
+      const usesDynamicCatalog =
+          dynamicCatalogSource === null
+              ? false
+              : true;
+
+      const canUseProductOptions =
+          isExplicitSelection ||
+          isMultipla ||
+          isProductSelection ||
+          usesDynamicCatalog;
+
+      const productOptions =
+          canUseProductOptions
+              ? buildProductOptionsForQuestion(
+                  pergunta
+                )
+              : [];
+
+      const filteredCatalogProducts =
+          sortedProdutosDoMix.filter(
+              (product: any) =>
+                  shouldShowProductForQuestion(
+                      pergunta,
+                      product
+                  )
+          );
+
+      const dynamicCatalogOptions =
+          dynamicCatalogSource === null
+              ? productOptions
+              : (
+                  dynamicCatalogSource ===
+                  'PRODUTOS'
+                      ? productOptions
+                      : buildDynamicCatalogOptions(                          filteredCatalogProducts,                          dynamicCatalogSource,                          categoriasCatalogo                        )
+                );
+
+      const rawOptionObjects =
+          (
+              usesDynamicCatalog ||
+              isProductSelection
+          )
+              ? dynamicCatalogOptions
+              : (
+                  rawOptions.length > 0
+                      ? removeDynamicCatalogTokens(
+                          rawOptions
+                        ).map(
+                          (op: any) => ({
+                              label:
+                                  String(op),
+                              value:
+                                  String(op)
+                          })
+                        )
+                      : productOptions
+                );
 
       const optionObjects = shouldSortChoiceOptions(rawOptions, productOptions, rawOptionObjects, tipo)
           ? sortOptionObjectsAlphabetically(rawOptionObjects)
@@ -2171,6 +2811,421 @@ const finalizadoAt = new Date().toISOString();
           );
       }
 
+      /*
+       * Fonte dinâmica múltipla:
+       * não renderiza centenas de opções inline.
+       *
+       * Abre o mesmo selectionSheet usado pela
+       * seleção simples, porém em modo multi.
+       */
+      if (
+          isMultipla &&
+          usesDynamicCatalog
+      ) {
+          const selectedValues =
+              Array.isArray(
+                  answers[answerKey]
+              )
+                  ? answers[
+                      answerKey
+                    ].map(
+                      (value: any) =>
+                          String(value)
+                    )
+                  : [];
+
+          const selectedLabels =
+              selectedValues.map(
+                  (value: string) => {
+                      const found =
+                          optionObjects.find(
+                              (option: any) =>
+                                  String(
+                                      option.value
+                                  ) ===
+                                  value
+                          );
+
+                      return (
+                          found?.label ||
+                          value
+                      );
+                  }
+              );
+
+          return (
+              <View
+                  onLayout={
+                      (e) => {
+                          layoutRefs.current[
+                              answerKey
+                          ] =
+                              e.nativeEvent
+                                  .layout.y;
+                      }
+                  }
+              >
+                  <TouchableOpacity
+                      activeOpacity={0.85}
+                      disabled={
+                          optionObjects.length ===
+                          0
+                      }
+                      style={[
+                          styles.selectButton,
+                          {
+                              backgroundColor:
+                                  bg,
+
+                              borderColor:
+                                  selectedValues.length >
+                                  0
+                                      ? accent
+                                      : border,
+
+                              opacity:
+                                  optionObjects.length ===
+                                  0
+                                      ? 0.55
+                                      : 1,
+                          },
+                      ]}
+                      onPress={() =>
+                          openSelectionSheet(
+                              pergunta.titulo ||
+                              pergunta.texto ||
+                              translate(
+                                  'surveySelectOptionTitle',
+                                  'Selecionar opções'
+                              ),
+                              answerKey,
+                              optionObjects,
+                              '',
+                              {
+                                  multi:
+                                      true,
+
+                                  selectedValues:
+                                      selectedValues,
+
+                                  showSearch:
+                                      true,
+                              }
+                          )
+                      }
+                  >
+                      <View
+                          style={{
+                              flex: 1
+                          }}
+                      >
+                          <Text
+                              style={[
+                                  styles
+                                      .selectButtonLabel,
+                                  {
+                                      color:
+                                          selectedValues
+                                              .length > 0
+                                              ? textPrimary
+                                              : textSecondary
+                                  }
+                              ]}
+                              numberOfLines={1}
+                          >
+                              {
+                                  optionObjects.length ===
+                                  0
+                                      ? translate(
+                                          'surveyNoOptionsAvailable',
+                                          'Nenhuma opção disponível'
+                                        )
+                                      : (
+                                          selectedValues.length ===
+                                          0
+                                              ? translate(
+                                                  'surveySelectOptionsPlaceholder',
+                                                  'Selecione opções'
+                                                )
+                                              : (
+                                                  selectedValues.length ===
+                                                  1
+                                                      ? translate(
+                                                          'surveyOneOptionSelected',
+                                                          '1 opção selecionada'
+                                                        )
+                                                      : translate(
+                                                          'surveyManyOptionsSelected',
+                                                          '{{count}} opções selecionadas',
+                                                          {
+                                                              count:
+                                                                  selectedValues.length
+                                                          }
+                                                        )
+                                                )
+                                        )
+                              }
+                          </Text>
+
+                          {
+                              selectedLabels.length >
+                              0 && (
+                                  <Text
+                                      style={[
+                                          styles
+                                              .selectButtonSubLabel,
+                                          {
+                                              color:
+                                                  textSecondary
+                                          }
+                                      ]}
+                                      numberOfLines={1}
+                                  >
+                                      {
+                                          selectedLabels
+                                              .slice(
+                                                  0,
+                                                  3
+                                              )
+                                              .join(
+                                                  ', '
+                                              )
+                                      }
+                                      {
+                                          selectedLabels
+                                              .length > 3
+                                              ? '…'
+                                              : ''
+                                      }
+                                  </Text>
+                              )
+                          }
+                      </View>
+
+                      <ChevronDown
+                          size={20}
+                          color={
+                              selectedValues.length >
+                              0
+                                  ? accent
+                                  : textSecondary
+                          }
+                      />
+                  </TouchableOpacity>
+
+
+                  {
+                      hasPhotoByOption &&
+                      selectedValues.map(
+                          (
+                              opcao:
+                                  string
+                          ) => {
+
+                              const optionObj =
+                                  optionObjects.find(
+                                      (
+                                          option:
+                                              any
+                                      ) =>
+                                          String(
+                                              option
+                                                  .value
+                                          ) ===
+                                          String(
+                                              opcao
+                                          )
+                                  );
+
+                              const label =
+                                  optionObj?.label ||
+                                  opcao;
+
+                              const photoKey =
+                                  `${answerKey}::foto_${opcao}`;
+
+                              const currentPhotosOp =
+                                  Array.isArray(
+                                      answers[
+                                          photoKey
+                                      ]
+                                  )
+                                      ? answers[
+                                          photoKey
+                                        ]
+                                      : (
+                                          answers[
+                                              photoKey
+                                          ]
+                                              ? [
+                                                  answers[
+                                                      photoKey
+                                                  ]
+                                                ]
+                                              : []
+                                        );
+
+                              return (
+                                  <View
+                                      key={
+                                          `dynamic-photo-${answerKey}-${opcao}`
+                                      }
+                                      style={[
+                                          styles
+                                              .optionPhotoArea,
+                                          {
+                                              backgroundColor:
+                                                  bg,
+                                              borderColor:
+                                                  border
+                                          }
+                                      ]}
+                                  >
+                                      <Text
+                                          style={[
+                                              styles
+                                                  .optionPhotoLabel,
+                                              {
+                                                  color:
+                                                      textSecondary
+                                              }
+                                          ]}
+                                      >
+                                          {
+                                              translate(
+                                                  'surveyOptionPhotoLabel',
+                                                  'Foto para "{{option}}"',
+                                                  {
+                                                      option:
+                                                          label
+                                                  }
+                                              )
+                                          }
+                                      </Text>
+
+                                      <ScrollView
+                                          horizontal
+                                          showsHorizontalScrollIndicator={
+                                              false
+                                          }
+                                          style={
+                                              styles
+                                                  .photosScrollList
+                                          }
+                                      >
+                                          {
+                                              currentPhotosOp.map(
+                                                  (
+                                                      photoUri:
+                                                          string,
+                                                      pIdx:
+                                                          number
+                                                  ) => (
+                                                      <View
+                                                          key={
+                                                              pIdx
+                                                          }
+                                                          style={[
+                                                              styles
+                                                                  .photoWrapperMini,
+                                                              {
+                                                                  borderColor:
+                                                                      border
+                                                              }
+                                                          ]}
+                                                      >
+                                                          <Image
+                                                              source={{
+                                                                  uri:
+                                                                      photoUri
+                                                              }}
+                                                              style={
+                                                                  styles
+                                                                      .photoPreview
+                                                              }
+                                                          />
+
+                                                          <TouchableOpacity
+                                                              style={
+                                                                  styles
+                                                                      .removePhotoBtn
+                                                              }
+                                                              onPress={() =>
+                                                                  removePhoto(
+                                                                      photoKey,
+                                                                      pIdx
+                                                                  )
+                                                              }
+                                                          >
+                                                              <X
+                                                                  size={
+                                                                      12
+                                                                  }
+                                                                  color="white"
+                                                              />
+                                                          </TouchableOpacity>
+                                                      </View>
+                                                  )
+                                              )
+                                          }
+
+                                          <TouchableOpacity
+                                              style={[
+                                                  styles
+                                                      .photoBtnMini,
+                                                  {
+                                                      borderColor:
+                                                          accent
+                                                  }
+                                              ]}
+                                              onPress={() =>
+                                                  handlePhotoRequest(
+                                                      pergunta,
+                                                      answerKey,
+                                                      opcao
+                                                  )
+                                              }
+                                          >
+                                              <Camera
+                                                  size={18}
+                                                  color={
+                                                      accent
+                                                  }
+                                              />
+
+                                              <Text
+                                                  style={[
+                                                      styles
+                                                          .photoBtnTextMini,
+                                                      {
+                                                          color:
+                                                              accent
+                                                      }
+                                                  ]}
+                                              >
+                                                  {
+                                                      translate(
+                                                          'surveyAttachPhoto',
+                                                          'Anexar foto'
+                                                      )
+                                                  }
+                                              </Text>
+                                          </TouchableOpacity>
+                                      </ScrollView>
+                                  </View>
+                              );
+                          }
+                      )
+                  }
+              </View>
+          );
+      }
+
+
+      /*
+       * Múltipla estática continua exatamente
+       * com o comportamento anterior.
+       */
       if (isMultipla) {
           return (
               <View style={{ gap: 8 }} onLayout={(e) => { layoutRefs.current[answerKey] = e.nativeEvent.layout.y; }}>
@@ -2249,7 +3304,12 @@ const finalizadoAt = new Date().toISOString();
                           pergunta.titulo || pergunta.texto || translate('surveySelectOptionTitle', 'Selecionar opção'),
                           answerKey,
                           optionObjects,
-                          answers[answerKey] || ''
+                          answers[answerKey] || '',
+                          {
+                              multi: false,
+                              showSearch:
+                                  usesDynamicCatalog
+                          }
                       )}
                   >
                       <View style={{ flex: 1 }}>
@@ -2546,7 +3606,7 @@ const finalizadoAt = new Date().toISOString();
                         </TouchableOpacity>
                     </View>
 
-                    {selectionSheet.options.length > 8 && (
+                    {(selectionSheet.showSearch || selectionSheet.options.length > 8) && (
                         <TextInput
                             value={selectionSheet.search}
                             onChangeText={(value) => setSelectionSheet(prev => ({ ...prev, search: value }))}
@@ -2566,7 +3626,25 @@ const finalizadoAt = new Date().toISOString();
                                 return normalizeOptionSortText(`${option.label || option.value} ${option.raw?.marca || ''} ${option.raw?.categoria || ''} ${option.raw?.subcategoria || ''}`).includes(term);
                             })
                             .map((option, index) => {
-                            const selected = String(selectionSheet.selectedValue || '') === String(option.value);
+                            const selected =
+                                selectionSheet.multi
+                                    ? selectionSheet
+                                        .selectedValues
+                                        .includes(
+                                            String(
+                                                option.value
+                                            )
+                                        )
+                                    : (
+                                        String(
+                                            selectionSheet
+                                                .selectedValue ||
+                                            ''
+                                        ) ===
+                                        String(
+                                            option.value
+                                        )
+                                      );
                             return (
                                 <TouchableOpacity
                                     key={`${option.value}-${index}`}
@@ -2577,7 +3655,24 @@ const finalizadoAt = new Date().toISOString();
                                     ]}
                                     onPress={() => selectOptionFromSheet(option)}
                                 >
-                                    <View style={[styles.sheetRadio, { borderColor: selected ? accent : textSecondary, backgroundColor: selected ? accent : 'transparent' }]}>
+                                    <View
+                                        style={[
+                                            selectionSheet.multi
+                                                ? styles.sheetCheckbox
+                                                : styles.sheetRadio,
+                                            {
+                                                borderColor:
+                                                    selected
+                                                        ? accent
+                                                        : textSecondary,
+
+                                                backgroundColor:
+                                                    selected
+                                                        ? accent
+                                                        : 'transparent'
+                                            }
+                                        ]}
+                                    >
                                         {selected ? <Check size={13} color="#FFF" /> : null}
                                     </View>
                                     <View style={{ flex: 1 }}>
@@ -2588,6 +3683,42 @@ const finalizadoAt = new Date().toISOString();
                             );
                         })}
                     </ScrollView>
+
+                    {
+                        selectionSheet.multi && (
+                            <TouchableOpacity
+                                activeOpacity={0.88}
+                                style={[
+                                    styles.sheetApplyButton,
+                                    {
+                                        backgroundColor:
+                                            '#10B981'
+                                    }
+                                ]}
+                                onPress={
+                                    applySelectionSheet
+                                }
+                            >
+                                <Check
+                                    size={18}
+                                    color="#FFFFFF"
+                                />
+
+                                <Text
+                                    style={
+                                        styles.sheetApplyText
+                                    }
+                                >
+                                    {
+                                        translate(
+                                            'surveyApplySelection',
+                                            'Aplicar'
+                                        )
+                                    }
+                                </Text>
+                            </TouchableOpacity>
+                        )
+                    }
                 </TouchableOpacity>
             </TouchableOpacity>
         </Modal>
@@ -2625,6 +3756,9 @@ const styles = StyleSheet.create({
   sheetSearchInput: { height: 46, borderRadius: 16, borderWidth: 1, paddingHorizontal: 14, fontSize: 14, fontWeight: '700', marginBottom: 12 },
   sheetOption: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, borderWidth: 1, marginBottom: 10 },
   sheetRadio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  sheetCheckbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  sheetApplyButton: { minHeight: 52, borderRadius: 14, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  sheetApplyText: { color: '#FFFFFF', fontSize: 15, fontWeight: '900' },
   sheetOptionText: { fontSize: 15, fontWeight: '800' },
   sheetOptionSubText: { fontSize: 11, marginTop: 3, fontWeight: '600' },
   checkboxItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 12, borderWidth: 1 },

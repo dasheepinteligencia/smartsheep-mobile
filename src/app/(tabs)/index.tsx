@@ -369,6 +369,150 @@ const sortVisitsByRouteOrder = (visits: any[]) => {
     .map((item) => item.visit);
 };
 
+
+// MOBILE_DASHBOARD_REAL_STATE_V1
+const getVisitSurveyStatesForDashboard = (
+  visit: any
+) => {
+  const parsed = safeParseJson(
+    visit?.pesquisa_json ||
+      visit?.pesquisaJson ||
+      visit?.pesquisas,
+    []
+  );
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  const surveys = new Map<string, any>();
+
+  const toBool = (value: any) => {
+    if (value === true || value === 1) return true;
+
+    return [
+      'true',
+      '1',
+      'sim',
+      'yes'
+    ].includes(
+      String(value || '')
+        .trim()
+        .toLowerCase()
+    );
+  };
+
+  parsed.forEach(
+    (item: any, index: number) => {
+      const surveyId = String(
+        item?.id ||
+          item?.pesquisaId ||
+          item?.pesquisa_id ||
+          item?.surveyId ||
+          item?.survey_id ||
+          item?.formularioId ||
+          item?.formulario_id ||
+          visit?.pesquisa_id ||
+          visit?.pesquisaId ||
+          `visit_survey_${index}`
+      );
+
+      const currentCount =
+        Number(
+          item?.currentCount ??
+            item?.current_count ??
+            item?.coletasCount ??
+            item?.coletas_count ??
+            0
+        ) || 0;
+
+      const repeatable =
+        toBool(item?.repetivel) ||
+        toBool(item?.repeatable);
+
+      let status = String(
+        item?.status ||
+          item?.statusOnline ||
+          ''
+      )
+        .trim()
+        .toUpperCase();
+
+      if (!status) {
+        const completed =
+          toBool(item?.concluida) ||
+          toBool(item?.completed) ||
+          toBool(item?.realizada);
+
+        status = completed
+          ? 'REALIZADA'
+          : repeatable &&
+              currentCount > 0
+            ? 'EM_ANDAMENTO'
+            : 'PENDENTE';
+      }
+
+      const previous =
+        surveys.get(surveyId);
+
+      /*
+       * Se o payload antigo vier uma linha por pergunta,
+       * não podemos criar várias tarefas para o mesmo survey.
+       */
+      if (previous) {
+        const previousDone =
+          isTaskDoneStatus(
+            previous.status
+          );
+
+        const currentDone =
+          isTaskDoneStatus(
+            status
+          );
+
+        if (
+          currentDone ||
+          !previousDone
+        ) {
+          surveys.set(
+            surveyId,
+            {
+              id: surveyId,
+              status,
+              repeatable,
+              currentCount:
+                Math.max(
+                  Number(
+                    previous.currentCount ||
+                      0
+                  ),
+                  currentCount
+                )
+            }
+          );
+        }
+
+        return;
+      }
+
+      surveys.set(
+        surveyId,
+        {
+          id: surveyId,
+          status,
+          repeatable,
+          currentCount
+        }
+      );
+    }
+  );
+
+  return Array.from(
+    surveys.values()
+  );
+};
+
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const isSqlitePrepareTransientError = (error: any) => {
@@ -550,7 +694,9 @@ export default function DashboardScreen() {
 
           const status = String(v.status || '').toUpperCase();
 
-          if (isDoneStatus(status) || v.pesquisa_realizada === 1) {
+          // MOBILE_VISIT_DONE_ONLY_BY_VISIT_STATE_V1
+          // Responder formulário NÃO conclui a visita.
+          if (isDoneStatus(status)) {
             vHojeDone++;
             lojasVisitadas.add(String(v.loja_id));
           }
@@ -590,14 +736,80 @@ export default function DashboardScreen() {
         }
       });
 
-      const finalTasksTotal = tAvulsaHojeTotal + vHojeTotal * qtdPesquisasPorVisita;
-      const finalTasksDone = tAvulsaHojeDone + vHojeDone * qtdPesquisasPorVisita;
+      // MOBILE_DASHBOARD_REAL_TASK_COUNT_V1
+      // POR_VISITA é contado pela lista REAL de surveys da visita,
+      // e não por visitas x quantidade global de pesquisas.
+      let tVisitaHojeTotal = 0;
+      let tVisitaHojeDone = 0;
+
+      todasVisitas.forEach((visit) => {
+        const visitDate =
+          formatToYMD(
+            visit.data_programada
+          );
+
+        if (visitDate !== todayStr) {
+          return;
+        }
+
+        /*
+         * Visita justificada encerra a obrigação
+         * sem criar formulários pendentes fictícios.
+         */
+        if (
+          String(
+            visit.status ||
+              ''
+          )
+            .trim()
+            .toUpperCase() ===
+          'JUSTIFICADA'
+        ) {
+          return;
+        }
+
+        const visitSurveys =
+          getVisitSurveyStatesForDashboard(
+            visit
+          );
+
+        tVisitaHojeTotal +=
+          visitSurveys.length;
+
+        tVisitaHojeDone +=
+          visitSurveys.filter(
+            (survey: any) =>
+              isTaskDoneStatus(
+                survey.status
+              )
+          ).length;
+      });
+
+      const finalTasksTotal =
+        tAvulsaHojeTotal +
+        tVisitaHojeTotal;
+
+      const finalTasksDone =
+        tAvulsaHojeDone +
+        tVisitaHojeDone;
 
       setTasksData({
         total: finalTasksTotal,
         done: finalTasksDone,
-        pending: Math.max(0, finalTasksTotal - finalTasksDone),
-        percent: finalTasksTotal > 0 ? Math.round((finalTasksDone / finalTasksTotal) * 100) : 0,
+        pending: Math.max(
+          0,
+          finalTasksTotal -
+            finalTasksDone
+        ),
+        percent:
+          finalTasksTotal > 0
+            ? Math.round(
+                (
+                  finalTasksDone /
+                  finalTasksTotal
+                ) * 100
+              )
+            : 0,
       });
 
       // 3. Histórico 7 dias e Perfect Store
@@ -649,15 +861,33 @@ export default function DashboardScreen() {
         const hBackendTasksTotal = Number(h7d.tasksTotal || 0);
         const hBackendTasksDone = Number(h7d.tasksDone || 0);
 
-        const hTasksTotal = hVisitsTotal * qtdPesquisasPorVisita + hBackendTasksTotal + tAvulsaHojeTotal;
-        const hTasksDone = hVisitsDone * qtdPesquisasPorVisita + hBackendTasksDone + tAvulsaHojeDone;
+        // MOBILE_HISTORY_BACKEND_SOURCE_V1
+        // history_7d já vem calculado pela API com
+        // as obrigações reais. Não multiplicar novamente.
+        const hTasksTotal =
+          hBackendTasksTotal;
+
+        const hTasksDone =
+          hBackendTasksDone;
 
         setHistory({
-          visitsTotal: hVisitsTotal,
-          visitsDone: hVisitsDone,
-          tasksTotal: hTasksTotal,
-          tasksDone: hTasksDone,
-          percent: hTasksTotal > 0 ? Math.round((hTasksDone / hTasksTotal) * 100) : 0,
+          visitsTotal:
+            hVisitsTotal,
+          visitsDone:
+            hVisitsDone,
+          tasksTotal:
+            hTasksTotal,
+          tasksDone:
+            hTasksDone,
+          percent:
+            hTasksTotal > 0
+              ? Math.round(
+                  (
+                    hTasksDone /
+                    hTasksTotal
+                  ) * 100
+                )
+              : 0,
         });
       } else {
         setHistory({

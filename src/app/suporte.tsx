@@ -1,19 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  Linking,
-  Platform,
-  RefreshControl,
-  ScrollView,
-  Share,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  StatusBar,
-} from 'react-native';
+import { ActivityIndicator, AppState, Linking, Platform, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View, StatusBar } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
@@ -50,6 +36,7 @@ import { getAppGpsStatus } from '../services/locationService';
 import { api } from '../services/api';
 import { addAppLog, getDBConnection, getRecentAppLogs } from '../database/db';
 
+import { AppAlert } from '../components/AppAlert';
 const ACCENT_COLOR = '#FF7A00';
 
 const SUPPORT_TEXTS = {
@@ -516,7 +503,7 @@ export default function AjudaSuporteScreen() {
 
       await Share.share({ message: diagnosticText });
     } catch (error: any) {
-      Alert.alert(supportText('shareErrorTitle', language), error?.message || supportText('shareErrorMessage', language));
+      AppAlert.alert(supportText('shareErrorTitle', language), error?.message || supportText('shareErrorMessage', language));
     }
   };
 
@@ -529,13 +516,13 @@ export default function AjudaSuporteScreen() {
       const canOpen = await Linking.canOpenURL(url);
 
       if (!canOpen) {
-        Alert.alert(supportText('emailUnavailableTitle', language), supportText('emailUnavailableMessage', language));
+        AppAlert.alert(supportText('emailUnavailableTitle', language), supportText('emailUnavailableMessage', language));
         return;
       }
 
       await Linking.openURL(url);
     } catch {
-      Alert.alert(supportText('emailUnavailableTitle', language), supportText('emailUnavailableMessage', language));
+      AppAlert.alert(supportText('emailUnavailableTitle', language), supportText('emailUnavailableMessage', language));
     }
   };
 
@@ -546,7 +533,7 @@ export default function AjudaSuporteScreen() {
     try {
       await Linking.openURL(url);
     } catch {
-      Alert.alert(supportText('whatsappUnavailableTitle', language), supportText('whatsappUnavailableMessage', language));
+      AppAlert.alert(supportText('whatsappUnavailableTitle', language), supportText('whatsappUnavailableMessage', language));
     }
   };
 

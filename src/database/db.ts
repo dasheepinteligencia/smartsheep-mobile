@@ -1169,10 +1169,61 @@ export const saveRoteiroCompletoOffline = async (
         // caso algum endpoint antigo ainda não devolva os horários.
         const serverIsOperational = isOperationalServerStatus(statusServidor);
 
+        // MOBILE_REOPEN_PRESERVE_CHECKIN_CLEAR_CHECKOUT_COLETAS_V1
+        //
+        // Regra funcional de REABERTURA:
+        //
+        // visita antes:
+        //   REALIZADA
+        //   checkin_at = preenchido
+        //   checkout_at = preenchido
+        //   pesquisas respondidas
+        //
+        // servidor depois de reabrir:
+        //   EM_ANDAMENTO
+        //   checkin_at = preservado
+        //   checkout_at = null
+        //   pesquisas resetadas
+        //
+        // O fato de EM_ANDAMENTO ser um status "operacional"
+        // NÃO significa que devemos reaproveitar o checkout antigo.
+        //
+        // Observação importante:
+        // este bloco só é alcançado quando o conflito já decidiu
+        // que SERVER venceu. Trabalho offline local mais novo
+        // continua protegido pelo getVisitConflictDecision().
+        const localStatusBeforeServerMerge =
+          normalizeStatus(
+            localData?.status
+          );
+
+        const localWasClosed =
+          Boolean(
+            localData?.checkout_at
+          ) ||
+          [
+            'REALIZADA',
+            'COMPLETA',
+            'CONCLUIDA',
+            'VISITADA'
+          ].includes(
+            localStatusBeforeServerMerge
+          );
+
+        const serverIsReopenedVisit =
+          [
+            'EM_ANDAMENTO',
+            'INICIADA'
+          ].includes(
+            statusServidor
+          ) &&
+          !serverCheckoutAt &&
+          localWasClosed;
+
         // clear-stale-local-visit-coletas-after-server-reset
         // Quando o web reseta/apaga uma visita e o servidor volta PENDENTE,
         // o SQLite não pode manter coletas antigas dessa visita como cache local.
-        if (!serverIsOperational) {
+        if (!serverIsOperational || serverIsReopenedVisit) {
           const staleVisitIds = Array.from(new Set([
             visitId,
             v.visita_id_json,
@@ -1201,8 +1252,35 @@ export const saveRoteiroCompletoOffline = async (
           }
         }
 
-        const finalCheckinAt = serverIsOperational ? (serverCheckinAt || localData?.checkin_at || null) : null;
-        const finalCheckoutAt = serverIsOperational ? (serverCheckoutAt || localData?.checkout_at || null) : null;
+        // Na reabertura:
+        //
+        // CHECK-IN:
+        // permanece exatamente como definido pela operação.
+        //
+        // CHECKOUT:
+        // deve obrigatoriamente desaparecer.
+        //
+        // Fora da reabertura mantemos a compatibilidade existente
+        // para endpoints antigos que eventualmente não retornem horário.
+        const finalCheckinAt =
+          serverIsOperational
+            ? (
+                serverCheckinAt ||
+                localData?.checkin_at ||
+                null
+              )
+            : null;
+
+        const finalCheckoutAt =
+          serverIsReopenedVisit
+            ? null
+            : serverIsOperational
+              ? (
+                  serverCheckoutAt ||
+                  localData?.checkout_at ||
+                  null
+                )
+              : null;
 
         await db.runAsync(`DELETE FROM visits WHERE id = ?`, [visitId]);
 

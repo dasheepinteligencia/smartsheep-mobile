@@ -455,6 +455,10 @@ export const esES = {
   surveyEvaluatedItems: 'ÍTEMS EVALUADOS',
   surveyNoQuestionsAvailable: 'No hay preguntas disponibles.',
   surveyFinishButton: 'FINALIZAR ENCUESTA',
+  'surveySelectOptionsPlaceholder': 'Seleccione opciones',
+  'surveyOneOptionSelected': '1 opción seleccionada',
+  'surveyManyOptionsSelected': '{{count}} opciones seleccionadas',
+  'surveyApplySelection': 'Aplicar',
   surveySearchOptionPlaceholder: 'Buscar opción...',
 
   preflightTitle: 'Acción necesaria',
@@ -490,4 +494,8 @@ export const esES = {
   photoGpsFakeDetected: 'Se detectó una ubicación simulada. La foto no será adjuntada.',
   standaloneTaskSaveContextMissing: 'No fue posible identificar el proyecto o el usuario para guardar esta tarea.',
   standaloneTaskQueueError: 'No fue posible agregar la encuesta a la cola de sincronización. No salga de esta pantalla; intente guardarla nuevamente en unos instantes.',
+
+  repeatableLimitReachedTitle: 'Límite alcanzado',
+  repeatableLimitReachedMessage: 'Esta encuesta ya tiene {{current}}/{{max}} {{label}}. No es posible registrar una nueva respuesta.',
+  repeatableRecordsPlural: 'registros',
 };

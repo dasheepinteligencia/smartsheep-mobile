@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Image, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, ClipboardCheck, X } from 'lucide-react-native';
+import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, ClipboardCheck, X, ChevronDown, Check } from 'lucide-react-native';
 import { addAppLog, getDBConnection } from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -14,6 +14,7 @@ import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
 
 
+import { AppAlert } from '../../components/AppAlert';
 const safeParseArray = (data: any) => {
   if (!data) return [];
   if (Array.isArray(data)) return data;
@@ -73,6 +74,412 @@ const isDynamicCatalogOption = (value: any) => {
     normalized.includes('BRAND')
   );
 };
+
+
+// MOBILE_DYNAMIC_CATALOG_SOURCE_V2
+type MobileDynamicCatalogSource =
+  | 'PRODUTOS'
+  | 'CATEGORIAS'
+  | 'SUBCATEGORIAS'
+  | 'MARCAS';
+
+const getDynamicCatalogSource = (
+  rawOptions: any[]
+): MobileDynamicCatalogSource | null => {
+  for (const rawValue of rawOptions || []) {
+    const normalized =
+      String(rawValue ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toUpperCase();
+
+    if (
+      normalized.includes(
+        'DYNAMIC_SOURCE'
+      ) === false
+    ) {
+      continue;
+    }
+
+    /*
+     * SUBCATEGORIA vem antes de CATEGORIA
+     * porque contém a mesma palavra.
+     */
+    if (
+      normalized.includes(
+        'SUBCATEG'
+      )
+    ) {
+      return 'SUBCATEGORIAS';
+    }
+
+    if (
+      normalized.includes(
+        'CATEG'
+      )
+    ) {
+      return 'CATEGORIAS';
+    }
+
+    if (
+      normalized.includes(
+        'MARCA'
+      ) ||
+      normalized.includes(
+        'BRAND'
+      )
+    ) {
+      return 'MARCAS';
+    }
+
+    if (
+      normalized.includes(
+        'PRODUT'
+      )
+    ) {
+      return 'PRODUTOS';
+    }
+  }
+
+  return null;
+};
+
+
+const dynamicCatalogScalar = (
+  value: any
+): string => {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return '';
+  }
+
+  if (
+    typeof value === 'object'
+  ) {
+    return String(
+      value?.nome ||
+      value?.name ||
+      value?.label ||
+      value?.descricao ||
+      ''
+    ).trim();
+  }
+
+  return String(
+    value
+  ).trim();
+};
+
+
+const dynamicCatalogProductLabel = (
+  product: any,
+  source: MobileDynamicCatalogSource
+): string => {
+  if (
+    source ===
+    'CATEGORIAS'
+  ) {
+    return (
+      dynamicCatalogScalar(
+        product?.categoria_nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoriaNome
+      ) ||
+      dynamicCatalogScalar(
+        product?.catRel?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoria?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.category_name
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoryName
+      ) ||
+      dynamicCatalogScalar(
+        product?.category?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.category?.name
+      ) ||
+      dynamicCatalogScalar(
+        product?.categoria
+      )
+    );
+  }
+
+  if (
+    source ===
+    'SUBCATEGORIAS'
+  ) {
+    return (
+      dynamicCatalogScalar(
+        product?.subcategoria_nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoriaNome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subRel?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoria?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategory_name
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoryName
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategory?.nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategory?.name
+      ) ||
+      dynamicCatalogScalar(
+        product?.subcategoria
+      )
+    );
+  }
+
+  if (
+    source ===
+    'MARCAS'
+  ) {
+    return (
+      dynamicCatalogScalar(
+        product?.marca_nome
+      ) ||
+      dynamicCatalogScalar(
+        product?.marcaNome
+      ) ||
+      dynamicCatalogScalar(
+        product?.marca
+      ) ||
+      dynamicCatalogScalar(
+        product?.brand_name
+      ) ||
+      dynamicCatalogScalar(
+        product?.brandName
+      ) ||
+      dynamicCatalogScalar(
+        product?.brand
+      )
+    );
+  }
+
+  return (
+    dynamicCatalogScalar(
+      product?.nome
+    ) ||
+    dynamicCatalogScalar(
+      product?.name
+    ) ||
+    dynamicCatalogScalar(
+      product?.descricao
+    ) ||
+    dynamicCatalogScalar(
+      product?.id
+    )
+  );
+};
+
+
+const buildDynamicCatalogOptions = (
+  products: any[],
+  source: MobileDynamicCatalogSource,
+  categories: any[] = []
+) => {
+  // MOBILE_DYNAMIC_CATALOG_RENDER_V3
+  const unique =
+    new Map<string, any>();
+
+  const addOption = (
+    labelValue: any,
+    raw: any
+  ) => {
+    const label =
+      dynamicCatalogScalar(
+        labelValue
+      );
+
+    if (label.length === 0) {
+      return;
+    }
+
+    const key =
+      normalizeOptionSortText(
+        label
+      );
+
+    if (
+      key.length === 0 ||
+      unique.has(key)
+    ) {
+      return;
+    }
+
+    unique.set(
+      key,
+      {
+        label,
+        value: label,
+        raw
+      }
+    );
+  };
+
+
+  /*
+   * CATEGORIAS:
+   * usa diretamente /categorias do backend,
+   * igual ao web.
+   */
+  if (
+    source ===
+    'CATEGORIAS'
+  ) {
+    for (
+      const category
+      of categories || []
+    ) {
+      addOption(
+        category?.nome ||
+        category?.name,
+        {
+          dynamicSource:
+            source,
+          category
+        }
+      );
+    }
+
+    return (
+      sortOptionObjectsAlphabetically(
+        Array.from(
+          unique.values()
+        )
+      )
+    );
+  }
+
+
+  /*
+   * SUBCATEGORIAS:
+   * o endpoint de categorias já traz
+   * subcategorias incluídas.
+   */
+  if (
+    source ===
+    'SUBCATEGORIAS'
+  ) {
+    for (
+      const category
+      of categories || []
+    ) {
+      for (
+        const subcategory
+        of (
+          category?.subcategorias ||
+          category?.subcategories ||
+          []
+        )
+      ) {
+        addOption(
+          subcategory?.nome ||
+          subcategory?.name,
+          {
+            dynamicSource:
+              source,
+            category,
+            subcategory
+          }
+        );
+      }
+    }
+
+    return (
+      sortOptionObjectsAlphabetically(
+        Array.from(
+          unique.values()
+        )
+      )
+    );
+  }
+
+
+  /*
+   * PRODUTOS e MARCAS:
+   * usam snapshot real de produtos.
+   */
+  for (
+    const product
+    of products || []
+  ) {
+    const label =
+      dynamicCatalogProductLabel(
+        product,
+        source
+      );
+
+    if (label.length === 0) {
+      continue;
+    }
+
+    const key =
+      normalizeOptionSortText(
+        label
+      );
+
+    if (key.length === 0) {
+      continue;
+    }
+
+    if (unique.has(key)) {
+      continue;
+    }
+
+    unique.set(
+      key,
+      {
+        label,
+        value:
+          label,
+        raw: {
+          dynamicSource:
+            source,
+          sourceProduct:
+            product
+        }
+      }
+    );
+  }
+
+  return (
+    sortOptionObjectsAlphabetically(
+      Array.from(
+        unique.values()
+      )
+    )
+  );
+};
+
+
+const removeDynamicCatalogTokens = (
+  options: any[]
+) =>
+  (options || []).filter(
+    (value: any) =>
+      isDynamicCatalogOption(
+        value
+      ) === false
+  );
 
 const normalizeOptionSortText = (value: any) =>
   String(value ?? '')
@@ -438,15 +845,46 @@ const repeatableContext = (
     )
       .substring(0, 10);
 
+  // MOBILE_LOJA_CICLO_CONTEXT_V1
+  const executionScope =
+    String(
+      taskObj?.escopo_execucao ||
+      taskObj?.escopoExecucao ||
+      raw?.escopo_execucao ||
+      raw?.escopoExecucao ||
+      'AVULSO'
+    )
+      .toUpperCase()
+      .trim();
+
+  const rawLojaId =
+    taskObj?.loja_id ||
+    taskObj?.lojaId ||
+    taskObj?.store_id ||
+    taskObj?.storeId ||
+    raw?.loja_id ||
+    raw?.lojaId ||
+    raw?.store_id ||
+    raw?.storeId ||
+    '';
+
+  const lojaId =
+    executionScope === 'LOJA_CICLO'
+      ? String(rawLojaId).trim()
+      : 'GERAL';
+
   return {
     pesquisaId,
     projectId:
       String(projectId),
     usuarioId:
       String(usuarioId),
-    dataProgramada
+    dataProgramada,
+    executionScope,
+    lojaId
   };
 };
+
 
 export default function PesquisaAvulsaScreen() {
   const { id } = useLocalSearchParams();
@@ -473,7 +911,175 @@ export default function PesquisaAvulsaScreen() {
   const [task, setTask] = useState<any>(null);
   const [perguntas, setPerguntas] = useState<any[]>([]);
   const [respostas, setRespostas] = useState<Record<string, any>>({});
+
   const [produtosDoMix, setProdutosDoMix] = useState<any[]>([]);
+  const [categoriasCatalogo, setCategoriasCatalogo] = useState<any[]>([]);
+
+  // MOBILE_DYNAMIC_CATALOG_DROPDOWN_AVULSA_V1
+  const [
+    dynamicSelectionSheet,
+    setDynamicSelectionSheet
+  ] = useState<{
+    visible: boolean;
+    title: string;
+    answerKey: string;
+    options: Array<{
+      label: string;
+      value: string;
+      raw?: any;
+    }>;
+    multi: boolean;
+
+    // MOBILE_DYNAMIC_DROPDOWN_AVULSA_DRAFT_V2
+    selectedValues: string[];
+
+    search: string;
+  }>({
+    visible: false,
+    title: '',
+    answerKey: '',
+    options: [],
+    multi: false,
+    selectedValues: [],
+    search: ''
+  });
+
+
+  const closeDynamicSelectionSheet =
+    () => {
+      setDynamicSelectionSheet(
+        (prev) => ({
+          ...prev,
+          visible: false,
+          search: ''
+        })
+      );
+    };
+
+
+  const openDynamicSelectionSheet =
+    (
+      title: string,
+      answerKey: string,
+      options: Array<{
+        label: string;
+        value: string;
+        raw?: any;
+      }>,
+      multi: boolean
+    ) => {
+
+      const currentValue =
+        respostas[answerKey];
+
+      setDynamicSelectionSheet({
+        visible: true,
+        title,
+        answerKey,
+        options,
+        multi,
+
+        selectedValues:
+          multi &&
+          Array.isArray(currentValue)
+            ? currentValue.map(
+                (value: any) =>
+                  String(value)
+              )
+            : [],
+
+        search: ''
+      });
+    };
+
+
+  const selectDynamicSheetOption =
+    (
+      option: {
+        label: string;
+        value: string;
+        raw?: any;
+      }
+    ) => {
+
+      const answerKey =
+        dynamicSelectionSheet.answerKey;
+
+      if (!answerKey) {
+        return;
+      }
+
+      if (
+        dynamicSelectionSheet.multi
+      ) {
+        setDynamicSelectionSheet(
+          (prev) => {
+
+            const value =
+              String(
+                option.value
+              );
+
+            const selected =
+              prev.selectedValues
+                .includes(value);
+
+            return {
+              ...prev,
+
+              selectedValues:
+                selected
+                  ? prev.selectedValues
+                      .filter(
+                        (current) =>
+                          current !== value
+                      )
+                  : [
+                      ...prev.selectedValues,
+                      value
+                    ]
+            };
+          }
+        );
+
+        return;
+      }
+
+      handleAnswer(
+        answerKey,
+        option.value
+      );
+
+      closeDynamicSelectionSheet();
+    };
+
+
+  const applyDynamicSelectionSheet =
+    () => {
+
+      const answerKey =
+        dynamicSelectionSheet.answerKey;
+
+      if (
+        !answerKey ||
+        !dynamicSelectionSheet.multi
+      ) {
+        closeDynamicSelectionSheet();
+        return;
+      }
+
+      handleAnswer(
+        answerKey,
+        [
+          ...dynamicSelectionSheet
+            .selectedValues
+        ]
+      );
+
+      closeDynamicSelectionSheet();
+    };
+
+
   const photosRef = useRef<Record<string, any[]>>({});
   const watermarkRef = useRef<View>(null);
   const watermarkResolverRef = useRef<{
@@ -481,6 +1087,59 @@ export default function PesquisaAvulsaScreen() {
     reject: (error: any) => void;
   } | null>(null);
   const [watermarkJob, setWatermarkJob] = useState<{ uri: string; text: string; width: number; height: number } | null>(null);
+
+  /*
+   * MOBILE_DYNAMIC_CATALOG_RENDER_V3
+   *
+   * task_raw_json é snapshot offline da tarefa.
+   */
+  useEffect(() => {
+    if (!task) {
+      return;
+    }
+
+    const rawTask =
+      safeParseObject(
+        task?.task_raw_json ||
+        task?.raw_json ||
+        task
+      );
+
+    const mobileCatalog =
+      safeParseObject(
+        task?.mobile_catalog ||
+        task?.mobileCatalog ||
+        rawTask?.mobile_catalog ||
+        rawTask?.mobileCatalog
+      );
+
+    const categories =
+      safeParseArray(
+        mobileCatalog?.categorias ||
+        mobileCatalog?.categories ||
+        task?.categorias ||
+        rawTask?.categorias
+      );
+
+    const products =
+      safeParseArray(
+        mobileCatalog?.produtos ||
+        mobileCatalog?.products ||
+        task?.produtos ||
+        rawTask?.produtos
+      );
+
+    setCategoriasCatalogo(
+      categories
+    );
+
+    if (products.length > 0) {
+      setProdutosDoMix(
+        products
+      );
+    }
+  }, [task]);
+
 
   const isStandaloneRepeatable =
     useMemo(
@@ -490,6 +1149,33 @@ export default function PesquisaAvulsaScreen() {
           perguntas
         ),
       [task, perguntas]
+    );
+
+  // MOBILE_STANDALONE_COMPLETED_LOCK_V1
+  const normalizedStandaloneTaskStatus =
+    String(
+      task?.status ||
+      ''
+    )
+      .normalize('NFD')
+      .replace(
+        /[\u0300-\u036f]/g,
+        ''
+      )
+      .trim()
+      .toUpperCase();
+
+  const isCompletedNonRepeatable =
+    !isStandaloneRepeatable &&
+    [
+      'REALIZADA',
+      'COMPLETA',
+      'CONCLUIDA',
+      'VISITADA',
+      'FINALIZADA',
+      'FECHADO'
+    ].includes(
+      normalizedStandaloneTaskStatus
     );
 
   const repeatableClosed =
@@ -562,9 +1248,15 @@ export default function PesquisaAvulsaScreen() {
           ctx.dataProgramada
         );
 
+        // MOBILE_LOJA_CICLO_STATUS_V1
+        query.set(
+          'lojaId',
+          ctx.lojaId || 'GERAL'
+        );
+
         const response =
           await api(
-            '/coletas/general-repeatable-status?' +
+            '/standalone-task-status?' +
             query.toString()
           );
 
@@ -719,7 +1411,15 @@ export default function PesquisaAvulsaScreen() {
 
         setProdutosDoMix(produtos || []);
       } else {
-        Alert.alert('Erro', 'Tarefa não encontrada.');
+        AppAlert.alert(
+          repeatableMobileText(language, 'Erro', 'Error', 'Error'),
+          repeatableMobileText(
+            language,
+            'Tarefa não encontrada.',
+            'Task not found.',
+            'Tarea no encontrada.'
+          )
+        );
         router.back();
       }
     } catch (error) {
@@ -901,7 +1601,13 @@ const handleWatermarkImageLoaded = async () => {
     const currentPhotos = photosRef.current[targetKey] || [];
 
     if (maxFotos > 0 && currentPhotos.length >= maxFotos) {
-      Alert.alert('Aviso', `Limite de ${maxFotos} foto(s) atingido.`);
+      AppAlert.alert(
+        t('photoLimitTitle'),
+        String(t('photoLimitMessage')).replace(
+          '{{max}}',
+          String(maxFotos)
+        )
+      );
       return;
     }
 
@@ -916,9 +1622,14 @@ const handleWatermarkImageLoaded = async () => {
       if (!asset?.uri || !asset?.base64) return;
 
       if (!assetMatchesOrientation(asset, requiredOrientation)) {
-        Alert.alert(
-          'Orientação incorreta',
-          `Esta foto precisa ser tirada na orientação ${orientationLabel}. Tire uma nova foto para continuar.`
+        AppAlert.alert(
+          t('photoWrongOrientationTitle'),
+          String(
+          t('photoWrongOrientationMessage')
+        ).replace(
+          '{{orientation}}',
+          String(orientationLabel)
+        )
         );
         return;
       }
@@ -939,7 +1650,7 @@ const handleWatermarkImageLoaded = async () => {
         !Number.isFinite(latitude) ||
         !Number.isFinite(longitude)
       ) {
-        Alert.alert(
+        AppAlert.alert(
           t('photoGpsRequiredTitle'),
           gpsResult?.error === 'FAKE_GPS'
             ? t('photoGpsFakeDetected')
@@ -1003,7 +1714,7 @@ const handleWatermarkImageLoaded = async () => {
     const takePhoto = async () => {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permissão necessária', 'A câmera precisa estar liberada para tirar a foto.');
+        AppAlert.alert(t('permissionRequiredTitle'), t('cameraPermissionRequired'));
         return;
       }
 
@@ -1023,14 +1734,22 @@ const handleWatermarkImageLoaded = async () => {
       return;
     }
 
-    Alert.alert('Anexar Imagem', isOptionPhoto ? `Origem da foto para: ${optionName}` : 'Escolha a origem', [
-      { text: 'Câmera', onPress: takePhoto },
+    AppAlert.alert(
+      t('photoAttachTitle'),
+      isOptionPhoto
+        ? String(t('photoAttachOptionMessage')).replace(
+            '{{option}}',
+            String(optionName || '')
+          )
+        : t('photoAttachSourceMessage'),
+      [
+      { text: t('photoCamera'), onPress: takePhoto },
       {
-        text: 'Galeria',
+        text: t('photoGallery'),
         onPress: async () => {
           const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
           if (!permission.granted) {
-            Alert.alert('Permissão necessária', 'A galeria precisa estar liberada para anexar a foto.');
+            AppAlert.alert(t('permissionRequiredTitle'), t('galleryPermissionRequired'));
             return;
           }
 
@@ -1055,7 +1774,7 @@ const handleWatermarkImageLoaded = async () => {
           }
         },
       },
-      { text: 'Cancelar', style: 'cancel' },
+      { text: t('cancel'), style: 'cancel' },
     ]);
   };
 
@@ -1073,10 +1792,31 @@ const handleWatermarkImageLoaded = async () => {
   const handleSave = async () => {
 
     if (
+      isCompletedNonRepeatable
+    ) {
+      AppAlert.alert(
+        repeatableMobileText(
+          language,
+          'Tarefa concluída',
+          'Task completed',
+          'Tarea concluida'
+        ),
+        repeatableMobileText(
+          language,
+          'Esta tarefa já foi finalizada e não aceita novas respostas.',
+          'This task has already been completed and does not accept new responses.',
+          'Esta tarea ya fue finalizada y no acepta nuevas respuestas.'
+        )
+      );
+
+      return;
+    }
+
+    if (
       isStandaloneRepeatable &&
       repeatableClosed
     ) {
-      Alert.alert(
+      AppAlert.alert(
         repeatableMobileText(
           language,
           'Formulário encerrado',
@@ -1098,7 +1838,7 @@ const handleWatermarkImageLoaded = async () => {
       isStandaloneRepeatable &&
       repeatableAtLimit
     ) {
-      Alert.alert(
+      AppAlert.alert(
         repeatableMobileText(
           language,
           'Limite atingido',
@@ -1117,7 +1857,20 @@ const handleWatermarkImageLoaded = async () => {
     }
 
     if (perguntas.length > 0 && Object.keys(respostas).length === 0) {
-      Alert.alert('Atenção', 'Responda pelo menos uma pergunta.');
+      AppAlert.alert(
+        repeatableMobileText(
+          language,
+          'Atenção',
+          'Attention',
+          'Atención'
+        ),
+        repeatableMobileText(
+          language,
+          'Responda pelo menos uma pergunta.',
+          'Answer at least one question.',
+          'Responde al menos una pregunta.'
+        )
+      );
       return;
     }
 
@@ -1127,11 +1880,25 @@ const handleWatermarkImageLoaded = async () => {
       const answered = answer !== undefined && answer !== null && answer !== '' && (!Array.isArray(answer) || answer.length > 0);
 
       if (checkQuestionIsMandatory(pergunta) && !answered) {
-        Alert.alert('Obrigatório', `Responda a pergunta "${pergunta.texto || pergunta.titulo || pergunta.pergunta}".`);
+        AppAlert.alert(
+          repeatableMobileText(
+            language,
+            'Obrigatório',
+            'Required',
+            'Obligatorio'
+          ),
+          repeatableMobileText(
+            language,
+            `Responda a pergunta "${pergunta.texto || pergunta.titulo || pergunta.pergunta}".`,
+            `Answer the question "${pergunta.texto || pergunta.titulo || pergunta.pergunta}".`,
+            `Responde la pregunta "${pergunta.texto || pergunta.titulo || pergunta.pergunta}".`
+          )
+        );
         return;
       }
 
-      const hasPhotoByOption = pergunta.validacao?.foto_por_opcao === true || pergunta.validacao?.fotoPorOpcao === true;
+      // MOBILE_MULTI_CHOICE_SINGLE_RENDER_V2
+    const hasPhotoByOption = pergunta.validacao?.foto_por_opcao === true || pergunta.validacao?.fotoPorOpcao === true;
 
       if (answered && hasPhotoByOption) {
         const selectedOptions = Array.isArray(answer) ? answer : [answer];
@@ -1141,7 +1908,20 @@ const handleWatermarkImageLoaded = async () => {
           const fotosOp = photosRef.current[fotoKey] || [];
 
           if (fotosOp.length === 0) {
-            Alert.alert('Foto obrigatória', `A foto para a opção "${op}" é obrigatória.`);
+            AppAlert.alert(
+              repeatableMobileText(
+                language,
+                'Foto obrigatória',
+                'Photo required',
+                'Foto obligatoria'
+              ),
+              repeatableMobileText(
+                language,
+                `A foto para a opção "${op}" é obrigatória.`,
+                `A photo for option "${op}" is required.`,
+                `La foto para la opción "${op}" es obligatoria.`
+              )
+            );
             return;
           }
         }
@@ -1292,6 +2072,82 @@ const handleWatermarkImageLoaded = async () => {
         );
       }
 
+      // MOBILE_LOJA_CICLO_SAVE_CONTEXT_V1
+      const executionScope =
+        String(
+          task?.escopo_execucao ||
+          task?.escopoExecucao ||
+          taskRaw?.escopo_execucao ||
+          taskRaw?.escopoExecucao ||
+          'AVULSO'
+        )
+          .toUpperCase()
+          .trim();
+
+      const isStoreCycle =
+        executionScope ===
+        'LOJA_CICLO';
+
+      const rawStoreId =
+        task?.loja_id ||
+        task?.lojaId ||
+        task?.store_id ||
+        task?.storeId ||
+        taskRaw?.loja_id ||
+        taskRaw?.lojaId ||
+        taskRaw?.store_id ||
+        taskRaw?.storeId ||
+        '';
+
+      const storeId =
+        isStoreCycle
+          ? String(
+              rawStoreId
+            ).trim()
+          : 'GERAL';
+
+      if (
+        isStoreCycle &&
+        !storeId
+      ) {
+        throw new Error(
+          'LOJA_CICLO sem loja válida no contexto da tarefa.'
+        );
+      }
+
+      const storeName =
+        isStoreCycle
+          ? String(
+              task?.loja_nome ||
+              task?.lojaNome ||
+              taskRaw?.loja_nome ||
+              taskRaw?.lojaNome ||
+              'Loja'
+            ).trim()
+          : String(
+              task?.titulo ||
+              taskRaw?.titulo ||
+              taskRaw?.nome ||
+              'Tarefa Avulsa'
+            ).trim();
+
+      const standaloneDataProgramada =
+        String(
+          task?.data_programada ||
+          task?.dataProgramada ||
+          taskRaw?.data_programada ||
+          taskRaw?.dataProgramada ||
+          task?.cycle_start ||
+          taskRaw?.cycle_start ||
+          now.substring(
+            0,
+            10
+          )
+        ).substring(
+          0,
+          10
+        );
+
       const operationId =
         `coleta_avulsa_${pesquisaId}_${Date.now()}`;
 
@@ -1331,22 +2187,22 @@ const handleWatermarkImageLoaded = async () => {
           now,
 
         data_programada:
-          now.substring(0, 10),
+          standaloneDataProgramada,
 
         loja_id:
-          'GERAL',
+          storeId,
 
         loja_nome:
-          task?.titulo ||
-          taskRaw?.titulo ||
-          taskRaw?.nome ||
-          'Tarefa Avulsa',
+          storeName,
 
         origem:
           'MOBILE_OFFLINE',
 
         tipo_registro:
           'COLETA_AVULSA',
+
+        escopo_execucao:
+          executionScope,
 
         client_operation_id:
           operationId,
@@ -1389,13 +2245,13 @@ const handleWatermarkImageLoaded = async () => {
               operationId,
               String(projectId),
               String(usuarioId),
-              'GERAL',
+              storeId,
               null,
               pesquisaId,
               'COMPLETA',
               now,
               now,
-              now.substring(0, 10),
+              standaloneDataProgramada,
               JSON.stringify(
                 respostasFormatadas
               ),
@@ -1636,9 +2492,9 @@ const handleWatermarkImageLoaded = async () => {
               () => {}
             );
 
-          Alert.alert(
-            'Sucesso',
-            'Pesquisa finalizada!',
+          AppAlert.alert(
+            t('surveySavedTitle'),
+            t('surveySavedMessage'),
             [
               {
                 text:
@@ -1651,7 +2507,20 @@ const handleWatermarkImageLoaded = async () => {
           );
         }
     } catch (error: any) {
-      Alert.alert('Erro', error?.message || 'Falha ao salvar no banco local.');
+      AppAlert.alert(
+        repeatableMobileText(
+          language,
+          'Erro',
+          'Error',
+          'Error'
+        ),
+        repeatableMobileText(
+          language,
+          'Falha ao salvar no banco local. Tente novamente.',
+          'Failed to save to the local database. Please try again.',
+          'No se pudo guardar en la base de datos local. Inténtalo nuevamente.'
+        )
+      );
     } finally {
       setSaving(false);
     }
@@ -1666,7 +2535,7 @@ const handleWatermarkImageLoaded = async () => {
         return;
       }
 
-      Alert.alert(
+      AppAlert.alert(
         repeatableMobileText(
           language,
           'Encerrar formulário?',
@@ -1739,6 +2608,9 @@ const handleWatermarkImageLoaded = async () => {
                       ctx.usuarioId,
                     dataProgramada:
                       ctx.dataProgramada,
+                    lojaId:
+                      ctx.lojaId ||
+                      'GERAL',
                     closed:
                       true,
                     status:
@@ -1750,7 +2622,7 @@ const handleWatermarkImageLoaded = async () => {
                   // OMNI_REPEATABLE_CLOSE_QUEUE_AFTER_RESPONSES_SINGLE_SOURCE_V1
                   // A fila garante ordem: respostas primeiro, fechamento depois.
                   await addToSyncQueue(
-                    '/coletas/general-repeatable-close',
+                    '/standalone-task-close',
                     closePayload,
                     'POST'
                   );
@@ -1759,7 +2631,7 @@ const handleWatermarkImageLoaded = async () => {
 
                   const response =
                     await api(
-                      '/coletas/general-repeatable-close',
+                      '/standalone-task-close',
                       {
                         method:
                           'POST',
@@ -1868,7 +2740,7 @@ const handleWatermarkImageLoaded = async () => {
                     })
                   );
 
-                  Alert.alert(
+                  AppAlert.alert(
                     repeatableMobileText(
                       language,
                       'Formulário encerrado',
@@ -1906,7 +2778,7 @@ const handleWatermarkImageLoaded = async () => {
                     error
                   );
 
-                  Alert.alert(
+                  AppAlert.alert(
                     repeatableMobileText(
                       language,
                       'Não foi possível encerrar',
@@ -1953,17 +2825,62 @@ const renderPhotoList = (targetKey: string, mini = false) => {
     const tipo = String(pergunta.tipo || 'TEXTO').toUpperCase();
     const valorAtual = respostas[pId];
 
-    const productOptions = buildProductOptionsForQuestion(pergunta);
-    const rawOptions = parseOptions(pergunta.opcoes);
-    const usesDynamicProducts = rawOptions.some(isDynamicProductOption);
-
-    const rawOptionObjects = usesDynamicProducts
-      ? productOptions
-      : (
-          rawOptions.length > 0
-            ? rawOptions.map((op: string) => ({ label: String(op), value: String(op) }))
-            : productOptions
+    const productOptions =
+        buildProductOptionsForQuestion(
+            pergunta
         );
+
+    const rawOptions =
+        parseOptions(
+            pergunta.opcoes
+        );
+
+    const dynamicCatalogSource =
+        getDynamicCatalogSource(
+            rawOptions
+        );
+
+    const usesDynamicCatalog =
+        dynamicCatalogSource === null
+            ? false
+            : true;
+
+    const filteredCatalogProducts =
+        produtosDoMix.filter(
+            (product: any) =>
+                shouldShowProductForQuestion(
+                    pergunta,
+                    product
+                )
+        );
+
+    const dynamicCatalogOptions =
+        dynamicCatalogSource === null
+            ? productOptions
+            : (
+                dynamicCatalogSource ===
+                'PRODUTOS'
+                    ? productOptions
+                    : buildDynamicCatalogOptions(                        filteredCatalogProducts,                        dynamicCatalogSource,                        categoriasCatalogo                      )
+              );
+
+    const rawOptionObjects =
+        usesDynamicCatalog
+            ? dynamicCatalogOptions
+            : (
+                rawOptions.length > 0
+                    ? removeDynamicCatalogTokens(
+                        rawOptions
+                      ).map(
+                        (op: string) => ({
+                            label:
+                                String(op),
+                            value:
+                                String(op)
+                        })
+                      )
+                    : productOptions
+              );
 
     const optionObjects = shouldSortChoiceOptions(rawOptions, productOptions, rawOptionObjects, tipo)
       ? sortOptionObjectsAlphabetically(rawOptionObjects)
@@ -1972,6 +2889,37 @@ const renderPhotoList = (targetKey: string, mini = false) => {
     const isChoice = ['RADIO', 'SINGLE_CHOICE', 'SELECAO', 'DROPDOWN', 'UNICA_ESCOLHA', 'PRODUTO', 'PRODUCT'].includes(tipo) || (!['TEXTO', 'TEXT', 'NUMERO', 'NUMBER', 'INTEIRO', 'INTEGER', 'DECIMAL', 'MOEDA', 'FOTO'].includes(tipo) && optionObjects.length > 0);
     const isMulti = ['CHECKBOX', 'MULTIPLE_CHOICE', 'MULTIPLA_ESCOLHA', 'MULTIPLA'].includes(tipo);
     const hasPhotoByOption = pergunta.validacao?.foto_por_opcao === true || pergunta.validacao?.fotoPorOpcao === true;
+
+    const dynamicSelectedValues =
+      usesDynamicCatalog
+        ? (
+            isMulti
+              ? (
+                  Array.isArray(
+                    valorAtual
+                  )
+                    ? valorAtual.map(
+                        (value: any) =>
+                          String(value)
+                      )
+                    : []
+                )
+              : (
+                  valorAtual !== null &&
+                  valorAtual !== undefined &&
+                  String(valorAtual).trim()
+                    ? [
+                        String(
+                          valorAtual
+                        )
+                      ]
+                    : []
+                )
+          )
+        : [];
+
+    const dynamicSelectedCount =
+      dynamicSelectedValues.length;
 
     return (
       <View key={pId} style={[styles.questionCard, { backgroundColor: cardBg, borderColor: border }]}>
@@ -1991,7 +2939,260 @@ const renderPhotoList = (targetKey: string, mini = false) => {
           />
         )}
 
-        {isChoice && (
+        {usesDynamicCatalog && (
+          <View
+            style={
+              styles.dynamicCatalogWrap
+            }
+          >
+            <TouchableOpacity
+              activeOpacity={0.85}
+              disabled={
+                optionObjects.length === 0
+              }
+              onPress={() =>
+                openDynamicSelectionSheet(
+                  pergunta.texto ||
+                  pergunta.titulo ||
+                  pergunta.pergunta ||
+                  repeatableMobileText(
+                    language,
+                    'Selecionar opções',
+                    'Select options',
+                    'Seleccionar opciones'
+                  ),
+                  pId,
+                  optionObjects,
+                  isMulti
+                )
+              }
+              style={[
+                styles.dynamicCatalogButton,
+                {
+                  backgroundColor: bg,
+                  borderColor:
+                    dynamicSelectedCount > 0
+                      ? accent
+                      : border,
+                  opacity:
+                    optionObjects.length === 0
+                      ? 0.55
+                      : 1
+                }
+              ]}
+            >
+              <View
+                style={{
+                  flex: 1
+                }}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.dynamicCatalogButtonText,
+                    {
+                      color:
+                        dynamicSelectedCount > 0
+                          ? textPrimary
+                          : textSecondary
+                    }
+                  ]}
+                >
+                  {
+                    optionObjects.length === 0
+                      ? repeatableMobileText(
+                          language,
+                          'Nenhuma opção disponível',
+                          'No options available',
+                          'No hay opciones disponibles'
+                        )
+                      : (
+                          isMulti
+                            ? (
+                                dynamicSelectedCount === 0
+                                  ? repeatableMobileText(
+                                      language,
+                                      'Selecionar opções...',
+                                      'Select options...',
+                                      'Seleccionar opciones...'
+                                    )
+                                  : (
+                                      dynamicSelectedCount === 1
+                                        ? repeatableMobileText(
+                                            language,
+                                            '1 opção selecionada',
+                                            '1 option selected',
+                                            '1 opción seleccionada'
+                                          )
+                                        : repeatableMobileText(
+                                            language,
+                                            `${dynamicSelectedCount} opções selecionadas`,
+                                            `${dynamicSelectedCount} options selected`,
+                                            `${dynamicSelectedCount} opciones seleccionadas`
+                                          )
+                                    )
+                              )
+                            : (
+                                dynamicSelectedValues[0] ||
+                                repeatableMobileText(
+                                  language,
+                                  'Selecionar opção...',
+                                  'Select an option...',
+                                  'Seleccionar una opción...'
+                                )
+                              )
+                        )
+                  }
+                </Text>
+
+                {
+                  isMulti &&
+                  dynamicSelectedCount > 0 && (
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.dynamicCatalogButtonSubText,
+                        {
+                          color:
+                            textSecondary
+                        }
+                      ]}
+                    >
+                      {
+                        dynamicSelectedValues
+                          .slice(0, 3)
+                          .join(', ')
+                      }
+                      {
+                        dynamicSelectedCount > 3
+                          ? '…'
+                          : ''
+                      }
+                    </Text>
+                  )
+                }
+              </View>
+
+              <ChevronDown
+                size={20}
+                color={textSecondary}
+              />
+            </TouchableOpacity>
+
+
+            {hasPhotoByOption &&
+              dynamicSelectedValues.map(
+                (
+                  opcao: string
+                ) => {
+
+                  const optionObject =
+                    optionObjects.find(
+                      (candidate: any) =>
+                        String(
+                          candidate.value
+                        ) ===
+                        String(
+                          opcao
+                        )
+                    );
+
+                  const label =
+                    optionObject?.label ||
+                    opcao;
+
+                  const photoKey =
+                    `${pId}::foto_${opcao}`;
+
+                  return (
+                    <View
+                      key={
+                        `dynamic-photo-${pId}-${opcao}`
+                      }
+                      style={[
+                        styles.optionPhotoArea,
+                        {
+                          backgroundColor:
+                            bg,
+                          borderColor:
+                            border
+                        }
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.optionPhotoLabel,
+                          {
+                            color:
+                              textSecondary
+                          }
+                        ]}
+                      >
+                        {
+                          repeatableMobileText(
+                            language,
+                            `Foto para "${label}"`,
+                            `Photo for "${label}"`,
+                            `Foto para "${label}"`
+                          )
+                        }
+                      </Text>
+
+                      {
+                        renderPhotoList(
+                          photoKey,
+                          true
+                        )
+                      }
+
+                      <TouchableOpacity
+                        style={[
+                          styles.photoBtnMini,
+                          {
+                            borderColor:
+                              accent
+                          }
+                        ]}
+                        onPress={() =>
+                          handlePhotoRequest(
+                            pergunta,
+                            pId,
+                            opcao
+                          )
+                        }
+                      >
+                        <Camera
+                          size={18}
+                          color={accent}
+                        />
+
+                        <Text
+                          style={[
+                            styles.photoBtnTextMini,
+                            {
+                              color:
+                                accent
+                            }
+                          ]}
+                        >
+                          {
+                            repeatableMobileText(
+                              language,
+                              'Foto da opção',
+                              'Option photo',
+                              'Foto de la opción'
+                            )
+                          }
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                }
+              )}
+          </View>
+        )}
+
+        {usesDynamicCatalog === false && isChoice && isMulti === false && (
           <View style={styles.optionsContainer}>
             {optionObjects.map((opcaoObj: any, i: number) => {
               const opcao = opcaoObj.value;
@@ -2027,7 +3228,7 @@ const renderPhotoList = (targetKey: string, mini = false) => {
           </View>
         )}
 
-        {isMulti && (
+        {usesDynamicCatalog === false && isMulti && (
           <View style={styles.optionsContainer}>
             {optionObjects.map((opcaoObj: any, i: number) => {
               const opcao = opcaoObj.value;
@@ -2102,11 +3303,59 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                 <View style={styles.taskInfoSection}>
                     <View style={[styles.taskIconBg, { backgroundColor: 'rgba(59, 130, 246, 0.1)' }]}><ClipboardCheck size={28} color="#3B82F6" /></View>
                     <View style={styles.taskTextWrap}>
-                        <Text style={[styles.taskDescTitle, { color: textPrimary }]}>Formulário de Resposta</Text>
-                        <Text style={[styles.taskDescSubtitle, { color: textSecondary }]}>Preencha os dados abaixo para finalizar a tarefa.</Text>
+                        <Text style={[styles.taskDescTitle, { color: textPrimary }]}>
+                          {isCompletedNonRepeatable
+                            ? repeatableMobileText(
+                                language,
+                                'Tarefa concluída',
+                                'Task completed',
+                                'Tarea concluida'
+                              )
+                            : repeatableMobileText(
+                                language,
+                                'Formulário de Resposta',
+                                'Response Form',
+                                'Formulario de Respuesta'
+                              )}
+                        </Text>
+                        <Text style={[styles.taskDescSubtitle, { color: textSecondary }]}>
+                          {isCompletedNonRepeatable
+                            ? repeatableMobileText(
+                                language,
+                                'Esta tarefa já foi finalizada.',
+                                'This task has already been completed.',
+                                'Esta tarea ya fue finalizada.'
+                              )
+                            : repeatableMobileText(
+                                language,
+                                'Preencha os dados abaixo para finalizar a tarefa.',
+                                'Fill in the information below to complete the task.',
+                                'Complete los datos a continuación para finalizar la tarea.'
+                              )}
+                        </Text>
                     </View>
                 </View>
-                {perguntas.length === 0 ? (
+                {isCompletedNonRepeatable ? (
+                    <View style={[styles.questionCard, { backgroundColor: cardBg, borderColor: border, alignItems: 'center' }]}>
+                        <CheckCircle2 size={42} color="#10B981" />
+                        <Text style={[styles.questionText, { color: textPrimary, marginTop: 14, marginBottom: 6, textAlign: 'center' }]}>
+                          {repeatableMobileText(
+                            language,
+                            'Resposta registrada',
+                            'Response recorded',
+                            'Respuesta registrada'
+                          )}
+                        </Text>
+                        <Text style={{ color: textSecondary, textAlign: 'center', lineHeight: 20 }}>
+                          {repeatableMobileText(
+                            language,
+                            'Esta tarefa está concluída e não pode receber uma nova resposta.',
+                            'This task is completed and cannot receive another response.',
+                            'Esta tarea está concluida y no puede recibir una nueva respuesta.'
+                          )}
+                        </Text>
+                    </View>
+                ) : perguntas.length === 0 ? (
                     <View style={styles.emptyContainer}><AlertCircle size={40} color={textSecondary} /><Text style={{ color: textSecondary, marginTop: 10 }}>Nenhuma pergunta encontrada.</Text></View>
                 ) : perguntas.map((p, index) => renderPergunta(p, index))}
             </ScrollView>
@@ -2188,7 +3437,16 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                 </View>
             )}
 
-            <View style={[styles.footer, { backgroundColor: cardBg, borderTopColor: border }]}>
+            <View
+              style={[
+                styles.footer,
+                {
+                  backgroundColor: cardBg,
+                  borderTopColor: border,
+                  display: isCompletedNonRepeatable ? 'none' : 'flex'
+                }
+              ]}
+            >
                 <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#10B981', opacity: saving || closing || repeatableClosed || repeatableAtLimit ? 0.55 : 1 }]} onPress={handleSave} disabled={saving || closing || repeatableClosed || repeatableAtLimit}>
                     {saving ? <ActivityIndicator color="#FFF" /> : <><Save size={20} color="#FFF" /><Text style={styles.saveBtnText}>
                         {
@@ -2240,11 +3498,508 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                 )}
             </View>
         </View>
+        <Modal
+          visible={
+            dynamicSelectionSheet.visible
+          }
+          transparent
+          animationType="fade"
+          onRequestClose={
+            closeDynamicSelectionSheet
+          }
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={
+              styles.dynamicSheetBackdrop
+            }
+            onPress={
+              closeDynamicSelectionSheet
+            }
+          >
+            <TouchableOpacity
+              activeOpacity={1}
+              style={[
+                styles.dynamicSheetCard,
+                {
+                  backgroundColor:
+                    cardBg,
+                  borderColor:
+                    border
+                }
+              ]}
+              onPress={
+                (event) =>
+                  event.stopPropagation()
+              }
+            >
+              <View
+                style={
+                  styles.dynamicSheetHandle
+                }
+              />
+
+              <View
+                style={
+                  styles.dynamicSheetHeader
+                }
+              >
+                <Text
+                  style={[
+                    styles.dynamicSheetTitle,
+                    {
+                      color:
+                        textPrimary
+                    }
+                  ]}
+                  numberOfLines={2}
+                >
+                  {
+                    dynamicSelectionSheet.title
+                  }
+                </Text>
+
+                <TouchableOpacity
+                  onPress={
+                    closeDynamicSelectionSheet
+                  }
+                  style={[
+                    styles.dynamicSheetClose,
+                    {
+                      backgroundColor:
+                        bg
+                    }
+                  ]}
+                >
+                  <X
+                    size={18}
+                    color={
+                      textSecondary
+                    }
+                  />
+                </TouchableOpacity>
+              </View>
+
+
+              <TextInput
+                value={
+                  dynamicSelectionSheet.search
+                }
+                onChangeText={
+                  (value) =>
+                    setDynamicSelectionSheet(
+                      (prev) => ({
+                        ...prev,
+                        search: value
+                      })
+                    )
+                }
+                placeholder={
+                  repeatableMobileText(
+                    language,
+                    'Buscar opções...',
+                    'Search options...',
+                    'Buscar opciones...'
+                  )
+                }
+                placeholderTextColor={
+                  textSecondary
+                }
+                autoCorrect={false}
+                autoCapitalize="none"
+                style={[
+                  styles.dynamicSheetSearch,
+                  {
+                    color:
+                      textPrimary,
+                    borderColor:
+                      border,
+                    backgroundColor:
+                      bg
+                  }
+                ]}
+              />
+
+
+              <ScrollView
+                style={
+                  styles.dynamicSheetScroll
+                }
+                showsVerticalScrollIndicator={
+                  false
+                }
+                keyboardShouldPersistTaps="handled"
+              >
+                {
+                  dynamicSelectionSheet
+                    .options
+                    .filter(
+                      (option) => {
+
+                        const term =
+                          normalizeOptionSortText(
+                            dynamicSelectionSheet
+                              .search
+                          );
+
+                        if (!term) {
+                          return true;
+                        }
+
+                        return (
+                          normalizeOptionSortText(
+                            `${
+                              option.label ||
+                              option.value
+                            } ${
+                              option.raw?.marca ||
+                              ''
+                            } ${
+                              option.raw?.categoria ||
+                              ''
+                            } ${
+                              option.raw?.subcategoria ||
+                              ''
+                            }`
+                          )
+                            .includes(
+                              term
+                            )
+                        );
+                      }
+                    )
+                    .map(
+                      (
+                        option,
+                        index
+                      ) => {
+
+                        const currentValue =
+                          respostas[
+                            dynamicSelectionSheet
+                              .answerKey
+                          ];
+
+                        const selected =
+                          dynamicSelectionSheet
+                            .multi
+                            ? dynamicSelectionSheet
+                                .selectedValues
+                                .includes(
+                                  String(
+                                    option.value
+                                  )
+                                )
+                            : (
+                                String(
+                                  currentValue ||
+                                  ''
+                                ) ===
+                                String(
+                                  option.value
+                                )
+                              );
+
+                        return (
+                          <TouchableOpacity
+                            key={
+                              `dynamic-sheet-${option.value}-${index}`
+                            }
+                            activeOpacity={
+                              0.85
+                            }
+                            onPress={() =>
+                              selectDynamicSheetOption(
+                                option
+                              )
+                            }
+                            style={[
+                              styles.dynamicSheetOption,
+                              {
+                                backgroundColor:
+                                  selected
+                                    ? 'rgba(59,130,246,0.10)'
+                                    : bg,
+                                borderColor:
+                                  selected
+                                    ? accent
+                                    : border
+                              }
+                            ]}
+                          >
+                            <View
+                              style={[
+                                dynamicSelectionSheet.multi
+                                  ? styles.dynamicSheetCheckbox
+                                  : styles.dynamicSheetRadio,
+                                {
+                                  borderColor:
+                                    selected
+                                      ? accent
+                                      : textSecondary,
+                                  backgroundColor:
+                                    selected
+                                      ? accent
+                                      : 'transparent'
+                                }
+                              ]}
+                            >
+                              {
+                                selected
+                                  ? (
+                                      <Check
+                                        size={13}
+                                        color="#FFFFFF"
+                                      />
+                                    )
+                                  : null
+                              }
+                            </View>
+
+                            <View
+                              style={{
+                                flex: 1
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.dynamicSheetOptionText,
+                                  {
+                                    color:
+                                      selected
+                                        ? accent
+                                        : textPrimary
+                                  }
+                                ]}
+                              >
+                                {
+                                  option.label ||
+                                  option.value
+                                }
+                              </Text>
+
+                              {
+                                option.raw?.marca
+                                  ? (
+                                      <Text
+                                        style={[
+                                          styles.dynamicSheetOptionSubText,
+                                          {
+                                            color:
+                                              textSecondary
+                                          }
+                                        ]}
+                                      >
+                                        {
+                                          option.raw.marca
+                                        }
+                                      </Text>
+                                    )
+                                  : null
+                              }
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      }
+                    )
+                }
+              </ScrollView>
+
+
+              {
+                dynamicSelectionSheet.multi && (
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    onPress={
+                      applyDynamicSelectionSheet
+                    }
+                    style={[
+                      styles.dynamicSheetApply,
+                      {
+                        backgroundColor:
+                          '#10B981'
+                      }
+                    ]}
+                  >
+                    <Check
+                      size={18}
+                      color="#FFFFFF"
+                    />
+
+                    <Text
+                      style={
+                        styles.dynamicSheetApplyText
+                      }
+                    >
+                      {
+                        repeatableMobileText(
+                          language,
+                          'Aplicar',
+                          'Apply',
+                          'Aplicar'
+                        )
+                      }
+                    </Text>
+                  </TouchableOpacity>
+                )
+              }
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
+
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  dynamicCatalogWrap: {
+    marginTop: 2,
+  },
+
+  dynamicCatalogButton: {
+    minHeight: 56,
+    borderWidth: 1.5,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  dynamicCatalogButtonText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+
+  dynamicCatalogButtonSubText: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+
+  dynamicSheetBackdrop: {
+    flex: 1,
+    backgroundColor:
+      'rgba(15,23,42,0.62)',
+    justifyContent: 'flex-end',
+  },
+
+  dynamicSheetCard: {
+    maxHeight: '82%',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 24,
+  },
+
+  dynamicSheetHandle: {
+    alignSelf: 'center',
+    width: 42,
+    height: 4,
+    borderRadius: 99,
+    backgroundColor:
+      'rgba(148,163,184,0.55)',
+    marginBottom: 14,
+  },
+
+  dynamicSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent:
+      'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+
+  dynamicSheetTitle: {
+    flex: 1,
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '900',
+  },
+
+  dynamicSheetClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  dynamicSheetSearch: {
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+
+  dynamicSheetScroll: {
+    maxHeight: 430,
+  },
+
+  dynamicSheetOption: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 9,
+  },
+
+  dynamicSheetCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  dynamicSheetRadio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  dynamicSheetOptionText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+
+  dynamicSheetOptionSubText: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+
+  dynamicSheetApply: {
+    minHeight: 52,
+    borderRadius: 14,
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+
+  dynamicSheetApplyText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { paddingTop: 60, paddingHorizontal: 20, paddingBottom: 20, borderBottomWidth: 1 },

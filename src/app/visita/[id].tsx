@@ -557,34 +557,237 @@ const incrementCount = (map: Map<string, number>, surveyId: any) => {
   map.set(key, (map.get(key) || 0) + 1);
 };
 
+// MOBILE_VISIT_LOCAL_REPEATABLE_IMMEDIATE_V1
+//
+// A coleta é preservada localmente ANTES do sync.
+// Portanto a UI da visita precisa reconhecer tanto:
+//
+// - RegistroVisitaId
+// - VisitaAgendadaId
+// - visita_id da tabela local
+//
+// Não pode depender do servidor para mostrar EM_ANDAMENTO.
 const getCollectionCountsBySurveyForVisit = async (db: any, visit: any) => {
-  const counts = new Map<string, number>();
+  const counts =
+    new Map<string, number>();
 
-  const parsedVisitCollections = safeParseJson(visit?.coletas || visit?.coletas_json || visit?.collections, []);
-  if (Array.isArray(parsedVisitCollections)) {
-    parsedVisitCollections.forEach((collection: any) => {
-      incrementCount(counts, getSurveyIdFromAnyPayload(collection));
-    });
+  const seenCollections =
+    new Set<string>();
+
+  const visitIds =
+    getVisitIdentifierCandidates(
+      visit
+    );
+
+  const visitIdSet =
+    new Set(
+      visitIds.map(
+        (value) =>
+          String(value)
+            .trim()
+      )
+    );
+
+  const addCollection =
+    (
+      collection: any,
+      source: string
+    ) => {
+      if (!collection) {
+        return;
+      }
+
+      const raw =
+        safeParseJson(
+          collection?.raw_json,
+          {}
+        );
+
+      const surveyId =
+        getSurveyIdFromAnyPayload(
+          collection
+        ) ||
+        getSurveyIdFromAnyPayload(
+          raw
+        );
+
+      if (!surveyId) {
+        return;
+      }
+
+      const collectionId =
+        firstFilled(
+          collection?.id,
+          collection?.client_operation_id,
+          collection?.clientOperationId,
+          raw?.id,
+          raw?.client_operation_id,
+          raw?.clientOperationId
+        );
+
+      const timestamp =
+        firstFilled(
+          collection?.data_fim,
+          collection?.data_inicio,
+          collection?.updated_at,
+          raw?.data_fim,
+          raw?.data_inicio,
+          raw?.updated_at
+        );
+
+      const dedupeKey =
+        collectionId
+          ? String(collectionId)
+          : `${String(surveyId)}|${String(timestamp || '')}|${source}`;
+
+      if (
+        seenCollections.has(
+          dedupeKey
+        )
+      ) {
+        return;
+      }
+
+      seenCollections.add(
+        dedupeKey
+      );
+
+      incrementCount(
+        counts,
+        surveyId
+      );
+    };
+
+  /*
+   * Coletas que vieram embutidas no snapshot
+   * da própria visita.
+   */
+  const parsedVisitCollections =
+    safeParseJson(
+      visit?.coletas ||
+      visit?.coletas_json ||
+      visit?.collections,
+      []
+    );
+
+  if (
+    Array.isArray(
+      parsedVisitCollections
+    )
+  ) {
+    parsedVisitCollections.forEach(
+      (collection: any) =>
+        addCollection(
+          collection,
+          'embedded'
+        )
+    );
   }
 
   try {
-    if (!(await tableExists(db, 'coletas'))) return counts;
+    if (
+      !(await tableExists(
+        db,
+        'coletas'
+      ))
+    ) {
+      return counts;
+    }
 
-    const visitIds = getVisitIdentifierCandidates(visit);
-    if (visitIds.length === 0) return counts;
+    if (
+      visitIdSet.size === 0
+    ) {
+      return counts;
+    }
 
-    const placeholders = visitIds.map(() => '?').join(',');
+    /*
+     * Não restringimos a consulta apenas a
+     * coletas.visita_id porque, antes do sync,
+     * um lado pode conhecer RegistroVisitaId
+     * enquanto o outro conhece VisitaAgendadaId.
+     *
+     * Fazemos o vínculo usando todos os IDs
+     * preservados no payload local.
+     */
+    const rows =
+      await db.getAllAsync(
+        `
+          SELECT
+            id,
+            pesquisa_id,
+            visita_id,
+            status,
+            data_inicio,
+            data_fim,
+            data_programada,
+            raw_json,
+            pending_sync,
+            updated_at
+          FROM coletas
+        `
+      );
 
-    const rows = await db.getAllAsync(
-      `SELECT pesquisa_id, raw_json FROM coletas WHERE visita_id IN (${placeholders})`,
-      visitIds
+    (rows || []).forEach(
+      (row: any) => {
+        const raw =
+          safeParseJson(
+            row?.raw_json,
+            {}
+          );
+
+        const collectionVisitIds =
+          [
+            row?.visita_id,
+
+            raw?.registroVisitaId,
+            raw?.registro_visita_id,
+
+            raw?.visitaAgendadaId,
+            raw?.visita_agendada_id,
+
+            raw?.visitaIdJson,
+            raw?.visita_id_json,
+
+            raw?.visitaId,
+            raw?.visita_id
+          ]
+            .map(
+              (value) =>
+                String(
+                  value ?? ''
+                ).trim()
+            )
+            .filter(
+              (value) =>
+                value &&
+                value !== 'null' &&
+                value !== 'undefined'
+            );
+
+        const belongsToVisit =
+          collectionVisitIds.some(
+            (collectionVisitId) =>
+              visitIdSet.has(
+                collectionVisitId
+              )
+          );
+
+        if (!belongsToVisit) {
+          return;
+        }
+
+        addCollection(
+          row,
+          'sqlite'
+        );
+      }
     );
-
-    (rows || []).forEach((row: any) => {
-      const raw = safeParseJson(row?.raw_json, {});
-      incrementCount(counts, getSurveyIdFromAnyPayload(row) || getSurveyIdFromAnyPayload(raw));
-    });
-  } catch {}
+  } catch (error) {
+    console.log(
+      '[Visita] falha ao contar coletas locais:',
+      error
+    );
+  }
 
   return counts;
 };
@@ -809,6 +1012,7 @@ export default function VisitaDetailScreen() {
   const border = isDark ? '#1E293B' : '#E2E8F0';
 
   const colorCheckin = '#10B981';
+  const colorInProgress = '#3B82F6';
   const colorJustify = '#F59E0B';
   const colorCheckout = '#EF4444';
 
@@ -1002,7 +1206,20 @@ export default function VisitaDetailScreen() {
             if (looksLikeSurvey) {
               const surveyId = String(directSurveyId);
               const repeatableMeta = getRepeatableSurveyMeta({ ...item, perguntas: directQuestions });
-              const collectionCount = collectionCountsBySurvey.get(surveyId) || 0;
+              // MOBILE_VISIT_SERVER_COLLECTION_COUNT_V1
+              const collectionCount =
+                Math.max(
+                  collectionCountsBySurvey.get(
+                    surveyId
+                  ) || 0,
+                  Number(
+                    item?.currentCount ??
+                    item?.current_count ??
+                    item?.coletasCount ??
+                    item?.coletas_count ??
+                    0
+                  ) || 0
+                );
 
               surveysMap.set(surveyId, {
                 id: surveyId,
@@ -1046,7 +1263,20 @@ export default function VisitaDetailScreen() {
             const surveyId = String(questionSurveyId);
             const current = surveysMap.get(surveyId);
             const repeatableMeta = getRepeatableSurveyMeta({ ...item, perguntas: [item] });
-            const collectionCount = collectionCountsBySurvey.get(surveyId) || 0;
+            // MOBILE_VISIT_SERVER_COLLECTION_COUNT_V1
+            const collectionCount =
+              Math.max(
+                collectionCountsBySurvey.get(
+                  surveyId
+                ) || 0,
+                Number(
+                  item?.currentCount ??
+                  item?.current_count ??
+                  item?.coletasCount ??
+                  item?.coletas_count ??
+                  0
+                ) || 0
+              );
 
             const finalRepeatable = Boolean(current?.repetivel || repeatableMeta.repetivel);
             const finalRepeatMax = current?.repeticaoMax ?? repeatableMeta.repeticaoMax;
@@ -1090,7 +1320,33 @@ export default function VisitaDetailScreen() {
             surveysMap.set(surveyId, {
               ...survey,
               repetivel: true,
-              coletasCount: serverStatus.currentCount,
+              // MOBILE_REPEATABLE_LOCAL_COUNT_WINS_V3
+              //
+              // A resposta já existe no SQLite antes do sync.
+              // Enquanto o servidor ainda estiver atrasado,
+              // o contador local não pode ser apagado.
+              //
+              // local=1 / servidor=0 -> 1
+              // local=2 / servidor=1 -> 2
+              // local=3 / servidor=3 -> 3
+              //
+              coletasCount:
+                Math.max(
+                  Math.max(
+                    0,
+                    Number(
+                      survey.coletasCount ||
+                      0
+                    )
+                  ),
+                  Math.max(
+                    0,
+                    Number(
+                      serverStatus.currentCount ||
+                      0
+                    )
+                  )
+                ),
               repeticaoMin: serverStatus.min || 1,
               repeticaoMax: serverStatus.max,
               repeticaoLabelSingular: serverStatus.labelSingular || 'registro',
@@ -1134,6 +1390,38 @@ export default function VisitaDetailScreen() {
                 })
               : null;
 
+          // MOBILE_VISIT_TASK_REAL_STATE_V1
+          const backendSurveyStatus =
+            normalizeStatus(
+              survey?.status ||
+              survey?.statusOnline ||
+              (
+                survey?.concluida
+                  ? 'REALIZADA'
+                  : 'PENDENTE'
+              )
+            );
+
+          const taskStatus =
+            survey.repetivel === true
+              ? repeatableCount > 0
+                ? visitClosedForRepeatable
+                  ? 'REALIZADA'
+                  : 'EM_ANDAMENTO'
+                : 'PENDENTE'
+              : (
+                  isDoneStatus(
+                    backendSurveyStatus
+                  ) ||
+                  completedSurveyIds.has(
+                    String(
+                      survey.id
+                    )
+                  )
+                )
+                ? 'REALIZADA'
+                : 'PENDENTE';
+
           tarefasConsolidadas.push({
             id: survey.id,
             titulo: nomeFinal,
@@ -1162,15 +1450,12 @@ export default function VisitaDetailScreen() {
                 Number(
                   survey.repeticaoMax
                 ),
+            status:
+              taskStatus,
+
             concluida:
-              survey.repetivel === true
-                ? visitClosedForRepeatable
-                : completedSurveyIds.has(
-                    String(survey.id)
-                  ) ||
-                  Boolean(
-                    survey.concluida
-                  ),
+              taskStatus ===
+              'REALIZADA',
           });
         }
       }
@@ -2158,7 +2443,34 @@ export default function VisitaDetailScreen() {
 
           {tarefasRenderizadas.length > 0 ? (
             tarefasRenderizadas.map((tarefa: any, index: number) => {
-              const tarefaConcluida = tarefa?.concluida === true;
+              const tarefaConcluida =
+                tarefa?.concluida ===
+                true;
+
+              // MOBILE_VISIT_TASK_VISUAL_STATE_V1
+              const tarefaEmAndamento =
+                !tarefaConcluida &&
+                (
+                  normalizeStatus(
+                    tarefa?.status
+                  ) ===
+                    'EM_ANDAMENTO' ||
+                  (
+                    tarefa?.repetivel ===
+                      true &&
+                    Number(
+                      tarefa?.coletasCount ||
+                      0
+                    ) > 0
+                  )
+                );
+
+              const taskStateColor =
+                tarefaConcluida
+                  ? colorCheckin
+                  : tarefaEmAndamento
+                    ? colorInProgress
+                    : border;
 
               return (
               <TouchableOpacity
@@ -2167,7 +2479,12 @@ export default function VisitaDetailScreen() {
                   accessibilityLabel={index === 0 ? "visit-first-task-card" : `visit-task-card-${tarefa.id || index}`}
                 style={[
                   styles.taskCard,
-                  { backgroundColor: cardBg, borderColor: tarefaConcluida ? colorCheckin : border },
+                  {
+                    backgroundColor:
+                      cardBg,
+                    borderColor:
+                      taskStateColor
+                  },
                 ]}
                 onPress={() =>
                   isAndamento
@@ -2189,13 +2506,30 @@ export default function VisitaDetailScreen() {
                 <View
                   style={[
                     styles.taskIconBg,
-                    { backgroundColor: tarefaConcluida ? colorCheckin : 'rgba(16, 185, 129, 0.1)' },
+                    {
+                      backgroundColor:
+                        tarefaConcluida
+                          ? colorCheckin
+                          : tarefaEmAndamento
+                            ? 'rgba(59, 130, 246, 0.16)'
+                            : 'rgba(16, 185, 129, 0.1)'
+                    },
                   ]}
                 >
                   {tarefaConcluida ? (
-                    <CheckCircle2 size={22} color="#FFF" />
+                    <CheckCircle2
+                      size={22}
+                      color="#FFF"
+                    />
                   ) : (
-                    <ClipboardCheck size={22} color={colorCheckin} />
+                    <ClipboardCheck
+                      size={22}
+                      color={
+                        tarefaEmAndamento
+                          ? colorInProgress
+                          : colorCheckin
+                      }
+                    />
                   )}
                 </View>
                 <View style={styles.taskInfo}>
@@ -2206,7 +2540,19 @@ export default function VisitaDetailScreen() {
                     >
                       {tarefa.titulo}
                     </Text>
-                  <Text style={[styles.taskSubtitle, { color: tarefaConcluida ? colorCheckin : textSecondary }]}>
+                  <Text
+                    style={[
+                      styles.taskSubtitle,
+                      {
+                        color:
+                          tarefaConcluida
+                            ? colorCheckin
+                            : tarefaEmAndamento
+                              ? colorInProgress
+                              : textSecondary
+                      }
+                    ]}
+                  >
                     {tarefa.repeatableSubtitle
                       ? tarefa.repeatableSubtitle
                       : tarefaConcluida
@@ -2214,7 +2560,16 @@ export default function VisitaDetailScreen() {
                         : `${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? 'pergunta' : 'perguntas'}`}
                   </Text>
                 </View>
-                <ChevronRight size={18} color={tarefaConcluida ? colorCheckin : border} />
+                <ChevronRight
+                  size={18}
+                  color={
+                    tarefaConcluida
+                      ? colorCheckin
+                      : tarefaEmAndamento
+                        ? colorInProgress
+                        : border
+                  }
+                />
               </TouchableOpacity>
               );
             })

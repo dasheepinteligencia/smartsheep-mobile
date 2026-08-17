@@ -460,6 +460,10 @@ export const ptBR = {
   surveyEvaluatedItems: 'ITENS AVALIADOS',
   surveyNoQuestionsAvailable: 'Sem perguntas disponíveis.',
   surveyFinishButton: 'FINALIZAR PESQUISA',
+  'surveySelectOptionsPlaceholder': 'Selecione opções',
+  'surveyOneOptionSelected': '1 opção selecionada',
+  'surveyManyOptionsSelected': '{{count}} opções selecionadas',
+  'surveyApplySelection': 'Aplicar',
   surveySearchOptionPlaceholder: 'Buscar opção...',
 
   preflightTitle: 'Ação necessária',
@@ -495,4 +499,8 @@ export const ptBR = {
   photoGpsFakeDetected: 'Foi detectada uma localização simulada. A foto não será anexada.',
   standaloneTaskSaveContextMissing: 'Não foi possível identificar o projeto ou o usuário para salvar esta tarefa.',
   standaloneTaskQueueError: 'Não foi possível colocar a pesquisa na fila de sincronização. Não saia da tela; tente salvar novamente em instantes.',
+
+  repeatableLimitReachedTitle: 'Limite atingido',
+  repeatableLimitReachedMessage: 'Esta pesquisa já possui {{current}}/{{max}} {{label}}. Não é possível registrar nova resposta.',
+  repeatableRecordsPlural: 'registros',
 };
