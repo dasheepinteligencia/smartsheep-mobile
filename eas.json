@@ -13,6 +13,7 @@
       "channel": "preview"
     },
     "production": {
+      "channel": "production",
       "autoIncrement": true
     }
   },
