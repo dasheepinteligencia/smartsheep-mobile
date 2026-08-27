@@ -235,7 +235,7 @@ const normalizeImageUrl = (url?: string | null) => {
   if (!raw) return null;
   if (raw.includes('api.dicebear.com') && raw.includes('/svg')) raw = raw.replace('/svg', '/png');
   if (raw.startsWith('http')) return raw;
-  return `https://painel.dasheep.com.br${raw.startsWith('/') ? '' : '/'}${raw}`;
+  return null;
 };
 
 const getEndereco = (obj: any) => {

@@ -251,6 +251,7 @@ export const enUS = {
   emailLabel: 'Corporate E-mail',
   emailPlaceholder: 'name@company.com',
   passwordLabel: 'Password',
+  rememberEmail: 'Remember my e-mail',
   forgotPassword: 'Forgot my password',
   loginButton: 'ACCESS SYSTEM',
   loading: 'AUTHENTICATING...',

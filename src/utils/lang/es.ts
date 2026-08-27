@@ -250,6 +250,7 @@ export const esES = {
   emailLabel: 'Correo Corporativo',
   emailPlaceholder: 'nombre@empresa.com',
   passwordLabel: 'Contraseña',
+  rememberEmail: 'Recordar mi correo electrónico',
   forgotPassword: 'Olvidé mi contraseña',
   loginButton: 'ACCEDER AL SISTEMA',
   loading: 'AUTENTICANDO...',

@@ -170,7 +170,7 @@ const getReadableTextColor = (hexColor?: string) => {
   return luminance > 0.62 ? '#0F172A' : '#FFFFFF';
 };
 
-const DEFAULT_ASSET_HOST = 'https://smartsheep.com.br';
+const DEFAULT_ASSET_HOST = 'https://app.smartsheep.com.br';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 type MuralItem = {

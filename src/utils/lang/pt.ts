@@ -250,6 +250,7 @@ export const ptBR = {
   emailLabel: 'E-mail Corporativo',
   emailPlaceholder: 'nome@empresa.com.br',
   passwordLabel: 'Senha',
+  rememberEmail: 'Lembrar meu e-mail',
   forgotPassword: 'Esqueci minha senha',
   loginButton: 'ACESSAR SISTEMA',
   loading: 'AUTENTICANDO...',

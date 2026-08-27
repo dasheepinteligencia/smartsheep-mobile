@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   View, Text, TextInput, TouchableOpacity, Pressable, StyleSheet,
   KeyboardAvoidingView, Platform, ActivityIndicator, Image, StatusBar
@@ -13,8 +13,10 @@ import { i18n, setI18nLocale } from '../utils/i18n';
 import { api } from '../services/api';
 import { globalSync } from '../services/syncService';
 import { clearLocalDatabase } from '../database/db'; 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ACCENT_COLOR = '#FF7A00';
+const REMEMBERED_EMAIL_KEY = 'OmniFieldRememberedEmail';
 
 
 const getReadableTextColor = (hexColor?: string) => {
@@ -182,12 +184,49 @@ export default function LoginScreen() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberEmail, setRememberEmail] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [focusedInput, setFocusedInput] = useState<'email' | 'password' | null>(null);
 
   const isDark = theme === 'dark';
+
+  useEffect(() => {
+    let active = true;
+
+    const loadRememberedEmail = async () => {
+      try {
+        const savedEmail = await AsyncStorage.getItem(REMEMBERED_EMAIL_KEY);
+
+        if (active && savedEmail) {
+          setEmail(savedEmail);
+          setRememberEmail(true);
+        }
+      } catch (error) {
+        console.warn('[Login] Não foi possível carregar o e-mail lembrado:', error);
+      }
+    };
+
+    loadRememberedEmail();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const toggleRememberEmail = async () => {
+    const nextValue = !rememberEmail;
+    setRememberEmail(nextValue);
+
+    if (!nextValue) {
+      try {
+        await AsyncStorage.removeItem(REMEMBERED_EMAIL_KEY);
+      } catch (error) {
+        console.warn('[Login] Não foi possível remover o e-mail lembrado:', error);
+      }
+    }
+  };
 
   const handleLogin = async () => {
     setErrorMessage(null);
@@ -236,6 +275,16 @@ export default function LoginScreen() {
         setErrorMessage(loginText(language, 'tokenMissing'));
         setIsLoading(false);
         return;
+      }
+
+      try {
+        if (rememberEmail) {
+          await AsyncStorage.setItem(REMEMBERED_EMAIL_KEY, email.trim());
+        } else {
+          await AsyncStorage.removeItem(REMEMBERED_EMAIL_KEY);
+        }
+      } catch (error) {
+        console.warn('[Login] Não foi possível atualizar o e-mail lembrado:', error);
       }
 
       await clearLocalDatabase();
@@ -376,6 +425,33 @@ export default function LoginScreen() {
           </View>
 
           <Pressable
+            testID="login-remember-email"
+            accessibilityLabel={i18n.t('rememberEmail')}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: rememberEmail }}
+            onPress={toggleRememberEmail}
+            style={styles.rememberRow}
+          >
+            <View
+              style={[
+                styles.rememberCheckbox,
+                {
+                  borderColor: rememberEmail ? accent : borderColor,
+                  backgroundColor: rememberEmail ? accent : 'transparent',
+                },
+              ]}
+            >
+              {rememberEmail && (
+                <Text style={[styles.rememberCheck, { color: accentText }]}>✓</Text>
+              )}
+            </View>
+
+            <Text style={[styles.rememberText, { color: externalTextColor }]}>
+              {i18n.t('rememberEmail')}
+            </Text>
+          </Pressable>
+
+          <Pressable
             testID="login-submit-button"
             accessibilityLabel="login-submit-button"
             onPress={handleLogin}
@@ -441,6 +517,31 @@ const styles = StyleSheet.create({
   inputContainer: { flexDirection: 'row', alignItems: 'center', borderRadius: 18, paddingHorizontal: 16, height: 56, borderWidth: 1.5 },
   inputIcon: { marginRight: 12 },
   input: { flex: 1, fontSize: 16, fontWeight: '500' },
+  rememberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: -2,
+    marginBottom: 4,
+  },
+  rememberCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 9,
+  },
+  rememberCheck: {
+    fontSize: 14,
+    fontWeight: '900',
+    lineHeight: 17,
+  },
+  rememberText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   loginBtnSafe: {
     height: 56,
     borderRadius: 18,

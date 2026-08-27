@@ -5,9 +5,7 @@ import { router } from 'expo-router';
 
 // 🌐 Fallback de Servidores (Alta Disponibilidade)
 const SERVERS = [
-  'https://smartsheep.com.br',
-  'http://129.121.49.172:4000', 
-  'http://5.189.132.99:4000'    
+  'https://app.smartsheep.com.br',
 ];
 
 export const readApiErrorBody = async (response: Response | null) => {

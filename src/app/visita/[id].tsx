@@ -8,7 +8,7 @@ import {
   Modal,
   ScrollView,
   TextInput,
-} from 'react-native';
+  Platform,} from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Constants from 'expo-constants';
 import { persistVisitPhotoLocally } from '../../services/mobileAwsUploadService';
@@ -49,6 +49,18 @@ const priorityMapping: Record<string, any> = {
 const hasGoogleMapsApiKey = () => {
   const extra = (Constants?.expoConfig?.extra || Constants?.manifest?.extra || {}) as any;
   return Boolean(extra?.googleMapsAndroidApiKey || extra?.googleMapsApiKey);
+};
+
+const canRenderMapInCurrentEnvironment = () => {
+  // iOS usa Apple Maps por padrão quando nenhum provider é forçado.
+  if (Platform.OS === 'ios') return true;
+
+  // Expo Go já possui a configuração nativa necessária para react-native-maps.
+  const isExpoGo = String(Constants?.executionEnvironment || '') === 'storeClient';
+  if (isExpoGo) return true;
+
+  // Android standalone / Play continua exigindo nossa chave configurada no build.
+  return hasGoogleMapsApiKey();
 };
 
 const getInsightPriorityStyles = (priority: string, isDark: boolean) => {
@@ -954,7 +966,7 @@ export default function VisitaDetailScreen() {
   const { isSyncing, lastSync } = useSyncStore();
 
   const isDark = theme === 'dark';
-  const canRenderMap = hasGoogleMapsApiKey();
+  const canRenderMap = canRenderMapInCurrentEnvironment();
 
   const [visita, setVisita] = useState<any>(null);
   const [tarefasRenderizadas, setTarefasRenderizadas] = useState<any[]>([]);

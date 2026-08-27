@@ -515,13 +515,10 @@ export default function MenuScreen() {
 
   avatarUrl = toPngIfDicebearSvg(avatarUrl);
 
-  const avatarSource = avatarUrl
-    ? {
-        uri: String(avatarUrl).startsWith('http')
-          ? String(avatarUrl)
-          : `https://painel.dasheep.com.br${String(avatarUrl).startsWith('/') ? '' : '/'}${avatarUrl}`,
-      }
-    : null;
+  const avatarSource =
+    avatarUrl && String(avatarUrl).startsWith('http')
+      ? { uri: String(avatarUrl) }
+      : null;
 
   const closeModal = () => setModal((prev) => ({ ...prev, visible: false }));
 
@@ -767,7 +764,16 @@ export default function MenuScreen() {
 
         <View style={[styles.profileCard, { backgroundColor: surface, borderColor: border }]}>
           <View style={styles.profileTop}>
-            <View style={[styles.avatar, { backgroundColor: surfaceAlt, borderColor: accent }]}>
+            <View
+              style={[
+                styles.avatar,
+                {
+                  backgroundColor: surfaceAlt,
+                  borderColor: avatarSource && !imgError ? 'transparent' : accent,
+                  borderWidth: avatarSource && !imgError ? 0 : 2,
+                },
+              ]}
+            >
               {avatarSource && !imgError ? (
                 <Image
                   source={avatarSource}

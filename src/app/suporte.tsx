@@ -507,24 +507,6 @@ export default function AjudaSuporteScreen() {
     }
   };
 
-  const openEmailSupport = async () => {
-    const subject = encodeURIComponent(supportText('emailSubject', language));
-    const body = encodeURIComponent(diagnosticText);
-    const url = `mailto:suporte@dasheep.com.br?subject=${subject}&body=${body}`;
-
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-
-      if (!canOpen) {
-        AppAlert.alert(supportText('emailUnavailableTitle', language), supportText('emailUnavailableMessage', language));
-        return;
-      }
-
-      await Linking.openURL(url);
-    } catch {
-      AppAlert.alert(supportText('emailUnavailableTitle', language), supportText('emailUnavailableMessage', language));
-    }
-  };
 
   const openWhatsAppSupport = async () => {
     const text = encodeURIComponent(diagnosticText);
@@ -743,7 +725,6 @@ export default function AjudaSuporteScreen() {
 
           {renderAction(supportText('shareDiagnostic', language), supportText('shareDiagnosticSubtitle', language), Copy, accent, shareDiagnostic)}
           {renderAction(supportText('whatsapp', language), supportText('whatsappSubtitle', language), MessageCircle, '#22C55E', openWhatsAppSupport)}
-          {renderAction(supportText('emailSupport', language), supportText('emailSupportSubtitle', language), Mail, '#3B82F6', openEmailSupport)}
         </View>
 
         <View style={[styles.sectionCard, { backgroundColor: surface, borderColor: border }]}>

@@ -625,13 +625,10 @@ export default function DashboardScreen() {
 
   fotoUrl = toPngIfDicebearSvg(fotoUrl);
 
-  const avatarSource = fotoUrl
-    ? {
-        uri: String(fotoUrl).startsWith('http')
-          ? String(fotoUrl)
-          : `https://painel.dasheep.com.br${String(fotoUrl).startsWith('/') ? '' : '/'}${fotoUrl}`,
-      }
-    : null;
+  const avatarSource =
+    fotoUrl && String(fotoUrl).startsWith('http')
+      ? { uri: String(fotoUrl) }
+      : null;
 
   const initialName = user?.nome ? user.nome.charAt(0).toUpperCase() : 'U';
 
@@ -1159,7 +1156,17 @@ export default function DashboardScreen() {
           style={[styles.avatarContainer, { backgroundColor: cardBg, borderColor: border }]}
           activeOpacity={0.86}
         >
-          <View style={[styles.avatar, { backgroundColor: cardBgAlt, borderColor: accent, borderWidth: 2, overflow: 'hidden' }]}>
+          <View
+            style={[
+              styles.avatar,
+              {
+                backgroundColor: cardBgAlt,
+                borderColor: avatarSource && !imgError ? 'transparent' : accent,
+                borderWidth: avatarSource && !imgError ? 0 : 2,
+                overflow: 'hidden',
+              },
+            ]}
+          >
             {avatarSource && !imgError ? (
               <Image
                 source={avatarSource}
