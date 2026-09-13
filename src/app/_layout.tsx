@@ -7,6 +7,7 @@ import { initializeDatabase } from '../database/db';
 import { useAuthStore } from '../store/useAuthStore';
 import { globalSync } from '../services/syncService';
 import { DevicePreflightGate } from '../components/DevicePreflightGate';
+import { isSupervisorMobileUser } from '../utils/mobileRole';
 
 import { AppAlertProvider } from '../components/AppAlert';
 const BACKGROUND_SYNC_TASK = 'BACKGROUND_SYNC_TASK';
@@ -95,13 +96,52 @@ export default function RootLayout() {
     const isLoginRoute = firstSegment === 'login';
     const hasValidSession = Boolean(token && user?.id);
 
+    // OMNI_SUPERVISOR_EXPERIENCE_V1
+    const supervisorExperience =
+      hasValidSession &&
+      isSupervisorMobileUser(user);
+
     if (!hasValidSession && !isLoginRoute) {
       router.replace('/login' as any);
       return;
     }
 
-    if (hasValidSession && isLoginRoute) {
-      router.replace('/(tabs)' as any);
+    if (
+      hasValidSession &&
+      isLoginRoute
+    ) {
+      router.replace(
+        (
+          supervisorExperience
+            ? '/(supervisor)'
+            : '/(tabs)'
+        ) as any
+      );
+      return;
+    }
+
+    /*
+     * O login legado continua enviando para /(tabs).
+     * Se for Supervisor, o RootLayout corrige imediatamente
+     * para a experiência Command Center sem tocar no login.tsx.
+     */
+    if (
+      supervisorExperience &&
+      firstSegment === '(tabs)'
+    ) {
+      router.replace(
+        '/(supervisor)' as any
+      );
+      return;
+    }
+
+    if (
+      !supervisorExperience &&
+      firstSegment === '(supervisor)'
+    ) {
+      router.replace(
+        '/(tabs)' as any
+      );
     }
   }, [hasHydrated, token, user?.id, segments, router]);
 
@@ -125,6 +165,15 @@ export default function RootLayout() {
     >
       <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'fade' }} />
+
+      {/* OMNI_SUPERVISOR_EXPERIENCE_V1 */}
+      <Stack.Screen
+        name="(supervisor)"
+        options={{
+          headerShown: false,
+          animation: 'fade'
+        }}
+      />
 
       <Stack.Screen name="mural" options={{ headerShown: false }} />
       <Stack.Screen name="performance" options={{ headerShown: false }} />
