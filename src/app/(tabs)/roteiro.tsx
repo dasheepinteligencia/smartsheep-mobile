@@ -550,11 +550,215 @@ const getSurveyTitleFromQuestion = (question: any) => {
   );
 };
 
+// ============================================================
+// MOBILE_FIELD_PORTFOLIO_METRICS_V2
+//
+// Carteira Livre:
+// - existência na carteira NÃO é visita pendente;
+// - só vira execução operacional após CHECK-IN;
+// - estado de tarefa pode ser obtido pelas coletas locais,
+//   inclusive depois de sincronizadas.
+// ============================================================
+
+const isPortfolioFreeVisitForMobile = (visit: any) => {
+  const config =
+    safeParseJson(
+      visit?.project_config_json ||
+      visit?.projectConfig ||
+      {},
+      {}
+    );
+
+  return (
+    String(
+      visit?.field_visit_mode ||
+      visit?.fieldVisitMode ||
+      config?.field_visit_mode ||
+      config?.fieldVisitMode ||
+      ''
+    )
+      .trim()
+      .toUpperCase() ===
+      'CARTEIRA_LIVRE' ||
+    String(
+      visit?.origem ||
+      config?.origem ||
+      ''
+    )
+      .trim()
+      .toUpperCase() ===
+      'CARTEIRA_LIVRE'
+  );
+};
+
+const hasStartedPortfolioFreeVisitForMobile = (
+  visit: any
+) => {
+  if (
+    !isPortfolioFreeVisitForMobile(
+      visit
+    )
+  ) {
+    return true;
+  }
+
+  const status =
+    normalizeStatus(
+      visit?.status ||
+      ''
+    );
+
+  return (
+    Boolean(
+      visit?.checkin_at ||
+      visit?.checkinAt ||
+      visit?.data_checkin ||
+      visit?.entrada_at
+    ) ||
+    [
+      'EM_ANDAMENTO',
+      'INICIADA',
+      'REALIZADA',
+      'COMPLETA',
+      'CONCLUIDA',
+      'CONCLUÍDA',
+      'VISITADA'
+    ].includes(status)
+  );
+};
+
+const getPortfolioCollectionCountsForMobile = (
+  visit: any,
+  coletas: any[] = []
+) => {
+  const counts =
+    new Map<string, number>();
+
+  if (
+    !isPortfolioFreeVisitForMobile(
+      visit
+    )
+  ) {
+    return counts;
+  }
+
+  const visitIds =
+    new Set(
+      [
+        visit?.id,
+        visit?.registro_visita_id,
+        visit?.registroVisitaId,
+        visit?.visita_id,
+        visit?.visitaId
+      ]
+        .map(
+          (value) =>
+            String(
+              value ?? ''
+            ).trim()
+        )
+        .filter(
+          (value) =>
+            value &&
+            value !== 'null' &&
+            value !== 'undefined'
+        )
+    );
+
+  (coletas || []).forEach(
+    (row: any) => {
+      const raw =
+        safeParseJson(
+          row?.raw_json ||
+          row?.payload ||
+          {},
+          {}
+        );
+
+      const status =
+        String(
+          row?.status ||
+          raw?.status ||
+          ''
+        )
+          .trim()
+          .toUpperCase();
+
+      if (
+        [
+          'ERRO_SYNC',
+          'EXCLUIDA',
+          'EXCLUÍDA',
+          'DELETED',
+          'CANCELADA',
+          'CANCELLED'
+        ].includes(status)
+      ) {
+        return;
+      }
+
+      const collectionVisitIds =
+        [
+          row?.visita_id,
+          row?.visitaId,
+
+          raw?.registroVisitaId,
+          raw?.registro_visita_id,
+
+          raw?.visitaId,
+          raw?.visita_id,
+
+          raw?.offline_id
+        ]
+          .map(
+            (value) =>
+              String(
+                value ?? ''
+              ).trim()
+          )
+          .filter(Boolean);
+
+      const belongs =
+        collectionVisitIds.some(
+          (value) =>
+            visitIds.has(value)
+        );
+
+      if (!belongs) return;
+
+      const surveyId =
+        String(
+          row?.pesquisa_id ||
+          row?.pesquisaId ||
+          raw?.pesquisa_id ||
+          raw?.pesquisaId ||
+          raw?.surveyId ||
+          raw?.survey_id ||
+          ''
+        ).trim();
+
+      if (!surveyId) return;
+
+      counts.set(
+        surveyId,
+        (
+          counts.get(
+            surveyId
+          ) || 0
+        ) + 1
+      );
+    }
+  );
+
+  return counts;
+};
+
 // MOBILE_ROUTE_REAL_SURVEY_STATE_V1
 const extractVisitSurveys = (
   visit: any,
   pesquisaById: Record<string, any>,
-  language: string
+  language: string,
+  coletas: any[] = []
 ) => {
   const parsed =
     safeParseJson(
@@ -852,6 +1056,79 @@ const extractVisitSurveys = (
 
         currentCount:
           0
+      }
+    );
+  }
+
+  /*
+   * MOBILE_FIELD_PORTFOLIO_METRICS_V2
+   *
+   * Visita livre não é recebida novamente pelo /meu-roteiro.
+   * Portanto seu pesquisa_json pode continuar com o estado
+   * original PENDENTE mesmo depois de a coleta existir.
+   *
+   * Para Carteira Livre, a coleta local é evidência operacional
+   * suficiente para atualizar somente a VISUALIZAÇÃO da tarefa.
+   */
+  if (
+    isPortfolioFreeVisitForMobile(
+      visit
+    )
+  ) {
+    const collectionCounts =
+      getPortfolioCollectionCountsForMobile(
+        visit,
+        coletas
+      );
+
+    const visitClosed =
+      Boolean(
+        visit?.checkout_at ||
+        visit?.checkoutAt
+      ) ||
+      isDoneStatus(
+        normalizeStatus(
+          visit?.status
+        )
+      );
+
+    surveysMap.forEach(
+      (
+        survey,
+        surveyId
+      ) => {
+        const count =
+          collectionCounts.get(
+            String(
+              surveyId
+            )
+          ) || 0;
+
+        if (count <= 0) {
+          return;
+        }
+
+        surveysMap.set(
+          surveyId,
+          {
+            ...survey,
+
+            currentCount:
+              Math.max(
+                Number(
+                  survey.currentCount ||
+                  0
+                ),
+                count
+              ),
+
+            status:
+              survey.repetivel &&
+              !visitClosed
+                ? 'EM_ANDAMENTO'
+                : 'REALIZADA'
+          }
+        );
       }
     );
   }
@@ -1162,7 +1439,13 @@ export default function RoteiroScreen() {
 
       const visitsNormalized = resVisits
         .map((v) => {
-          const visitSurveys = extractVisitSurveys(v, pesquisaById, language);
+          const visitSurveys =
+            extractVisitSurveys(
+              v,
+              pesquisaById,
+              language,
+              resColetas
+            );
 
           return {
             ...v,
@@ -1752,11 +2035,30 @@ export default function RoteiroScreen() {
           return;
         }
 
+        /*
+         * Carteira Livre não cria obrigação apenas por
+         * estar disponível na carteira.
+         *
+         * A tarefa POR_VISITA nasce para a operação
+         * somente depois do primeiro check-in.
+         */
+        if (
+          isPortfolioFreeVisitForMobile(
+            visit
+          ) &&
+          !hasStartedPortfolioFreeVisitForMobile(
+            visit
+          )
+        ) {
+          return;
+        }
+
         const visitSurveys =
           extractVisitSurveys(
             visit,
             pesquisaById,
-            language
+            language,
+            resColetas
           );
 
         visitSurveys.forEach(
@@ -2066,7 +2368,42 @@ qtdPerguntas:
 
   const summary = useMemo(() => {
     const todayStr = getTodayStr();
-    const todayVisits = visits.filter((v) => String(v.data_programada || '').substring(0, 10) === todayStr);
+    const todayVisits =
+      visits.filter(
+        (v) => {
+          const date =
+            String(
+              v.data_programada ||
+              ''
+            ).substring(
+              0,
+              10
+            );
+
+          if (
+            date !== todayStr
+          ) {
+            return false;
+          }
+
+          /*
+           * Loja livre disponível não é visita pendente.
+           * Só entra na métrica quando houve check-in.
+           */
+          if (
+            isPortfolioFreeVisitForMobile(
+              v
+            ) &&
+            !hasStartedPortfolioFreeVisitForMobile(
+              v
+            )
+          ) {
+            return false;
+          }
+
+          return true;
+        }
+      );
     const visitsDone = todayVisits.filter((v) => isDoneStatus(v.status) || normalizeStatus(v.status) === 'JUSTIFICADA').length;
 
     const visibleTasks = tasks;

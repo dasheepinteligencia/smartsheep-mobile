@@ -370,9 +370,207 @@ const sortVisitsByRouteOrder = (visits: any[]) => {
 };
 
 
+// ============================================================
+// MOBILE_FIELD_PORTFOLIO_METRICS_V2
+// ============================================================
+
+const isPortfolioFreeVisitForDashboard = (
+  visit: any
+) => {
+  const config =
+    safeParseJson(
+      visit?.project_config_json ||
+      visit?.projectConfig ||
+      {},
+      {}
+    );
+
+  return (
+    String(
+      visit?.field_visit_mode ||
+      visit?.fieldVisitMode ||
+      config?.field_visit_mode ||
+      config?.fieldVisitMode ||
+      ''
+    )
+      .trim()
+      .toUpperCase() ===
+      'CARTEIRA_LIVRE' ||
+    String(
+      visit?.origem ||
+      config?.origem ||
+      ''
+    )
+      .trim()
+      .toUpperCase() ===
+      'CARTEIRA_LIVRE'
+  );
+};
+
+const hasStartedPortfolioFreeVisitForDashboard = (
+  visit: any
+) => {
+  if (
+    !isPortfolioFreeVisitForDashboard(
+      visit
+    )
+  ) {
+    return true;
+  }
+
+  const status =
+    String(
+      visit?.status ||
+      ''
+    )
+      .trim()
+      .toUpperCase();
+
+  return (
+    Boolean(
+      visit?.checkin_at ||
+      visit?.checkinAt ||
+      visit?.data_checkin ||
+      visit?.entrada_at
+    ) ||
+    [
+      'EM_ANDAMENTO',
+      'INICIADA',
+      'REALIZADA',
+      'COMPLETA',
+      'CONCLUIDA',
+      'CONCLUÍDA',
+      'VISITADA'
+    ].includes(status)
+  );
+};
+
+const getPortfolioCollectionCountsForDashboard = (
+  visit: any,
+  coletas: any[] = []
+) => {
+  const counts =
+    new Map<string, number>();
+
+  if (
+    !isPortfolioFreeVisitForDashboard(
+      visit
+    )
+  ) {
+    return counts;
+  }
+
+  const visitIds =
+    new Set(
+      [
+        visit?.id,
+        visit?.registro_visita_id,
+        visit?.registroVisitaId,
+        visit?.visita_id,
+        visit?.visitaId
+      ]
+        .map(
+          (value) =>
+            String(
+              value ?? ''
+            ).trim()
+        )
+        .filter(Boolean)
+    );
+
+  (coletas || []).forEach(
+    (row: any) => {
+      const raw =
+        safeParseJson(
+          row?.raw_json ||
+          row?.payload ||
+          {},
+          {}
+        );
+
+      const status =
+        String(
+          row?.status ||
+          raw?.status ||
+          ''
+        )
+          .trim()
+          .toUpperCase();
+
+      if (
+        [
+          'ERRO_SYNC',
+          'EXCLUIDA',
+          'EXCLUÍDA',
+          'DELETED',
+          'CANCELADA',
+          'CANCELLED'
+        ].includes(status)
+      ) {
+        return;
+      }
+
+      const collectionVisitIds =
+        [
+          row?.visita_id,
+          row?.visitaId,
+
+          raw?.registroVisitaId,
+          raw?.registro_visita_id,
+
+          raw?.visitaId,
+          raw?.visita_id,
+
+          raw?.offline_id
+        ]
+          .map(
+            (value) =>
+              String(
+                value ?? ''
+              ).trim()
+          )
+          .filter(Boolean);
+
+      if (
+        !collectionVisitIds.some(
+          (value) =>
+            visitIds.has(value)
+        )
+      ) {
+        return;
+      }
+
+      const surveyId =
+        String(
+          row?.pesquisa_id ||
+          row?.pesquisaId ||
+          raw?.pesquisa_id ||
+          raw?.pesquisaId ||
+          raw?.surveyId ||
+          raw?.survey_id ||
+          ''
+        ).trim();
+
+      if (!surveyId) return;
+
+      counts.set(
+        surveyId,
+        (
+          counts.get(
+            surveyId
+          ) || 0
+        ) + 1
+      );
+    }
+  );
+
+  return counts;
+};
+
 // MOBILE_DASHBOARD_REAL_STATE_V1
 const getVisitSurveyStatesForDashboard = (
-  visit: any
+  visit: any,
+  coletas: any[] = []
 ) => {
   const parsed = safeParseJson(
     visit?.pesquisa_json ||
@@ -506,6 +704,74 @@ const getVisitSurveyStatesForDashboard = (
       );
     }
   );
+
+  /*
+   * Para Carteira Livre, o estado do survey também
+   * precisa reconhecer as coletas existentes no SQLite.
+   *
+   * Isso funciona tanto antes quanto depois da sincronização:
+   * COMPLETA -> SINCRONIZADA continua sendo execução válida.
+   */
+  if (
+    isPortfolioFreeVisitForDashboard(
+      visit
+    )
+  ) {
+    const counts =
+      getPortfolioCollectionCountsForDashboard(
+        visit,
+        coletas
+      );
+
+    const visitClosed =
+      Boolean(
+        visit?.checkout_at ||
+        visit?.checkoutAt
+      ) ||
+      isDoneStatus(
+        visit?.status
+      );
+
+    surveys.forEach(
+      (
+        survey,
+        surveyId
+      ) => {
+        const count =
+          counts.get(
+            String(
+              surveyId
+            )
+          ) || 0;
+
+        if (count <= 0) {
+          return;
+        }
+
+        surveys.set(
+          surveyId,
+          {
+            ...survey,
+
+            currentCount:
+              Math.max(
+                Number(
+                  survey.currentCount ||
+                  0
+                ),
+                count
+              ),
+
+            status:
+              survey.repeatable &&
+              !visitClosed
+                ? 'EM_ANDAMENTO'
+                : 'REALIZADA'
+          }
+        );
+      }
+    );
+  }
 
   return Array.from(
     surveys.values()
@@ -660,6 +926,18 @@ export default function DashboardScreen() {
       const todasVisitas = (await db.getAllAsync(`SELECT rowid as __rowid, * FROM visits ORDER BY rowid ASC`)) as any[];
       const allTasks = (await db.getAllAsync(`SELECT * FROM other_tasks`)) as any[];
 
+      // MOBILE_FIELD_PORTFOLIO_METRICS_V2
+      let allColetas: any[] = [];
+
+      try {
+        allColetas =
+          (await db.getAllAsync(
+            `SELECT * FROM coletas`
+          )) as any[];
+      } catch {
+        allColetas = [];
+      }
+
       let qtdPesquisasPorVisita = 0;
 
       try {
@@ -686,6 +964,24 @@ export default function DashboardScreen() {
         const dataProg = formatToYMD(v.data_programada);
 
         if (dataProg === todayStr) {
+
+          /*
+           * MOBILE_FIELD_PORTFOLIO_METRICS_V2
+           *
+           * Carteira Livre sem check-in é somente
+           * oportunidade disponível, não pendência.
+           */
+          if (
+            isPortfolioFreeVisitForDashboard(
+              v
+            ) &&
+            !hasStartedPortfolioFreeVisitForDashboard(
+              v
+            )
+          ) {
+            return;
+          }
+
           vHojeTotal++;
           lojasAgendadas.add(String(v.loja_id));
 
@@ -750,6 +1046,21 @@ export default function DashboardScreen() {
         }
 
         /*
+         * Carteira Livre só cria tarefa operacional
+         * quando a visita realmente começa.
+         */
+        if (
+          isPortfolioFreeVisitForDashboard(
+            visit
+          ) &&
+          !hasStartedPortfolioFreeVisitForDashboard(
+            visit
+          )
+        ) {
+          return;
+        }
+
+        /*
          * Visita justificada encerra a obrigação
          * sem criar formulários pendentes fictícios.
          */
@@ -767,7 +1078,8 @@ export default function DashboardScreen() {
 
         const visitSurveys =
           getVisitSurveyStatesForDashboard(
-            visit
+            visit,
+            allColetas
           );
 
         tVisitaHojeTotal +=
@@ -901,6 +1213,21 @@ export default function DashboardScreen() {
         const visitasElegiveisProximaParada = todasVisitas.filter((v) => {
           const status = String(v.status || '').toUpperCase();
           const dataProg = formatToYMD(v.data_programada);
+
+          /*
+           * Loja livre que ainda não teve check-in
+           * não pode virar "Próxima parada pendente".
+           */
+          if (
+            isPortfolioFreeVisitForDashboard(
+              v
+            ) &&
+            !hasStartedPortfolioFreeVisitForDashboard(
+              v
+            )
+          ) {
+            return false;
+          }
 
           return ['PENDENTE', 'AGENDADA', 'EM_ANDAMENTO', 'INICIADA'].includes(status) && dataProg === todayStr;
         });
