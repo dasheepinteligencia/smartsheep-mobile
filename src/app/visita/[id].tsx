@@ -957,11 +957,12 @@ type JustificativaOption = {
   descricao: string;
 };
 
+// MOBILE_FIELD_PORTFOLIO_V1
 export default function VisitaDetailScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const mapRef = useRef<MapView>(null);
-  const { theme } = useSettingsStore();
+  const { theme, language } = useSettingsStore();
   const { user, token } = useAuthStore();
   const { isSyncing, lastSync } = useSyncStore();
 
@@ -1624,12 +1625,66 @@ export default function VisitaDetailScreen() {
       user?.projeto_id ||
       user?.project_id;
 
+    const isFreePortfolioVisit =
+      String(
+        visita?.field_visit_mode ||
+        config?.fieldVisitMode ||
+        config?.field_visit_mode ||
+        ''
+      )
+        .trim()
+        .toUpperCase() ===
+        'CARTEIRA_LIVRE' ||
+      String(
+        visita?.origem ||
+        config?.origem ||
+        ''
+      )
+        .trim()
+        .toUpperCase() ===
+        'CARTEIRA_LIVRE';
+
+    const registroVisitaId =
+      visita?.registro_visita_id ||
+      visita?.registroVisitaId ||
+      (
+        isFreePortfolioVisit
+          ? visita?.id
+          : null
+      );
+
     return {
       projectId: rawProjectId,
-      roteiroId: visita?.roteiro_id,
-      roteiro_id: visita?.roteiro_id,
-      visitaIdJson: visita?.visita_id_json,
-      visita_id_json: visita?.visita_id_json,
+
+      /*
+       * MOBILE_FIELD_PORTFOLIO_V1
+       *
+       * Carteira Livre usa RegistroVisitaId como identidade.
+       * Nunca enviamos roteiro/VisitaAgendada neste modo.
+       */
+      ...(isFreePortfolioVisit
+        ? {
+            registroVisitaId,
+            registro_visita_id:
+              registroVisitaId,
+            fieldVisitMode:
+              'CARTEIRA_LIVRE',
+            field_visit_mode:
+              'CARTEIRA_LIVRE',
+            carteiraLivre: true,
+            carteira_livre: true,
+          }
+        : {
+            roteiroId:
+              visita?.roteiro_id,
+            roteiro_id:
+              visita?.roteiro_id,
+            visitaIdJson:
+              visita?.visita_id_json,
+            visita_id_json:
+              visita?.visita_id_json,
+          }),
+
       visitaId: visita?.id,
       visita_id: visita?.id,
       promotorId: user?.id,
@@ -1650,7 +1705,10 @@ export default function VisitaDetailScreen() {
           : acao === 'CHECKOUT'
             ? 'REALIZADA'
             : 'JUSTIFICADA',
-      origem: 'MOBILE_OFFLINE',
+      origem:
+        isFreePortfolioVisit
+          ? 'CARTEIRA_LIVRE'
+          : 'MOBILE_OFFLINE',
       acao,
       gpsRadius: getBackendGpsPolicy(visita, config).gpsRadius,
       checkinPolicy: getBackendGpsPolicy(visita, config).checkinPolicy,
@@ -2230,6 +2288,39 @@ export default function VisitaDetailScreen() {
   const normalizedStatus = normalizeStatus(visita.status);
   const colors = getStatusColors(normalizedStatus);
 
+  // MOBILE_FIELD_PORTFOLIO_V1
+  const visitConfig =
+    safeParseJson(
+      visita.project_config_json,
+      {}
+    );
+
+  const isFreePortfolioVisit =
+    String(
+      visita.field_visit_mode ||
+      visitConfig.fieldVisitMode ||
+      visitConfig.field_visit_mode ||
+      ''
+    )
+      .trim()
+      .toUpperCase() ===
+      'CARTEIRA_LIVRE' ||
+    String(
+      visita.origem ||
+      visitConfig.origem ||
+      ''
+    )
+      .trim()
+      .toUpperCase() ===
+      'CARTEIRA_LIVRE';
+
+  const freePortfolioLabel =
+    language === 'en-US'
+      ? 'FREE PORTFOLIO'
+      : language === 'es-ES'
+        ? 'CARTERA LIBRE'
+        : 'CARTEIRA LIVRE';
+
   const isAndamento = normalizedStatus === 'EM_ANDAMENTO' || normalizedStatus === 'INICIADA';
   const isPendente = normalizedStatus === 'PENDENTE' || normalizedStatus === 'AGENDADA';
   const isRealizada = isDoneStatus(normalizedStatus);
@@ -2364,6 +2455,35 @@ export default function VisitaDetailScreen() {
               <View style={[styles.badge, { backgroundColor: colors.bg, borderColor: colors.border }]}>
                 <Text style={[styles.badgeText, { color: colors.text }]}>{normalizedStatus}</Text>
               </View>
+
+              {isFreePortfolioVisit && (
+                <View
+                  style={[
+                    styles.badge,
+                    {
+                      marginLeft: 6,
+                      backgroundColor:
+                        isDark
+                          ? 'rgba(139,92,246,0.18)'
+                          : 'rgba(139,92,246,0.10)',
+                      borderColor:
+                        'rgba(139,92,246,0.35)',
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.badgeText,
+                      {
+                        color:
+                          '#8B5CF6',
+                      },
+                    ]}
+                  >
+                    {freePortfolioLabel}
+                  </Text>
+                </View>
+              )}
 
               <View style={styles.timeRowContainer}>
                 <View style={styles.timeRow}>
@@ -2596,26 +2716,36 @@ export default function VisitaDetailScreen() {
       <View style={[styles.footer, { backgroundColor: cardBg, borderTopColor: border }]}>
         {isPendente ? (
           <>
-            <TouchableOpacity
-              testID="visit-justify-button"
-              accessibilityLabel="visit-justify-button"
-              style={[
-                styles.btnAction,
-                { backgroundColor: colorJustify, marginRight: 12, opacity: justifyLoading ? 0.7 : 1 },
-              ]}
-              activeOpacity={0.8}
-              onPress={handleJustificar}
-              disabled={justifyLoading}
-            >
-              {justifyLoading ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <>
-                  <AlertTriangle size={20} color="#FFF" style={styles.btnIcon} />
-                  <Text style={styles.btnActionText}>Justificar</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {!isFreePortfolioVisit && (
+              <TouchableOpacity
+                testID="visit-justify-button"
+                accessibilityLabel="visit-justify-button"
+                style={[
+                  styles.btnAction,
+                  {
+                    backgroundColor:
+                      colorJustify,
+                    marginRight: 12,
+                    opacity:
+                      justifyLoading
+                        ? 0.7
+                        : 1,
+                  },
+                ]}
+                activeOpacity={0.8}
+                onPress={handleJustificar}
+                disabled={justifyLoading}
+              >
+                {justifyLoading ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <>
+                    <AlertTriangle size={20} color="#FFF" style={styles.btnIcon} />
+                    <Text style={styles.btnActionText}>Justificar</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity
               testID="visit-checkin-button"

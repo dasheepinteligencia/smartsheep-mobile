@@ -6,7 +6,12 @@ import * as Network from 'expo-network';
 import { collectAndSendTelemetry } from './telemetryService';
 import { isLocalFileUri, uploadLocalVisitPhotoToAws } from './mobileAwsUploadService';
 
+// MOBILE_FIELD_PORTFOLIO_V1
+import { syncFieldPortfolioOffline } from './fieldPortfolioService';
+
 let syncInProgress = false;
+
+// MOBILE_FIELD_PORTFOLIO_V1
 
 const DEBUG_MEDIA_SYNC = false;
 
@@ -1206,12 +1211,37 @@ const uploadLegacyPendingVisits = async (db: any, rawProjectId: string, user: an
         dataHora = item.updated_at || item.checkin_at || new Date().toISOString();
       }
 
+      const isFreePortfolioVisit =
+        String(item.field_visit_mode || '')
+          .trim()
+          .toUpperCase() === 'CARTEIRA_LIVRE' ||
+        String(item.origem || '')
+          .trim()
+          .toUpperCase() === 'CARTEIRA_LIVRE';
+
       const payload = {
         projectId: rawProjectId,
-        roteiroId: item.roteiro_id,
-        roteiro_id: item.roteiro_id,
-        visitaIdJson: item.visita_id_json,
-        visita_id_json: item.visita_id_json,
+
+        ...(isFreePortfolioVisit
+          ? {
+              registroVisitaId:
+                item.registro_visita_id || item.id,
+              registro_visita_id:
+                item.registro_visita_id || item.id,
+              fieldVisitMode: 'CARTEIRA_LIVRE',
+              field_visit_mode: 'CARTEIRA_LIVRE',
+              carteiraLivre: true,
+              carteira_livre: true,
+              origem: 'CARTEIRA_LIVRE',
+            }
+          : {
+              roteiroId: item.roteiro_id,
+              roteiro_id: item.roteiro_id,
+              visitaIdJson: item.visita_id_json,
+              visita_id_json: item.visita_id_json,
+              origem: 'MOBILE_OFFLINE',
+            }),
+
         visitaId: item.id,
         visita_id: item.id,
         promotorId: user.id,
@@ -1226,7 +1256,6 @@ const uploadLegacyPendingVisits = async (db: any, rawProjectId: string, user: an
         data_hora: dataHora,
         checkin_at: item.checkin_at,
         checkout_at: item.checkout_at,
-        origem: 'MOBILE_OFFLINE',
         client_operation_id: `${endpoint.replace(/\W/g, '')}_${item.id}`,
         offline_id: item.id,
         foto_checkin_url: item.foto_checkin_url || null,
@@ -1342,6 +1371,10 @@ const mirrorServerRouteSnapshot = async (db: any, serverVisits: any[], serverTas
             DELETE FROM visits
             WHERE COALESCE(pending_sync, 0) = 0
             AND id NOT IN (${buildSqlPlaceholders(visitIds)})
+            AND NOT (
+              registro_visita_id IS NOT NULL
+              AND UPPER(COALESCE(field_visit_mode, '')) = 'CARTEIRA_LIVRE'
+            )
           `,
           visitIds
         );
@@ -1349,6 +1382,10 @@ const mirrorServerRouteSnapshot = async (db: any, serverVisits: any[], serverTas
         await db.runAsync(`
           DELETE FROM visits
           WHERE COALESCE(pending_sync, 0) = 0
+          AND NOT (
+            registro_visita_id IS NOT NULL
+            AND UPPER(COALESCE(field_visit_mode, '')) = 'CARTEIRA_LIVRE'
+          )
         `);
       }
 
@@ -1713,6 +1750,57 @@ export const globalSync = async () => {
       produtos:
         safeArray(produtosCatalogo)
     };
+
+    // =========================================================
+    // MOBILE_FIELD_PORTFOLIO_V1
+    //
+    // A carteira é independente do roteiro. Ela é baixada para
+    // SQLite para continuar disponível sem internet.
+    // =========================================================
+    try {
+      const authCustom =
+        safeJsonParse(
+          user?.custom_data ||
+          user?.customData,
+          {}
+        );
+
+      const syncedProjectConfig = {
+        ...(
+          data?.project_config ||
+          data?.projectConfig ||
+          {}
+        ),
+
+        ...(
+          authCustom?.perfil_mobile
+            ?.project ||
+          authCustom?.perfilMobile
+            ?.project ||
+          authCustom?.project ||
+          {}
+        ),
+
+        projectId:
+          String(rawProjectId),
+      };
+
+      await syncFieldPortfolioOffline(
+        String(rawProjectId),
+        String(user.id),
+        lojas,
+        mobileCatalog,
+        syncedProjectConfig,
+        urlTS,
+        fetchOptions
+      );
+    } catch (portfolioError: any) {
+      console.warn(
+        '[Sync][Carteira Livre] Falha não bloqueante:',
+        portfolioError?.message ||
+          portfolioError
+      );
+    }
 
     if (lojas.length > 0) {
       v_list = safeArray(v_list).map((v: any) => {

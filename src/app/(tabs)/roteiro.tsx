@@ -32,6 +32,14 @@ import { i18n } from '../../utils/i18n';
 import { api } from '../../services/api';
 import { useAuthStore } from '../../store/useAuthStore';
 
+// MOBILE_FIELD_PORTFOLIO_V1
+import {
+  createFreePortfolioVisitDraft,
+  getEligiblePortfolioStores,
+  getFieldPortfolioOffline,
+  getFieldPortfolioProjectId,
+} from '../../services/fieldPortfolioService';
+
 // ============================================================================
 // 🎯 MOTOR DE ESTILO DE STORE INSIGHTS
 // ============================================================================
@@ -82,6 +90,18 @@ const ROUTE_TEXTS = {
     visitTasksGroupHint: 'Respondidas dentro do check-in da loja',
     focus: 'Foco',
     routineSurveys: 'pesquisas de rotina',
+
+    // MOBILE_FIELD_PORTFOLIO_V1
+    portfolioTab: 'Minha Carteira',
+    portfolioBadge: 'CARTEIRA LIVRE',
+    portfolioAvailable: 'Disponível para visita',
+    portfolioVisitedToday: 'Visitada hoje',
+    portfolioInProgress: 'Visita em andamento',
+    portfolioEmpty: 'Nenhuma loja da carteira está disponível para hoje.',
+    portfolioPriority: 'Prioridade',
+    portfolioFrequency: 'Meta',
+    portfolioWindow: 'Janela',
+    portfolioStores: 'Carteira',
   },
   'en-US': {
     taskSurveyDefault: 'Visit survey',
@@ -123,6 +143,18 @@ const ROUTE_TEXTS = {
     visitTasksGroupHint: 'Answered inside the store check-in',
     focus: 'Focus',
     routineSurveys: 'routine surveys',
+
+    // MOBILE_FIELD_PORTFOLIO_V1
+    portfolioTab: 'My Portfolio',
+    portfolioBadge: 'FREE PORTFOLIO',
+    portfolioAvailable: 'Available for visit',
+    portfolioVisitedToday: 'Visited today',
+    portfolioInProgress: 'Visit in progress',
+    portfolioEmpty: 'No portfolio stores are available today.',
+    portfolioPriority: 'Priority',
+    portfolioFrequency: 'Target',
+    portfolioWindow: 'Window',
+    portfolioStores: 'Portfolio',
   },
   'es-ES': {
     taskSurveyDefault: 'Encuesta de la visita',
@@ -164,6 +196,18 @@ const ROUTE_TEXTS = {
     visitTasksGroupHint: 'Se responden dentro del check-in de la tienda',
     focus: 'Foco',
     routineSurveys: 'encuestas de rutina',
+
+    // MOBILE_FIELD_PORTFOLIO_V1
+    portfolioTab: 'Mi Cartera',
+    portfolioBadge: 'CARTERA LIBRE',
+    portfolioAvailable: 'Disponible para visita',
+    portfolioVisitedToday: 'Visitada hoy',
+    portfolioInProgress: 'Visita en curso',
+    portfolioEmpty: 'No hay tiendas de la cartera disponibles para hoy.',
+    portfolioPriority: 'Prioridad',
+    portfolioFrequency: 'Meta',
+    portfolioWindow: 'Ventana',
+    portfolioStores: 'Cartera',
   },
 } as const;
 
@@ -333,11 +377,22 @@ const getCleanAddress = (rawVal: any) => {
 
 
 
-const normalizeRouteTabParam = (value: any): 'VISITAS' | 'TAREFAS' | null => {
+const normalizeRouteTabParam = (
+  value: any
+): 'VISITAS' | 'CARTEIRA' | 'TAREFAS' | null => {
   const raw = Array.isArray(value) ? value[0] : value;
   const tab = String(raw || '').trim().toUpperCase();
 
   if (tab === 'VISITAS' || tab === 'VISITS') return 'VISITAS';
+
+  if (
+    tab === 'CARTEIRA' ||
+    tab === 'PORTFOLIO' ||
+    tab === 'MINHA_CARTEIRA'
+  ) {
+    return 'CARTEIRA';
+  }
+
   if (tab === 'TAREFAS' || tab === 'TASKS') return 'TAREFAS';
 
   return null;
@@ -846,12 +901,14 @@ const runWithDbRetry = async <T,>(operation: () => Promise<T>, retries: number =
   throw lastError;
 };
 
+// MOBILE_FIELD_PORTFOLIO_V1
 export default function RoteiroScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const insets = useSafeAreaInsets();
   const { theme, language, accentColor } = useSettingsStore();
   const { lastSync } = useSyncStore();
+  const { user } = useAuthStore();
   const isDark = theme === 'dark';
 
   if (language) {
@@ -870,11 +927,29 @@ export default function RoteiroScreen() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'VISITAS' | 'TAREFAS'>('VISITAS');
+  const [activeTab, setActiveTab] =
+    useState<
+      'VISITAS' |
+      'CARTEIRA' |
+      'TAREFAS'
+    >('VISITAS');
+
   const [searchQuery, setSearchQuery] = useState('');
 
   const [visits, setVisits] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
+
+  // MOBILE_FIELD_PORTFOLIO_V1
+  const [fieldPortfolio, setFieldPortfolio] =
+    useState<any>({
+      mode: 'ROTEIRIZADO',
+      hasPortfolio: false,
+      allowOutsidePortfolio: false,
+      stores: [],
+    });
+
+  const [portfolioStores, setPortfolioStores] =
+    useState<any[]>([]);
 
   // =========================================================================
   // 🎯 SISTEMA DE MODAL CUSTOMIZADO (PADRÃO DO APP)
@@ -1001,6 +1076,75 @@ export default function RoteiroScreen() {
       const resVisits = (await db.getAllAsync(`SELECT * FROM visits`)) as any[];
       const resTasks = (await db.getAllAsync(`SELECT * FROM other_tasks`)) as any[];
       const resPesquisas = (await db.getAllAsync(`SELECT * FROM pesquisas`)) as any[];
+
+      // =======================================================
+      // MOBILE_FIELD_PORTFOLIO_V1
+      // =======================================================
+      const authUser =
+        useAuthStore.getState().user;
+
+      const portfolioProjectId =
+        getFieldPortfolioProjectId(
+          authUser
+        );
+
+      let localPortfolio: any = {
+        mode: 'ROTEIRIZADO',
+        hasPortfolio: false,
+        allowOutsidePortfolio: false,
+        stores: [],
+      };
+
+      if (
+        portfolioProjectId &&
+        authUser?.id
+      ) {
+        localPortfolio =
+          await getFieldPortfolioOffline(
+            String(
+              portfolioProjectId
+            ),
+            String(
+              authUser.id
+            )
+          );
+      }
+
+      const eligibleStores =
+        getEligiblePortfolioStores(
+          localPortfolio,
+          new Date()
+        );
+
+      setFieldPortfolio(
+        localPortfolio
+      );
+
+      setPortfolioStores(
+        eligibleStores
+      );
+
+      setActiveTab(
+        (current) => {
+          if (
+            localPortfolio.mode ===
+              'CARTEIRA_LIVRE' &&
+            current === 'VISITAS'
+          ) {
+            return 'CARTEIRA';
+          }
+
+          if (
+            localPortfolio.mode ===
+              'ROTEIRIZADO' &&
+            current === 'CARTEIRA'
+          ) {
+            return 'VISITAS';
+          }
+
+          return current;
+        }
+      );
 
             // OMNI_ROUTE_LOAD_COLETAS_REPEATABLE_FINAL_V1
             let resColetas: any[] = [];
@@ -1774,10 +1918,104 @@ qtdPerguntas:
     if (activeTab === 'VISITAS') {
       return visits.filter((item) => {
         const vDate = String(item.data_programada || '').substring(0, 10);
+
         if (vDate !== todayStr) return false;
+
+        /*
+         * MOBILE_FIELD_PORTFOLIO_V1
+         *
+         * A execução livre fica em Minha Carteira.
+         * Não duplicamos o mesmo atendimento em Programadas.
+         */
+        const isFree =
+          String(
+            item.field_visit_mode ||
+            ''
+          )
+            .trim()
+            .toUpperCase() ===
+            'CARTEIRA_LIVRE';
+
+        if (isFree) return false;
 
         return String(item.loja_nome || '').toLowerCase().includes(searchLower);
       });
+    }
+
+    if (activeTab === 'CARTEIRA') {
+      return portfolioStores
+        .map((store: any) => {
+          const todayExecutions =
+            visits
+              .filter((visit: any) => {
+                const visitDate =
+                  String(
+                    visit.data_programada ||
+                    ''
+                  ).substring(
+                    0,
+                    10
+                  );
+
+                const isFree =
+                  String(
+                    visit.field_visit_mode ||
+                    ''
+                  )
+                    .trim()
+                    .toUpperCase() ===
+                    'CARTEIRA_LIVRE';
+
+                return (
+                  isFree &&
+                  visitDate === todayStr &&
+                  String(
+                    visit.loja_id ||
+                    ''
+                  ) ===
+                  String(
+                    store.loja_id ||
+                    ''
+                  )
+                );
+              })
+              .sort(
+                (a: any, b: any) =>
+                  String(
+                    b.updated_at ||
+                    b.checkout_at ||
+                    b.checkin_at ||
+                    ''
+                  ).localeCompare(
+                    String(
+                      a.updated_at ||
+                      a.checkout_at ||
+                      a.checkin_at ||
+                      ''
+                    )
+                  )
+              );
+
+          return {
+            ...store,
+            __type:
+              'PORTFOLIO_STORE',
+            __latestVisit:
+              todayExecutions[0] ||
+              null,
+          };
+        })
+        .filter(
+          (item: any) =>
+            String(
+              item.loja_nome ||
+              ''
+            )
+              .toLowerCase()
+              .includes(
+                searchLower
+              )
+        );
     }
 
     // Enterprise UX:
@@ -1817,7 +2055,14 @@ qtdPerguntas:
     }
 
     return groupedTasks;
-  }, [activeTab, visits, tasks, searchQuery, language]);
+  }, [
+    activeTab,
+    visits,
+    tasks,
+    portfolioStores,
+    searchQuery,
+    language,
+  ]);
 
   const summary = useMemo(() => {
     const todayStr = getTodayStr();
@@ -1834,6 +2079,434 @@ qtdPerguntas:
       tasksDone,
     };
   }, [visits, tasks]);
+
+  // =========================================================
+  // MOBILE_FIELD_PORTFOLIO_V1
+  // =========================================================
+  const handlePortfolioStorePress =
+    async (store: any) => {
+      try {
+        const currentUser =
+          useAuthStore
+            .getState()
+            .user;
+
+        const projectId =
+          getFieldPortfolioProjectId(
+            currentUser
+          );
+
+        if (
+          !projectId ||
+          !currentUser?.id
+        ) {
+          showCustomAlert(
+            i18n.t('error') || 'Erro',
+            rt(
+              'loadRouteError',
+              language
+            ),
+            'error'
+          );
+          return;
+        }
+
+        /*
+         * Se já existe visita PENDENTE/EM_ANDAMENTO,
+         * o service devolve o mesmo UUID.
+         * Se a última foi concluída, gera outra.
+         */
+        const draft =
+          await createFreePortfolioVisitDraft({
+            projectId:
+              String(projectId),
+            userId:
+              String(
+                currentUser.id
+              ),
+            user:
+              currentUser,
+            store,
+          });
+
+        if (!draft?.id) {
+          throw new Error(
+            'free-visit-draft-not-created'
+          );
+        }
+
+        await loadData();
+
+        router.push({
+          pathname:
+            '/visita/[id]',
+          params: {
+            id:
+              String(
+                draft.id
+              ),
+          },
+        } as any);
+      } catch (error: any) {
+        console.error(
+          '[Carteira Livre] Falha ao abrir loja:',
+          error
+        );
+
+        showCustomAlert(
+          i18n.t('error') ||
+            'Erro',
+          rt(
+            'loadRouteError',
+            language
+          ),
+          'error'
+        );
+      }
+    };
+
+  const renderPortfolioCard =
+    ({
+      item,
+    }: {
+      item: any;
+    }) => {
+      const latest =
+        item.__latestVisit;
+
+      const status =
+        normalizeStatus(
+          latest?.status ||
+          'PENDENTE'
+        );
+
+      const inProgress =
+        status ===
+          'EM_ANDAMENTO' ||
+        status ===
+          'INICIADA';
+
+      const done =
+        isDoneStatus(status);
+
+      const stateText =
+        inProgress
+          ? rt(
+              'portfolioInProgress',
+              language
+            )
+          : done
+            ? rt(
+                'portfolioVisitedToday',
+                language
+              )
+            : rt(
+                'portfolioAvailable',
+                language
+              );
+
+      const stateColor =
+        inProgress
+          ? '#3B82F6'
+          : done
+            ? '#10B981'
+            : accent;
+
+      const targetVisits =
+        Number(
+          item.target_visits ||
+          0
+        );
+
+      const targetDays =
+        Number(
+          item.target_period_days ||
+          0
+        );
+
+      const frequencyText =
+        targetVisits > 0 &&
+        targetDays > 0
+          ? `${targetVisits}/${targetDays}d`
+          : '';
+
+      const timeWindow =
+        item.time_window_start ||
+        item.time_window_end
+          ? `${String(
+              item.time_window_start ||
+              '--:--'
+            ).substring(
+              0,
+              5
+            )} - ${String(
+              item.time_window_end ||
+              '--:--'
+            ).substring(
+              0,
+              5
+            )}`
+          : '';
+
+      return (
+        <TouchableOpacity
+          style={[
+            styles.cardWrapper,
+            {
+              backgroundColor:
+                surface,
+              borderColor:
+                border,
+              borderLeftColor:
+                stateColor,
+            },
+          ]}
+          activeOpacity={0.78}
+          onPress={() =>
+            handlePortfolioStorePress(
+              item
+            )
+          }
+        >
+          <View
+            style={
+              styles.cardMainRow
+            }
+          >
+            <View
+              style={{
+                flex: 1,
+              }}
+            >
+              <View
+                style={
+                  styles.cardHeader
+                }
+              >
+                <View
+                  style={[
+                    styles.badge,
+                    {
+                      backgroundColor:
+                        `${accent}18`,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.badgeText,
+                      {
+                        color:
+                          accent,
+                      },
+                    ]}
+                  >
+                    {rt(
+                      'portfolioBadge',
+                      language
+                    )}
+                  </Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.timePill,
+                    {
+                      borderColor:
+                        `${stateColor}35`,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.timePillText,
+                      {
+                        color:
+                          stateColor,
+                      },
+                    ]}
+                  >
+                    {stateText}
+                  </Text>
+                </View>
+              </View>
+
+              <Text
+                style={[
+                  styles.cardTitle,
+                  {
+                    color:
+                      textPrimary,
+                  },
+                ]}
+              >
+                {item.loja_nome}
+              </Text>
+
+              <Text
+                style={[
+                  styles.cardSubtitle,
+                  {
+                    color:
+                      textSecondary,
+                  },
+                ]}
+                numberOfLines={2}
+              >
+                {getCleanAddress(
+                  item.endereco
+                )}
+              </Text>
+
+              <View
+                style={{
+                  flexDirection:
+                    'row',
+                  flexWrap:
+                    'wrap',
+                  gap: 8,
+                  marginTop: 12,
+                }}
+              >
+                <View
+                  style={[
+                    styles.compactTimingBadge,
+                    {
+                      backgroundColor:
+                        surfaceAlt,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.compactTimingBadgeText,
+                      {
+                        color:
+                          textSecondary,
+                      },
+                    ]}
+                  >
+                    {rt(
+                      'portfolioPriority',
+                      language
+                    )}:{' '}
+                    {Number(
+                      item.priority ||
+                      50
+                    )}
+                  </Text>
+                </View>
+
+                {frequencyText ? (
+                  <View
+                    style={[
+                      styles.compactTimingBadge,
+                      {
+                        backgroundColor:
+                          surfaceAlt,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.compactTimingBadgeText,
+                        {
+                          color:
+                            textSecondary,
+                        },
+                      ]}
+                    >
+                      {rt(
+                        'portfolioFrequency',
+                        language
+                      )}:{' '}
+                      {frequencyText}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {timeWindow ? (
+                  <View
+                    style={[
+                      styles.compactTimingBadge,
+                      {
+                        backgroundColor:
+                          surfaceAlt,
+                      },
+                    ]}
+                  >
+                    <Clock
+                      size={11}
+                      color={
+                        textSecondary
+                      }
+                    />
+                    <Text
+                      style={[
+                        styles.compactTimingBadgeText,
+                        {
+                          color:
+                            textSecondary,
+                        },
+                      ]}
+                    >
+                      {timeWindow}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {latest?.checkin_at ? (
+                <Text
+                  style={[
+                    styles.compactTimingText,
+                    {
+                      color:
+                        textSecondary,
+                      marginTop: 10,
+                    },
+                  ]}
+                >
+                  {rt(
+                    'done',
+                    language
+                  )}{' '}
+                  <Text
+                    style={[
+                      styles.compactTimingStrong,
+                      {
+                        color:
+                          textPrimary,
+                      },
+                    ]}
+                  >
+                    {formatHourMinute(
+                      latest.checkin_at,
+                      language
+                    )}
+                    {' → '}
+                    {formatHourMinute(
+                      latest.checkout_at,
+                      language
+                    )}
+                  </Text>
+                </Text>
+              ) : null}
+            </View>
+
+            <ChevronRight
+              size={20}
+              color={
+                textSecondary
+              }
+              style={{
+                marginLeft: 10,
+              }}
+            />
+          </View>
+        </TouchableOpacity>
+      );
+    };
 
   const renderVisitCard = ({ item, index }: { item: any; index: number }) => {
     const colors = getStatusColors(item.status);
@@ -2330,7 +3003,12 @@ qtdPerguntas:
           <Search size={18} color={textSecondary} />
           <TextInput
             style={[styles.searchInput, { color: textPrimary }]}
-            placeholder={activeTab === 'VISITAS' ? i18n.t('searchStore') : i18n.t('searchTask')}
+            placeholder={
+              activeTab === 'VISITAS' ||
+              activeTab === 'CARTEIRA'
+                ? i18n.t('searchStore')
+                : i18n.t('searchTask')
+            }
             placeholderTextColor={textSecondary}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -2339,26 +3017,117 @@ qtdPerguntas:
       </View>
 
       <View style={[styles.tabContainer, { backgroundColor: bg, borderBottomColor: border }]}>
-        <TouchableOpacity
-          style={[styles.tabBtn, { backgroundColor: activeTab === 'VISITAS' ? surface : 'transparent', borderColor: activeTab === 'VISITAS' ? `${accent}33` : 'transparent' }]}
-          onPress={() => {
-            setActiveTab('VISITAS');
-            setSearchQuery('');
-          }}
-        >
-          <Text style={[styles.tabText, { color: activeTab === 'VISITAS' ? accent : textSecondary }]}>
-            {i18n.t('tabVisits')}
-          </Text>
-        </TouchableOpacity>
+
+        {fieldPortfolio.mode !== 'CARTEIRA_LIVRE' && (
+          <TouchableOpacity
+            style={[
+              styles.tabBtn,
+              {
+                backgroundColor:
+                  activeTab === 'VISITAS'
+                    ? surface
+                    : 'transparent',
+                borderColor:
+                  activeTab === 'VISITAS'
+                    ? `${accent}33`
+                    : 'transparent',
+              },
+            ]}
+            onPress={() => {
+              setActiveTab('VISITAS');
+              setSearchQuery('');
+            }}
+          >
+            <Text
+              style={[
+                styles.tabText,
+                {
+                  color:
+                    activeTab === 'VISITAS'
+                      ? accent
+                      : textSecondary,
+                },
+              ]}
+            >
+              {i18n.t('tabVisits')}
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {(
+          fieldPortfolio.mode === 'CARTEIRA_LIVRE' ||
+          fieldPortfolio.mode === 'HIBRIDO'
+        ) && (
+          <TouchableOpacity
+            style={[
+              styles.tabBtn,
+              {
+                backgroundColor:
+                  activeTab === 'CARTEIRA'
+                    ? surface
+                    : 'transparent',
+                borderColor:
+                  activeTab === 'CARTEIRA'
+                    ? `${accent}33`
+                    : 'transparent',
+              },
+            ]}
+            onPress={() => {
+              setActiveTab('CARTEIRA');
+              setSearchQuery('');
+            }}
+          >
+            <Text
+              style={[
+                styles.tabText,
+                {
+                  color:
+                    activeTab === 'CARTEIRA'
+                      ? accent
+                      : textSecondary,
+                  fontSize: 11,
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {rt(
+                'portfolioTab',
+                language
+              )}
+            </Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
-          style={[styles.tabBtn, { backgroundColor: activeTab === 'TAREFAS' ? surface : 'transparent', borderColor: activeTab === 'TAREFAS' ? `${accent}33` : 'transparent' }]}
+          style={[
+            styles.tabBtn,
+            {
+              backgroundColor:
+                activeTab === 'TAREFAS'
+                  ? surface
+                  : 'transparent',
+              borderColor:
+                activeTab === 'TAREFAS'
+                  ? `${accent}33`
+                  : 'transparent',
+            },
+          ]}
           onPress={() => {
             setActiveTab('TAREFAS');
             setSearchQuery('');
           }}
         >
-          <Text style={[styles.tabText, { color: activeTab === 'TAREFAS' ? accent : textSecondary }]}>
+          <Text
+            style={[
+              styles.tabText,
+              {
+                color:
+                  activeTab === 'TAREFAS'
+                    ? accent
+                    : textSecondary,
+              },
+            ]}
+          >
             {i18n.t('tabTasks')}
           </Text>
         </TouchableOpacity>
@@ -2370,10 +3139,12 @@ qtdPerguntas:
         renderItem={
           activeTab === 'VISITAS'
             ? renderVisitCard
-            : ({ item }: { item: any }) =>
-                item.__type === 'TASK_GROUP_HEADER'
-                  ? renderTaskGroupHeader(item)
-                  : renderTaskCard({ item })
+            : activeTab === 'CARTEIRA'
+              ? renderPortfolioCard
+              : ({ item }: { item: any }) =>
+                  item.__type === 'TASK_GROUP_HEADER'
+                    ? renderTaskGroupHeader(item)
+                    : renderTaskCard({ item })
         }
         contentContainerStyle={styles.listContent}
         refreshing={refreshing}
@@ -2384,7 +3155,14 @@ qtdPerguntas:
           <View style={styles.emptyContainer}>
             <AlertCircle size={40} color={textSecondary} />
             <Text style={[styles.emptyText, { color: textSecondary }]}>
-              {i18n.t('noActivityToday')}
+              {activeTab === 'CARTEIRA'
+                ? rt(
+                    'portfolioEmpty',
+                    language
+                  )
+                : i18n.t(
+                    'noActivityToday'
+                  )}
             </Text>
           </View>
         }

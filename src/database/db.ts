@@ -2,6 +2,8 @@ import * as SQLite from 'expo-sqlite';
 
 const DB_NAME = 'app_coleta_v16.db';
 
+// MOBILE_FIELD_PORTFOLIO_V1
+
 const db = SQLite.openDatabaseSync(DB_NAME);
 
 export const getDBConnection = () => db;
@@ -434,6 +436,11 @@ export const clearLocalDatabase = async () => {
       DELETE FROM coletas;
       DELETE FROM justificativas;
       DELETE FROM alerts;
+
+      -- MOBILE_FIELD_PORTFOLIO_V1
+      DELETE FROM field_portfolio_stores;
+      DELETE FROM field_portfolio_state;
+
       DELETE FROM sync_queue;
     `);
 
@@ -461,6 +468,13 @@ const initializeDatabaseInternal = async () => {
         id TEXT PRIMARY KEY,
         roteiro_id TEXT,
         visita_id_json TEXT,
+
+        -- MOBILE_FIELD_PORTFOLIO_V1
+        registro_visita_id TEXT,
+        field_visit_mode TEXT,
+        origem TEXT,
+        portfolio_store_id TEXT,
+
         loja_id TEXT, 
         loja_nome TEXT,
         bandeira TEXT, 
@@ -580,6 +594,48 @@ const initializeDatabaseInternal = async () => {
         updated_at TEXT
       );
 
+      -- =============================================================
+      -- MOBILE_FIELD_PORTFOLIO_V1
+      -- Snapshot offline da Carteira de Atendimento.
+      -- =============================================================
+      CREATE TABLE IF NOT EXISTS field_portfolio_state (
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        has_portfolio INTEGER DEFAULT 0,
+        mode TEXT DEFAULT 'ROTEIRIZADO',
+        allow_outside_portfolio INTEGER DEFAULT 0,
+        raw_json TEXT,
+        catalog_json TEXT,
+        project_config_json TEXT,
+        updated_at TEXT,
+        PRIMARY KEY (project_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS field_portfolio_stores (
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        loja_id TEXT NOT NULL,
+        assignment_id TEXT,
+        loja_nome TEXT,
+        endereco TEXT,
+        bandeira TEXT,
+        rede TEXT,
+        latitude REAL,
+        longitude REAL,
+        priority INTEGER DEFAULT 50,
+        target_visits INTEGER,
+        target_period_days INTEGER,
+        allowed_weekdays_json TEXT,
+        time_window_start TEXT,
+        time_window_end TEXT,
+        assigned INTEGER DEFAULT 1,
+        active INTEGER DEFAULT 1,
+        loja_raw_json TEXT,
+        assignment_raw_json TEXT,
+        updated_at TEXT,
+        PRIMARY KEY (project_id, user_id, loja_id)
+      );
+
       CREATE TABLE IF NOT EXISTS sync_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         endpoint TEXT,
@@ -607,6 +663,15 @@ const initializeDatabaseInternal = async () => {
       CREATE INDEX IF NOT EXISTS idx_coletas_pesquisa_id ON coletas(pesquisa_id);
       CREATE INDEX IF NOT EXISTS idx_coletas_pending_sync ON coletas(pending_sync);
       CREATE INDEX IF NOT EXISTS idx_coletas_status ON coletas(status);
+      CREATE INDEX IF NOT EXISTS idx_field_portfolio_state_user
+        ON field_portfolio_state(user_id, project_id);
+
+      CREATE INDEX IF NOT EXISTS idx_field_portfolio_store_user
+        ON field_portfolio_stores(user_id, project_id);
+
+      CREATE INDEX IF NOT EXISTS idx_field_portfolio_store_active
+        ON field_portfolio_stores(active);
+
       CREATE INDEX IF NOT EXISTS idx_sync_queue_created_at ON sync_queue(created_at);
       CREATE INDEX IF NOT EXISTS idx_app_logs_created_at ON app_logs(created_at);
       CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level);
@@ -622,6 +687,12 @@ const initializeDatabaseInternal = async () => {
     // =========================================================================
     await addColumnIfMissing('visits', 'roteiro_id', 'TEXT');
     await addColumnIfMissing('visits', 'visita_id_json', 'TEXT');
+
+    // MOBILE_FIELD_PORTFOLIO_V1
+    await addColumnIfMissing('visits', 'registro_visita_id', 'TEXT');
+    await addColumnIfMissing('visits', 'field_visit_mode', 'TEXT');
+    await addColumnIfMissing('visits', 'origem', 'TEXT');
+    await addColumnIfMissing('visits', 'portfolio_store_id', 'TEXT');
     await addColumnIfMissing('visits', 'bandeira', 'TEXT');
     await addColumnIfMissing('visits', 'rede', 'TEXT');
     await addColumnIfMissing('visits', 'loja_custom_data_json', 'TEXT');
@@ -1532,11 +1603,24 @@ export const saveRoteiroCompletoOffline = async (
       if (visitIdsFromServer.length > 0) {
         const placeholders = visitIdsFromServer.map(() => '?').join(',');
         await db.runAsync(
-          `DELETE FROM visits WHERE id NOT IN (${placeholders}) AND pending_sync = 0`,
+          `DELETE FROM visits
+           WHERE id NOT IN (${placeholders})
+             AND pending_sync = 0
+             AND NOT (
+               registro_visita_id IS NOT NULL
+               AND UPPER(COALESCE(field_visit_mode, '')) = 'CARTEIRA_LIVRE'
+             )`,
           visitIdsFromServer
         );
       } else {
-        await db.runAsync(`DELETE FROM visits WHERE pending_sync = 0`);
+        await db.runAsync(`
+          DELETE FROM visits
+          WHERE pending_sync = 0
+            AND NOT (
+              registro_visita_id IS NOT NULL
+              AND UPPER(COALESCE(field_visit_mode, '')) = 'CARTEIRA_LIVRE'
+            )
+        `);
       }
     });
 
