@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useMemo,
+  useRef,
   useState
 } from 'react';
 
@@ -31,7 +32,8 @@ import {
   Store,
   Trophy,
   Users,
-  WifiOff
+  WifiOff,
+  ListTodo
 } from 'lucide-react-native';
 
 import {
@@ -47,11 +49,20 @@ import {
 } from '../../store/useSettingsStore';
 
 import {
+  getDBConnection
+} from '../../database/db';
+
+import {
   calculateVisibleTeamSummary,
   fetchSupervisorCommand,
   getFieldTeamMembers,
   SupervisorCommandData
 } from '../../services/supervisorCommandService';
+
+import {
+  fetchSupervisorPhase2,
+  SupervisorPhase2Data
+} from '../../services/supervisorPhase2Service';
 
 const TEXTS = {
   'pt-BR': {
@@ -146,7 +157,22 @@ const TEXTS = {
       'Loja crítica',
 
     teamAttention:
-      'Atenção na equipe'
+      'Atenção na equipe',
+
+    myDay: 'MEU DIA',
+    myDaySubtitle: 'Sua execução pessoal como supervisor',
+    teamOverview: 'EQUIPE HOJE',
+    teamOverviewSubtitle: 'Indicadores consolidados da equipe sob sua gestão',
+    myVisits: 'Minhas visitas',
+    myPerfect: 'Meu Perfect Store',
+    myPerformance: 'Minha Performance',
+    myTasksCard: 'Minhas tarefas',
+    myTasks: 'MINHAS TAREFAS',
+    myTasksSubtitle: 'Pendências e obrigações atribuídas a você',
+    taskPending: 'pendentes',
+    taskToday: 'vence hoje',
+    taskOverdue: 'atrasadas',
+    noTasks: 'Nenhuma tarefa pendente agora.'
   },
 
   'en-US': {
@@ -241,7 +267,22 @@ const TEXTS = {
       'Critical store',
 
     teamAttention:
-      'Team attention'
+      'Team attention',
+
+    myDay: 'MY DAY',
+    myDaySubtitle: 'Your own execution as a supervisor',
+    teamOverview: 'TEAM TODAY',
+    teamOverviewSubtitle: 'Consolidated indicators for the team you manage',
+    myVisits: 'My visits',
+    myPerfect: 'My Perfect Store',
+    myPerformance: 'My Performance',
+    myTasksCard: 'My tasks',
+    myTasks: 'MY TASKS',
+    myTasksSubtitle: 'Pending obligations assigned to you',
+    taskPending: 'pending',
+    taskToday: 'due today',
+    taskOverdue: 'overdue',
+    noTasks: 'No pending tasks right now.'
   },
 
   'es-ES': {
@@ -336,7 +377,22 @@ const TEXTS = {
       'Tienda crítica',
 
     teamAttention:
-      'Atención en el equipo'
+      'Atención en el equipo',
+
+    myDay: 'MI DÍA',
+    myDaySubtitle: 'Tu propia ejecución como supervisor',
+    teamOverview: 'EQUIPO HOY',
+    teamOverviewSubtitle: 'Indicadores consolidados del equipo bajo tu gestión',
+    myVisits: 'Mis visitas',
+    myPerfect: 'Mi Perfect Store',
+    myPerformance: 'Mi Performance',
+    myTasksCard: 'Mis tareas',
+    myTasks: 'MIS TAREAS',
+    myTasksSubtitle: 'Pendientes y obligaciones asignadas a ti',
+    taskPending: 'pendientes',
+    taskToday: 'vence hoy',
+    taskOverdue: 'atrasadas',
+    noTasks: 'No hay tareas pendientes ahora.'
   }
 } as const;
 
@@ -365,8 +421,44 @@ const clamp =
     );
 
 export default function SupervisorHome() {
-  const router =
-    useRouter();
+  const router = useRouter();
+
+  /*
+   * MOBILE_SUPERVISOR_OWN_ROUTINE_NAV_V2
+   *
+   * Abre a MESMA rotina operacional usada pelo promotor.
+   * O snapshot local já é filtrado pelo usuário logado
+   * durante o globalSync / meu-roteiro.
+   */
+  const openMyRoutine =
+    useCallback(
+      (tab: 'VISITAS' | 'TAREFAS' = 'VISITAS') => {
+        router.push({
+          pathname: '/minha-rotina',
+          params: { tab },
+        } as any);
+      },
+      [router]
+    );
+
+  const openPerfectStore =
+    useCallback(
+      () => {
+        router.push('/perfectstore' as any);
+      },
+      [router]
+    );
+
+  const openPerformance =
+    useCallback(
+      () => {
+        router.push('/performance' as any);
+      },
+      [router]
+    );
+
+
+
 
   const insets =
     useSafeAreaInsets();
@@ -440,6 +532,21 @@ export default function SupervisorHome() {
     useState(true);
 
   const [
+    phase2,
+    setPhase2
+  ] =
+    useState<SupervisorPhase2Data | null>(
+      null
+    );
+
+  const [ownVisits, setOwnVisits] = useState({
+    total: 0,
+    done: 0,
+    inProgress: 0,
+    pending: 0,
+  });
+
+  const [
     refreshing,
     setRefreshing
   ] =
@@ -451,16 +558,45 @@ export default function SupervisorHome() {
   ] =
     useState('');
 
+  /*
+   * SUPERVISOR_COMMAND_REFRESH_FIX_V2
+   *
+   * Mantém a referência do último snapshot sem colocar `data` nas
+   * dependências de `load`. Isso evita recriar o callback após cada
+   * setData() e, consequentemente, rearmar o useFocusEffect/timer.
+   *
+   * requestInFlight também impede que foco, timer e pull-to-refresh
+   * disparem chamadas simultâneas para o mesmo endpoint.
+   */
+  const dataRef =
+    useRef<SupervisorCommandData | null>(
+      null
+    );
+
+  const requestInFlight =
+    useRef(false);
+
   const load =
     useCallback(
       async (
         refresh = false
       ) => {
+        if (
+          requestInFlight.current
+        ) {
+          return;
+        }
+
+        requestInFlight.current =
+          true;
+
         if (refresh) {
           setRefreshing(
             true
           );
-        } else if (!data) {
+        } else if (
+          !dataRef.current
+        ) {
           setLoading(
             true
           );
@@ -476,7 +612,79 @@ export default function SupervisorHome() {
               }
             );
 
+          const phase2Result =
+            await fetchSupervisorPhase2(
+              user,
+              undefined,
+              {
+                allowCacheFallback:
+                  true
+              }
+            ).catch(() => null);
+
+          dataRef.current =
+            result;
+
           setData(result);
+
+          if (phase2Result) {
+            setPhase2(phase2Result);
+          }
+
+          try {
+            const db = await getDBConnection();
+            const now = new Date();
+            let todayKey = [
+              now.getFullYear(),
+              String(now.getMonth() + 1).padStart(2, '0'),
+              String(now.getDate()).padStart(2, '0')
+            ].join('-');
+
+            const projectTimezone = String(result?.project?.timezone || '').trim();
+            if (projectTimezone) {
+              try {
+                const parts = new Intl.DateTimeFormat('en-US', {
+                  timeZone: projectTimezone,
+                  year: 'numeric',
+                  month: '2-digit',
+                  day: '2-digit'
+                }).formatToParts(now);
+
+                const values = Object.fromEntries(
+                  parts.map(part => [part.type, part.value])
+                );
+
+                if (values.year && values.month && values.day) {
+                  todayKey = `${values.year}-${values.month}-${values.day}`;
+                }
+              } catch {}
+            }
+
+            // SUPERVISOR_OWN_DAY_SCOPE_V1
+            // O bloco "Meu dia" não pode misturar visitas futuras/passadas.
+            const row: any = await db.getFirstAsync(`
+              SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('REALIZADA','COMPLETA','CONCLUIDA','VISITADA','JUSTIFICADA') THEN 1 ELSE 0 END) AS done,
+                SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('EM_ANDAMENTO','INICIADA') THEN 1 ELSE 0 END) AS in_progress
+              FROM visits
+              WHERE substr(COALESCE(data_programada, ''), 1, 10) = ?
+            `, [todayKey]);
+
+            const total = Number(row?.total || 0);
+            const done = Number(row?.done || 0);
+            const inProgress = Number(row?.in_progress || 0);
+
+            setOwnVisits({
+              total,
+              done,
+              inProgress,
+              pending: Math.max(0, total - done - inProgress),
+            });
+          } catch {
+            setOwnVisits({ total: 0, done: 0, inProgress: 0, pending: 0 });
+          }
+
           setError('');
         } catch (
           e: any
@@ -488,6 +696,9 @@ export default function SupervisorHome() {
             )
           );
         } finally {
+          requestInFlight.current =
+            false;
+
           setLoading(
             false
           );
@@ -499,7 +710,6 @@ export default function SupervisorHome() {
       },
       [
         user,
-        data,
         t.unavailable
       ]
     );
@@ -574,6 +784,24 @@ export default function SupervisorHome() {
       .trim()
       .split(/\s+/)[0] ||
     '';
+
+  const userCustomData = useMemo(() => {
+    const value = user?.custom_data || user?.customData || {};
+    if (value && typeof value === 'object') return value;
+    try {
+      return JSON.parse(String(value || '{}'));
+    } catch {
+      return {};
+    }
+  }, [user?.custom_data, user?.customData]);
+
+  const ownPerfectStore = Number.isFinite(Number(userCustomData?.perfect_store_score))
+    ? Number(userCustomData?.perfect_store_score)
+    : null;
+
+  const ownPerformance = Number.isFinite(Number(user?.pontos_gamificacao))
+    ? Number(user?.pontos_gamificacao)
+    : 0;
 
   const statusLabel =
     (
@@ -855,12 +1083,104 @@ export default function SupervisorHome() {
           </View>
         </View>
 
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={[styles.sectionEyebrow, { color: primary }]}>
+              {t.myDay}
+            </Text>
+            <Text style={[styles.sectionSubtitle, { color: secondary }]}>
+              {t.myDaySubtitle}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.metricGrid}>
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => openMyRoutine('TAREFAS')}
+            style={[styles.metricCard, { backgroundColor: surface, borderColor: border }]}
+          >
+            <ListTodo size={19} color={accent} />
+            <Text style={[styles.metricValue, { color: primary }]}>
+              {Number(phase2?.myTasks?.pending || 0)}
+            </Text>
+            <Text style={[styles.metricTitle, { color: secondary }]}>
+              {t.myTasksCard}
+            </Text>
+            <Text style={[styles.metricHint, { color: Number(phase2?.myTasks?.overdue || 0) > 0 ? '#EF4444' : secondary }]}>
+              {Number(phase2?.myTasks?.overdue || 0)} {t.taskOverdue}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => openMyRoutine('VISITAS')}
+            style={[styles.metricCard, { backgroundColor: surface, borderColor: border }]}
+          >
+            <CircleGauge size={19} color="#3B82F6" />
+            <Text style={[styles.metricValue, { color: primary }]}>
+              {ownVisits.done}/{ownVisits.total}
+            </Text>
+            <Text style={[styles.metricTitle, { color: secondary }]}>
+              {t.myVisits}
+            </Text>
+            <Text style={[styles.metricHint, { color: secondary }]}>
+              {ownVisits.inProgress} {t.inField}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={openPerfectStore}
+            style={[styles.metricCard, { backgroundColor: surface, borderColor: border }]}
+          >
+            <Store size={19} color="#8B5CF6" />
+            <Text style={[styles.metricValue, { color: primary }]}>
+              {ownPerfectStore == null ? '—' : `${Math.round(ownPerfectStore)}%`}
+            </Text>
+            <Text style={[styles.metricTitle, { color: secondary }]}>
+              {t.myPerfect}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={openPerformance}
+            style={[styles.metricCard, { backgroundColor: surface, borderColor: border }]}
+          >
+            <Trophy size={19} color="#F59E0B" />
+            <Text style={[styles.metricValue, { color: primary }]}>
+              {ownPerformance}
+            </Text>
+            <Text style={[styles.metricTitle, { color: secondary }]}>
+              {t.myPerformance}
+            </Text>
+            <Text style={[styles.metricHint, { color: secondary }]}>
+              pts
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={[styles.sectionEyebrow, { color: primary }]}>
+              {t.teamOverview}
+            </Text>
+            <Text style={[styles.sectionSubtitle, { color: secondary }]}>
+              {t.teamOverviewSubtitle}
+            </Text>
+          </View>
+          <Users size={20} color={accent} />
+        </View>
+
         <View
           style={
             styles.metricGrid
           }
         >
-          <View
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => router.push('/(supervisor)/equipe' as any)}
             style={[
               styles.metricCard,
               {
@@ -913,9 +1233,11 @@ export default function SupervisorHome() {
               {summary.activeMembers}{' '}
               {t.active}
             </Text>
-          </View>
+          </TouchableOpacity>
 
-          <View
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => router.push('/(supervisor)/equipe' as any)}
             style={[
               styles.metricCard,
               {
@@ -969,9 +1291,11 @@ export default function SupervisorHome() {
               {summary.visitsTotal}{' '}
               {t.done}
             </Text>
-          </View>
+          </TouchableOpacity>
 
-          <View
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => router.push('/(supervisor)/equipe' as any)}
             style={[
               styles.metricCard,
               {
@@ -1057,9 +1381,11 @@ export default function SupervisorHome() {
                 }}
               />
             </View>
-          </View>
+          </TouchableOpacity>
 
-          <View
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={() => router.push('/(supervisor)/equipe' as any)}
             style={[
               styles.metricCard,
               {
@@ -1112,7 +1438,118 @@ export default function SupervisorHome() {
             >
               {t.points30}
             </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View
+          style={
+            styles.sectionHeader
+          }
+        >
+          <TouchableOpacity
+          // MOBILE_SUPERVISOR_MY_TASKS_ACCESS_V2
+          onPress={() => openMyRoutine('TAREFAS')}
+          activeOpacity={0.82}>
+            <Text
+              style={[
+                styles.sectionEyebrow,
+                { color: primary }
+              ]}
+            >
+              {t.myTasks}
+            </Text>
+            <Text
+              style={[
+                styles.sectionSubtitle,
+                { color: secondary }
+              ]}
+            >
+              {t.myTasksSubtitle}
+            </Text>
+          </TouchableOpacity>
+          <ListTodo
+            size={20}
+            color={accent}
+          />
+        </View>
+
+        <View
+          style={[
+            styles.taskBox,
+            {
+              backgroundColor: surface,
+              borderColor: border
+            }
+          ]}
+        >
+          <View style={styles.taskSummaryRow}>
+            <View style={[styles.taskKpi, { backgroundColor: surfaceAlt }]}>
+              <Text style={[styles.taskKpiValue, { color: primary }]}>
+                {Number(phase2?.myTasks?.pending || 0)}
+              </Text>
+              <Text style={[styles.taskKpiLabel, { color: secondary }]}>
+                {t.taskPending}
+              </Text>
+            </View>
+            <View style={[styles.taskKpi, { backgroundColor: surfaceAlt }]}>
+              <Text style={[styles.taskKpiValue, { color: '#F59E0B' }]}>
+                {Number(phase2?.myTasks?.dueToday || 0)}
+              </Text>
+              <Text style={[styles.taskKpiLabel, { color: secondary }]}>
+                {t.taskToday}
+              </Text>
+            </View>
+            <View style={[styles.taskKpi, { backgroundColor: surfaceAlt }]}>
+              <Text style={[styles.taskKpiValue, { color: '#EF4444' }]}>
+                {Number(phase2?.myTasks?.overdue || 0)}
+              </Text>
+              <Text style={[styles.taskKpiLabel, { color: secondary }]}>
+                {t.taskOverdue}
+              </Text>
+            </View>
           </View>
+
+          {(phase2?.myTasks?.items || []).length === 0 ? (
+            <Text style={[styles.taskEmpty, { color: secondary }]}>
+              {t.noTasks}
+            </Text>
+          ) : (
+            (phase2?.myTasks?.items || []).slice(0, 5).map((task: any, index: number) => (
+              <TouchableOpacity
+                key={task.id || index}
+                activeOpacity={0.82}
+                onPress={() => openMyRoutine('TAREFAS')}
+                style={[
+                  styles.taskRow,
+                  index > 0 && { borderTopColor: border, borderTopWidth: StyleSheet.hairlineWidth }
+                ]}
+              >
+                <View
+                  style={[
+                    styles.taskDot,
+                    {
+                      backgroundColor:
+                        task.status === 'OVERDUE'
+                          ? '#EF4444'
+                          : task.status === 'IN_PROGRESS'
+                            ? '#3B82F6'
+                            : '#F59E0B'
+                    }
+                  ]}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.taskTitle, { color: primary }]} numberOfLines={1}>
+                    {task.title || 'Tarefa'}
+                  </Text>
+                  <Text style={[styles.taskMeta, { color: secondary }]} numberOfLines={1}>
+                    {[task.storeName, task.periodEnd ? new Date(task.periodEnd).toLocaleDateString() : null]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
         </View>
 
         <View
@@ -1914,6 +2351,68 @@ const styles =
 
       fontWeight:
         '600'
+    },
+
+    taskBox: {
+      marginHorizontal: 20,
+      marginBottom: 18,
+      borderWidth: 1,
+      borderRadius: 22,
+      padding: 14
+    },
+
+    taskSummaryRow: {
+      flexDirection: 'row',
+      gap: 8
+    },
+
+    taskKpi: {
+      flex: 1,
+      borderRadius: 16,
+      paddingVertical: 11,
+      alignItems: 'center'
+    },
+
+    taskKpiValue: {
+      fontSize: 20,
+      fontWeight: '900'
+    },
+
+    taskKpiLabel: {
+      marginTop: 2,
+      fontSize: 9,
+      fontWeight: '800'
+    },
+
+    taskEmpty: {
+      paddingVertical: 14,
+      fontSize: 12,
+      fontWeight: '700',
+      textAlign: 'center'
+    },
+
+    taskRow: {
+      minHeight: 54,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10
+    },
+
+    taskDot: {
+      width: 9,
+      height: 9,
+      borderRadius: 99
+    },
+
+    taskTitle: {
+      fontSize: 12,
+      fontWeight: '900'
+    },
+
+    taskMeta: {
+      marginTop: 3,
+      fontSize: 10,
+      fontWeight: '600'
     },
 
     radarBox: {

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Modal,
   StatusBar,
+  InteractionManager,
 } from 'react-native';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -102,6 +103,8 @@ const ROUTE_TEXTS = {
     portfolioFrequency: 'Meta',
     portfolioWindow: 'Janela',
     portfolioStores: 'Carteira',
+    portfolioViewLastVisit: 'Ver última visita',
+    portfolioNewVisit: 'Nova visita',
   },
   'en-US': {
     taskSurveyDefault: 'Visit survey',
@@ -155,6 +158,8 @@ const ROUTE_TEXTS = {
     portfolioFrequency: 'Target',
     portfolioWindow: 'Window',
     portfolioStores: 'Portfolio',
+    portfolioViewLastVisit: 'View last visit',
+    portfolioNewVisit: 'New visit',
   },
   'es-ES': {
     taskSurveyDefault: 'Encuesta de la visita',
@@ -208,6 +213,8 @@ const ROUTE_TEXTS = {
     portfolioFrequency: 'Meta',
     portfolioWindow: 'Ventana',
     portfolioStores: 'Cartera',
+    portfolioViewLastVisit: 'Ver última visita',
+    portfolioNewVisit: 'Nueva visita',
   },
 } as const;
 
@@ -1401,28 +1408,6 @@ export default function RoteiroScreen() {
         eligibleStores
       );
 
-      setActiveTab(
-        (current) => {
-          if (
-            localPortfolio.mode ===
-              'CARTEIRA_LIVRE' &&
-            current === 'VISITAS'
-          ) {
-            return 'CARTEIRA';
-          }
-
-          if (
-            localPortfolio.mode ===
-              'ROTEIRIZADO' &&
-            current === 'CARTEIRA'
-          ) {
-            return 'VISITAS';
-          }
-
-          return current;
-        }
-      );
-
             // OMNI_ROUTE_LOAD_COLETAS_REPEATABLE_FINAL_V1
             let resColetas: any[] = [];
 
@@ -1475,6 +1460,57 @@ export default function RoteiroScreen() {
             String(b.hora_entrada_prevista || '')
           );
         });
+
+      /*
+       * MOBILE_HYBRID_SCHEDULED_VISITS_INDEPENDENT_V1
+       *
+       * FieldPortfolio define onde o colaborador pode abrir atendimento LIVRE.
+       * Ele nunca restringe uma visita que já foi efetivamente agendada.
+       * Portanto, em operação híbrida, a experiência mobile é a união de:
+       *   visitas agendadas reais + lojas elegíveis para Carteira Livre.
+       */
+      const hasScheduledVisitsToday =
+        visitsNormalized.some((visit: any) => {
+          const visitDate = String(
+            visit?.data_programada ||
+            visit?.dataProgramada ||
+            ''
+          ).substring(0, 10);
+
+          return (
+            visitDate === todayStr &&
+            !isPortfolioFreeVisitForMobile(visit)
+          );
+        });
+
+      const hasFreePortfolioLane =
+        [
+          'CARTEIRA_LIVRE',
+          'HIBRIDO',
+        ].includes(
+          String(localPortfolio.mode || '')
+            .trim()
+            .toUpperCase()
+        );
+
+      setActiveTab((current) => {
+        if (
+          current === 'VISITAS' &&
+          !hasScheduledVisitsToday &&
+          hasFreePortfolioLane
+        ) {
+          return 'CARTEIRA';
+        }
+
+        if (
+          current === 'CARTEIRA' &&
+          !hasFreePortfolioLane
+        ) {
+          return 'VISITAS';
+        }
+
+        return current;
+      });
 
       let consolidatedTasks: any[] = [];
 
@@ -2162,7 +2198,7 @@ qtdPerguntas:
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [language, lastSync])
+    }, [language])
   );
 
   useEffect(() => {
@@ -2247,64 +2283,52 @@ qtdPerguntas:
     if (activeTab === 'CARTEIRA') {
       return portfolioStores
         .map((store: any) => {
-          const todayExecutions =
+          // MOBILE_HYBRID_SCHEDULED_STORE_PRECEDENCE_V1
+          // A mesma loja pode ser elegível para visita livre e também estar
+          // agendada. Nesse caso a obrigação agendada tem precedência e o card
+          // da Carteira abre a visita roteirizada em vez de criar um draft livre
+          // paralelo por acidente. Revisita livre continua sendo ação explícita.
+          const todayStoreVisits =
             visits
               .filter((visit: any) => {
-                const visitDate =
-                  String(
-                    visit.data_programada ||
-                    ''
-                  ).substring(
-                    0,
-                    10
-                  );
-
-                const isFree =
-                  String(
-                    visit.field_visit_mode ||
-                    ''
-                  )
-                    .trim()
-                    .toUpperCase() ===
-                    'CARTEIRA_LIVRE';
+                const visitDate = String(
+                  visit.data_programada ||
+                  ''
+                ).substring(0, 10);
 
                 return (
-                  isFree &&
                   visitDate === todayStr &&
-                  String(
-                    visit.loja_id ||
-                    ''
-                  ) ===
-                  String(
-                    store.loja_id ||
-                    ''
-                  )
+                  String(visit.loja_id || '') ===
+                    String(store.loja_id || '')
                 );
               })
-              .sort(
-                (a: any, b: any) =>
+              .sort((a: any, b: any) =>
+                String(
+                  b.updated_at ||
+                  b.checkout_at ||
+                  b.checkin_at ||
+                  ''
+                ).localeCompare(
                   String(
-                    b.updated_at ||
-                    b.checkout_at ||
-                    b.checkin_at ||
+                    a.updated_at ||
+                    a.checkout_at ||
+                    a.checkin_at ||
                     ''
-                  ).localeCompare(
-                    String(
-                      a.updated_at ||
-                      a.checkout_at ||
-                      a.checkin_at ||
-                      ''
-                    )
                   )
+                )
               );
+
+          const todayScheduledVisit =
+            todayStoreVisits.find(
+              (visit: any) =>
+                !isPortfolioFreeVisitForMobile(visit)
+            ) || null;
 
           return {
             ...store,
-            __type:
-              'PORTFOLIO_STORE',
-            __latestVisit:
-              todayExecutions[0] ||
-              null,
+            __type: 'PORTFOLIO_STORE',
+            __scheduledVisit: todayScheduledVisit,
+            __latestVisit: todayStoreVisits[0] || null,
           };
         })
         .filter(
@@ -2417,86 +2441,128 @@ qtdPerguntas:
     };
   }, [visits, tasks]);
 
+  // MOBILE_HYBRID_SCHEDULED_VISITS_INDEPENDENT_V1
+  const hasScheduledVisitsToday = useMemo(() => {
+    const todayStr = getTodayStr();
+
+    return visits.some((visit: any) => {
+      const visitDate = String(
+        visit?.data_programada ||
+        visit?.dataProgramada ||
+        ''
+      ).substring(0, 10);
+
+      return (
+        visitDate === todayStr &&
+        !isPortfolioFreeVisitForMobile(visit)
+      );
+    });
+  }, [visits]);
+
   // =========================================================
   // MOBILE_FIELD_PORTFOLIO_V1
   // =========================================================
+  const openPortfolioVisit =
+    useCallback(
+      (visitId: any) => {
+        if (!visitId) return;
+
+        router.push({
+          pathname: '/visita/[id]',
+          params: { id: String(visitId) },
+        } as any);
+      },
+      [router]
+    );
+
+  const createAndOpenPortfolioVisit =
+    async (store: any, allowRevisit = false) => {
+      const currentUser = useAuthStore.getState().user;
+      const projectId = getFieldPortfolioProjectId(currentUser);
+
+      if (!projectId || !currentUser?.id) {
+        throw new Error('free-visit-context-missing');
+      }
+
+      const draft = await createFreePortfolioVisitDraft({
+        projectId: String(projectId),
+        userId: String(currentUser.id),
+        user: currentUser,
+        store,
+        allowRevisit,
+      });
+
+      if (!draft?.id) {
+        throw new Error('free-visit-draft-not-created');
+      }
+
+      // MOBILE_UI_FAST_PORTFOLIO_NAV_V1
+      // Navegação responde primeiro; reconstrução pesada do roteiro fica para
+      // depois da transição visual. A tela da visita lê o SQLite diretamente.
+      openPortfolioVisit(draft.id);
+      InteractionManager.runAfterInteractions(() => {
+        void loadData();
+      });
+    };
+
   const handlePortfolioStorePress =
     async (store: any) => {
       try {
-        const currentUser =
-          useAuthStore
-            .getState()
-            .user;
+        const scheduled = store?.__scheduledVisit;
 
-        const projectId =
-          getFieldPortfolioProjectId(
-            currentUser
-          );
-
-        if (
-          !projectId ||
-          !currentUser?.id
-        ) {
-          showCustomAlert(
-            i18n.t('error') || 'Erro',
-            rt(
-              'loadRouteError',
-              language
-            ),
-            'error'
-          );
+        // MOBILE_HYBRID_SCHEDULED_STORE_PRECEDENCE_V1
+        // Se a loja livre também possui visita agendada hoje, o toque comum
+        // sempre abre a obrigação roteirizada. Nunca criamos visita livre
+        // concorrente por um toque acidental.
+        if (scheduled?.id) {
+          openPortfolioVisit(scheduled.id);
           return;
         }
 
-        /*
-         * Se já existe visita PENDENTE/EM_ANDAMENTO,
-         * o service devolve o mesmo UUID.
-         * Se a última foi concluída, gera outra.
-         */
-        const draft =
-          await createFreePortfolioVisitDraft({
-            projectId:
-              String(projectId),
-            userId:
-              String(
-                currentUser.id
-              ),
-            user:
-              currentUser,
-            store,
-          });
+        const latest = store?.__latestVisit;
+        const latestStatus = normalizeStatus(latest?.status || 'PENDENTE');
+        const inProgress = ['EM_ANDAMENTO', 'INICIADA'].includes(latestStatus);
+        const done =
+          isDoneStatus(latestStatus) ||
+          latestStatus === 'JUSTIFICADA';
 
-        if (!draft?.id) {
-          throw new Error(
-            'free-visit-draft-not-created'
-          );
+        /*
+         * MOBILE_FIELD_PORTFOLIO_REVISIT_POLICY_V1
+         *
+         * Enterprise UX:
+         * - disponível: prepara/abre o único draft corrente;
+         * - em andamento: reabre a visita existente;
+         * - visitada hoje: abre a última visita, nunca cria revisita por acidente.
+         *
+         * Nova visita no mesmo dia exige ação explícita.
+         */
+        if ((inProgress || done) && latest?.id) {
+          openPortfolioVisit(latest.id);
+          return;
         }
 
-        await loadData();
-
-        router.push({
-          pathname:
-            '/visita/[id]',
-          params: {
-            id:
-              String(
-                draft.id
-              ),
-          },
-        } as any);
+        await createAndOpenPortfolioVisit(store, false);
       } catch (error: any) {
-        console.error(
-          '[Carteira Livre] Falha ao abrir loja:',
-          error
-        );
+        console.error('[Carteira Livre] Falha ao abrir loja:', error);
 
         showCustomAlert(
-          i18n.t('error') ||
-            'Erro',
-          rt(
-            'loadRouteError',
-            language
-          ),
+          i18n.t('error') || 'Erro',
+          rt('loadRouteError', language),
+          'error'
+        );
+      }
+    };
+
+  const handlePortfolioRevisitPress =
+    async (store: any) => {
+      try {
+        await createAndOpenPortfolioVisit(store, true);
+      } catch (error: any) {
+        console.error('[Carteira Livre] Falha ao criar revisita:', error);
+
+        showCustomAlert(
+          i18n.t('error') || 'Erro',
+          rt('loadRouteError', language),
           'error'
         );
       }
@@ -2511,6 +2577,9 @@ qtdPerguntas:
       const latest =
         item.__latestVisit;
 
+      const scheduled =
+        item.__scheduledVisit;
+
       const status =
         normalizeStatus(
           latest?.status ||
@@ -2524,26 +2593,34 @@ qtdPerguntas:
           'INICIADA';
 
       const done =
-        isDoneStatus(status);
+        isDoneStatus(status) ||
+        status === 'JUSTIFICADA';
+
+      const scheduledPending =
+        Boolean(scheduled?.id) &&
+        !inProgress &&
+        !done;
 
       const stateText =
-        inProgress
-          ? rt(
-              'portfolioInProgress',
-              language
-            )
-          : done
+        scheduledPending
+          ? rt('scheduled', language)
+          : inProgress
             ? rt(
-                'portfolioVisitedToday',
+                'portfolioInProgress',
                 language
               )
-            : rt(
-                'portfolioAvailable',
-                language
-              );
+            : done
+              ? rt(
+                  'portfolioVisitedToday',
+                  language
+                )
+              : rt(
+                  'portfolioAvailable',
+                  language
+                );
 
       const stateColor =
-        inProgress
+        scheduledPending || inProgress
           ? '#3B82F6'
           : done
             ? '#10B981'
@@ -2828,6 +2905,43 @@ qtdPerguntas:
                     )}
                   </Text>
                 </Text>
+              ) : null}
+
+
+              {done && latest?.id ? (
+                <View style={styles.portfolioVisitActions}>
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    style={[
+                      styles.portfolioVisitAction,
+                      { backgroundColor: surfaceAlt, borderColor: border },
+                    ]}
+                    onPress={(event) => {
+                      event.stopPropagation?.();
+                      openPortfolioVisit(latest.id);
+                    }}
+                  >
+                    <Text style={[styles.portfolioVisitActionText, { color: textPrimary }]}>
+                      {rt('portfolioViewLastVisit', language)}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    style={[
+                      styles.portfolioVisitAction,
+                      { backgroundColor: `${accent}12`, borderColor: `${accent}45` },
+                    ]}
+                    onPress={(event) => {
+                      event.stopPropagation?.();
+                      handlePortfolioRevisitPress(item);
+                    }}
+                  >
+                    <Text style={[styles.portfolioVisitActionText, { color: accent }]}>
+                      {rt('portfolioNewVisit', language)}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               ) : null}
             </View>
 
@@ -3355,7 +3469,10 @@ qtdPerguntas:
 
       <View style={[styles.tabContainer, { backgroundColor: bg, borderBottomColor: border }]}>
 
-        {fieldPortfolio.mode !== 'CARTEIRA_LIVRE' && (
+        {(
+          fieldPortfolio.mode !== 'CARTEIRA_LIVRE' ||
+          hasScheduledVisitsToday
+        ) && (
           <TouchableOpacity
             style={[
               styles.tabBtn,
@@ -3655,4 +3772,21 @@ const styles = StyleSheet.create({
   modalText: { fontSize: 15, textAlign: 'center', lineHeight: 22, marginBottom: 24 },
   modalBtnPri: { width: '100%', height: 50, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   modalBtnPriText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+
+  portfolioVisitActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  portfolioVisitAction: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  portfolioVisitActionText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
 });

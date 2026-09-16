@@ -1,17 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Image, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, ClipboardCheck, X, ChevronDown, Check } from 'lucide-react-native';
+import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, AlertTriangle, ClipboardCheck, X, ChevronDown, Check, FolderOpen } from 'lucide-react-native';
 import { addAppLog, getDBConnection } from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
-import { globalSync, addToSyncQueue } from '../../services/syncService';
+import { globalSync, addToSyncQueue, enqueueSyncOperationInDb } from '../../services/syncService';
 import { api } from '../../services/api';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { captureRef } from 'react-native-view-shot';
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
+import { evaluateSurveyMatchAnswer, flattenSurveyQuestionsPreservingGroups, getSurveyMatchInlineState, isSurveyGroupQuestion, resolveSingleSurveyProductIdFromAnswer, shouldShowProductBySurveyMatch } from '../../utils/surveyMatch';
 
 
 import { AppAlert } from '../../components/AppAlert';
@@ -546,14 +547,19 @@ const normalizeQuestion = (p: any) => {
 
   const rawTipo = String(p.tipo || 'TEXTO').toUpperCase();
   const tipo = ['INTEGER', 'INTEIRO'].includes(rawTipo) ? 'NUMERO' : rawTipo;
+  const isGrupoReal = isSurveyGroupQuestion({ ...p, tipo: rawTipo, validacao });
 
   return {
     ...p,
     tipo,
+    isGrupoReal,
+    escopo: String(p.escopo || validacao.escopo || 'GLOBAL').toUpperCase(),
     texto: p.texto || p.titulo || p.pergunta || 'Pergunta não definida',
     opcoes: parseOptions(p.opcoes || p.options),
     validacao: {
       ...validacao,
+      is_grupo: isGrupoReal,
+      isGrupo: isGrupoReal,
       obrigatorio: isTruthy(p.obrigatorio) || isTruthy(p.obrigatoria) || isTruthy(validacao.obrigatorio),
       foto_por_opcao: isTruthy(validacao.foto_por_opcao) || isTruthy(validacao.fotoPorOpcao),
       fotoPorOpcao: isTruthy(validacao.fotoPorOpcao) || isTruthy(validacao.foto_por_opcao),
@@ -1045,12 +1051,12 @@ export default function PesquisaAvulsaScreen() {
         return;
       }
 
-      handleAnswer(
+      const applied = applyAnswerWithMatchValidation(
         answerKey,
         option.value
       );
 
-      closeDynamicSelectionSheet();
+      if (applied) closeDynamicSelectionSheet();
     };
 
 
@@ -1068,7 +1074,7 @@ export default function PesquisaAvulsaScreen() {
         return;
       }
 
-      handleAnswer(
+      const applied = applyAnswerWithMatchValidation(
         answerKey,
         [
           ...dynamicSelectionSheet
@@ -1076,7 +1082,7 @@ export default function PesquisaAvulsaScreen() {
         ]
       );
 
-      closeDynamicSelectionSheet();
+      if (applied) closeDynamicSelectionSheet();
     };
 
 
@@ -1396,7 +1402,10 @@ export default function PesquisaAvulsaScreen() {
           else if (Array.isArray(rawJson.questions)) extracted = rawJson.questions;
         }
 
-        setPerguntas(extracted.map(normalizeQuestion));
+        setPerguntas(
+          flattenSurveyQuestionsPreservingGroups(extracted)
+            .map(normalizeQuestion)
+        );
 
         let produtos = safeParseArray(taskData.produtos_json || rawJson.produtos_json || rawJson.produtos || rawJson.products);
 
@@ -1433,15 +1442,74 @@ export default function PesquisaAvulsaScreen() {
     setRespostas(prev => ({ ...prev, [perguntaId]: valor }));
   };
 
+
+  const applyAnswerWithMatchValidation = (answerKey: string, value: any) => {
+    // Igual ao web: selecionar uma opção nunca abre popup de Match.
+    // A mensagem aparece abaixo do campo; o comportamento AVISO/BLOQUEAR
+    // é aplicado somente na tentativa de salvar.
+    handleAnswer(answerKey, value);
+    return true;
+  };
+
+  const renderSurveyMatchInlineMessage = (pergunta: any, answerKey: string, answerValue: any) => {
+    const state = getSurveyMatchInlineState(
+      pergunta,
+      answerValue,
+      perguntas,
+      respostas,
+      produtosDoMix
+    );
+
+    if (state.kind === 'none') return null;
+
+    const message =
+      state.reason === 'WAIT_SOURCE'
+        ? repeatableMobileText(
+            language,
+            'Selecione primeiro o produto na pergunta base.',
+            'Select the product in the base question first.',
+            'Selecciona primero el producto en la pregunta base.'
+          )
+        : state.reason === 'NO_MAPPING'
+          ? repeatableMobileText(
+              language,
+              'O produto selecionado na pergunta base não possui match cadastrado.',
+              'The product selected in the base question has no registered match.',
+              'El producto seleccionado en la pregunta base no tiene un match registrado.'
+            )
+          : state.config.message || repeatableMobileText(
+              language,
+              'O produto selecionado não corresponde aos matches configurados para o produto base.',
+              'The selected product does not match the configured matches for the base product.',
+              'El producto seleccionado no corresponde a los matches configurados para el producto base.'
+            );
+
+    const color =
+      state.kind === 'error'
+        ? '#DC2626'
+        : state.kind === 'warning'
+          ? '#F97316'
+          : textSecondary;
+
+    const Icon = state.kind === 'warning' ? AlertTriangle : AlertCircle;
+
+    return (
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginTop: 7 }}>
+        <Icon size={13} color={color} style={{ marginTop: 1 }} />
+        <Text style={{ color, fontSize: 11, lineHeight: 16, flex: 1 }}>
+          {message}
+        </Text>
+      </View>
+    );
+  };
+
   const toggleMultiSelect = (perguntaId: string, opcao: string) => {
-    setRespostas(prev => {
-      const atuais = prev[perguntaId] || [];
-      if (atuais.includes(opcao)) {
-        return { ...prev, [perguntaId]: atuais.filter((item: string) => item !== opcao) };
-      } else {
-        return { ...prev, [perguntaId]: [...atuais, opcao] };
-      }
-    });
+    const atuais = Array.isArray(respostas[perguntaId]) ? respostas[perguntaId] : [];
+    const next = atuais.includes(opcao)
+      ? atuais.filter((item: string) => item !== opcao)
+      : [...atuais, opcao];
+
+    applyAnswerWithMatchValidation(perguntaId, next);
   };
 
   const shouldShowProductForQuestion = (pergunta: any, prod: any) => {
@@ -1460,6 +1528,7 @@ export default function PesquisaAvulsaScreen() {
     if (f.categoriaId && prodCategoriaId !== f.categoriaId) return false;
     if (f.subcategoriaId && prodSubcategoriaId !== f.subcategoriaId) return false;
     if (f.marca?.trim().toLowerCase() && prod.marca?.trim().toLowerCase() !== f.marca?.trim().toLowerCase()) return false;
+    if (!shouldShowProductBySurveyMatch(pergunta, prod, perguntas, respostas, produtosDoMix)) return false;
 
     return true;
   };
@@ -1789,7 +1858,7 @@ const handleWatermarkImageLoaded = async () => {
     }));
   };
 
-  const handleSave = async () => {
+  const handleSave = async (skipMatchWarningPopup: boolean = false) => {
 
     if (
       isCompletedNonRepeatable
@@ -1874,12 +1943,39 @@ const handleWatermarkImageLoaded = async () => {
       return;
     }
 
+    const matchWarnings: string[] = [];
+
     for (const pergunta of perguntas) {
       const pId = String(pergunta.id);
       const answer = respostas[pId];
       const answered = answer !== undefined && answer !== null && answer !== '' && (!Array.isArray(answer) || answer.length > 0);
 
-      if (checkQuestionIsMandatory(pergunta) && !answered) {
+      if (answered && !pergunta.isGrupoReal) {
+        const matchState = evaluateSurveyMatchAnswer(pergunta, answer, perguntas, respostas, produtosDoMix);
+
+        if (!matchState.valid) {
+          const matchMessage = matchState.config.message || repeatableMobileText(
+            language,
+            'O produto selecionado não corresponde aos matches configurados para o produto base.',
+            'The selected product does not match the configured matches for the base product.',
+            'El producto seleccionado no corresponde a los matches configurados para el producto base.'
+          );
+
+          if (matchState.config.mode === 'SOMENTE_MATCHES' || matchState.config.behavior === 'BLOQUEAR') {
+            AppAlert.alert(
+              repeatableMobileText(language, 'Match inválido', 'Invalid match', 'Match inválido'),
+              matchMessage
+            );
+            return;
+          }
+
+          if (matchState.config.behavior === 'AVISO' && !skipMatchWarningPopup) {
+            matchWarnings.push(`• ${pergunta.texto || pergunta.titulo || pergunta.pergunta}: ${matchMessage}`);
+          }
+        }
+      }
+
+      if (checkQuestionIsMandatory(pergunta) && !answered && !pergunta.isGrupoReal) {
         AppAlert.alert(
           repeatableMobileText(
             language,
@@ -1928,6 +2024,34 @@ const handleWatermarkImageLoaded = async () => {
       }
     }
 
+    if (!skipMatchWarningPopup && matchWarnings.length > 0) {
+      AppAlert.alert(
+        repeatableMobileText(
+          language,
+          'Atenção aos matches',
+          'Match warnings',
+          'Atención a los matches'
+        ),
+        repeatableMobileText(
+          language,
+          `Existem ${matchWarnings.length} aviso(s) de match nas suas respostas:\n\n${matchWarnings[0]}\n\nDeseja revisar ou enviar assim mesmo?`,
+          `There are ${matchWarnings.length} match warning(s) in your answers:\n\n${matchWarnings[0]}\n\nWould you like to review or submit anyway?`,
+          `Hay ${matchWarnings.length} aviso(s) de match en tus respuestas:\n\n${matchWarnings[0]}\n\n¿Deseas revisar o enviar de todos modos?`
+        ),
+        [
+          {
+            text: repeatableMobileText(language, 'Revisar', 'Review', 'Revisar'),
+            style: 'cancel',
+          },
+          {
+            text: repeatableMobileText(language, 'Enviar mesmo assim', 'Submit anyway', 'Enviar de todos modos'),
+            onPress: () => handleSave(true),
+          },
+        ]
+      );
+      return;
+    }
+
     setSaving(true);
     try {
       const db = await getDBConnection();
@@ -1940,6 +2064,16 @@ const handleWatermarkImageLoaded = async () => {
         const baseAnswer = respostas[pId];
 
         if (!perguntaConfig || baseAnswer === undefined || baseAnswer === null || baseAnswer === '') continue;
+
+        // MOBILE_PRODUCT_ID_CANONICAL_V1
+        // Mantém o valor humano da resposta e acrescenta produto_id quando
+        // a pergunta global usa a fonte dinâmica PRODUTOS.
+        const canonicalProductId =
+          resolveSingleSurveyProductIdFromAnswer(
+            perguntaConfig,
+            baseAnswer,
+            produtosDoMix
+          );
 
         if (perguntaConfig.tipo === 'FOTO') {
           const fotos = photosRef.current[pId] || [];
@@ -1974,6 +2108,7 @@ const handleWatermarkImageLoaded = async () => {
 
         respostasFormatadas.push({
           pergunta_id: pId,
+          produto_id: canonicalProductId,
           valor: isMultiple ? JSON.stringify(baseAnswer) : String(baseAnswer),
         });
 
@@ -2208,8 +2343,10 @@ const handleWatermarkImageLoaded = async () => {
           operationId,
       };
 
-      let collectionPersistedLocally =
-        false;
+      const nextTaskStatus =
+        isStandaloneRepeatable
+          ? 'EM_ANDAMENTO'
+          : 'REALIZADA';
 
       try {
         const tableExists =
@@ -2220,10 +2357,18 @@ const handleWatermarkImageLoaded = async () => {
                 AND name = 'coletas'`
           ) as any[];
 
-        if (
-          Array.isArray(tableExists) &&
-          tableExists.length > 0
-        ) {
+        if (!Array.isArray(tableExists) || tableExists.length === 0) {
+          throw new Error('Tabela local coletas não encontrada.');
+        }
+
+        /*
+         * MOBILE_SYNC_ATOMIC_STANDALONE_COLLECTION_V2
+         *
+         * Coleta + Outbox + estado da obrigação são uma única transação.
+         * Nunca apagamos a evidência depois de uma falha de enqueue; se a
+         * Outbox não puder ser criada, a transação inteira é revertida.
+         */
+        await db.withTransactionAsync(async () => {
           await db.runAsync(
             `INSERT OR REPLACE INTO coletas (
               id,
@@ -2252,138 +2397,53 @@ const handleWatermarkImageLoaded = async () => {
               now,
               now,
               standaloneDataProgramada,
-              JSON.stringify(
-                respostasFormatadas
-              ),
-              JSON.stringify(
-                payload
-              ),
+              JSON.stringify(respostasFormatadas),
+              JSON.stringify(payload),
               1,
               now,
             ]
           );
 
-          collectionPersistedLocally =
-            true;
-        }
-      } catch (
-        localCollectionError: any
-      ) {
-        await addAppLog({
-          level:
-            'WARN',
-          module:
-            'PESQUISA_AVULSA',
-          action:
-            'LOCAL_COLLECTION_SAVE',
-          message:
-            'Falha ao persistir espelho local da coleta avulsa.',
-          metadata: {
-            pesquisaId,
-            clientOperationId:
-              operationId,
-            error:
-              localCollectionError
-                ?.message ||
-              String(
-                localCollectionError
-              ),
-          },
-        });
-      }
-
-      try {
-        await db.runAsync(
-          `INSERT INTO sync_queue (
-            endpoint,
-            payload,
-            method,
-            created_at
-          ) VALUES (?, ?, ?, ?)`,
-          [
+          await enqueueSyncOperationInDb(
+            db,
             '/coletas',
-            JSON.stringify(
-              payload
-            ),
-            'POST',
-            now
-          ]
-        );
-      } catch (
-        queueError: any
-      ) {
-        if (
-          collectionPersistedLocally
-        ) {
-          await db
-            .runAsync(
-              `DELETE FROM coletas
-                WHERE id = ?`,
-              [operationId]
-            )
-            .catch(
-              () => {}
-            );
-        }
+            payload,
+            'POST'
+          );
 
+          await db.runAsync(
+            `UPDATE other_tasks
+                SET status = ?,
+                    updated_at = ?
+              WHERE id = ?`,
+            [nextTaskStatus, now, String(id)]
+          );
+        });
+      } catch (atomicSaveError: any) {
         await addAppLog({
-          level:
-            'ERROR',
-          module:
-            'PESQUISA_AVULSA',
-          action:
-            'SYNC_QUEUE_COLETA',
-          message:
-            'Falha ao enfileirar coleta avulsa.',
+          level: 'ERROR',
+          module: 'PESQUISA_AVULSA',
+          action: 'ATOMIC_LOCAL_OUTBOX_COLETA',
+          message: 'Falha atômica ao preservar coleta avulsa e Outbox.',
           metadata: {
-            endpoint:
-              '/coletas',
+            endpoint: '/coletas',
             pesquisaId,
-            clientOperationId:
-              operationId,
-            error:
-              queueError?.message ||
-              String(queueError),
+            clientOperationId: operationId,
+            error: atomicSaveError?.message || String(atomicSaveError),
           },
         });
 
         throw new Error(
-          t(
-            'standaloneTaskQueueError'
-          )
+          t('standaloneTaskQueueError')
         );
       }
 
-      /*
-       * Só agora a tarefa pode ser marcada como realizada:
-       * - respostas montadas;
-       * - coleta local preservada;
-       * - fila de sincronização criada.
-       */
-      const nextTaskStatus =
-          isStandaloneRepeatable
-            ? 'EM_ANDAMENTO'
-            : 'REALIZADA';
-
-        await db.runAsync(
-          `UPDATE other_tasks
-              SET status = ?,
-                  updated_at = ?
-            WHERE id = ?`,
-          [
-            nextTaskStatus,
-            now,
-            String(id)
-          ]
-        );
-
-        setTask(
-          (prev: any) => ({
-            ...prev,
-            status:
-              nextTaskStatus
-          })
-        );
+      setTask(
+        (prev: any) => ({
+          ...prev,
+          status: nextTaskStatus,
+        })
+      );
 
       if (
           isStandaloneRepeatable
@@ -2599,61 +2659,194 @@ const handleWatermarkImageLoaded = async () => {
                     );
                   }
 
+                  /*
+                   * MOBILE_DIAMOND_STANDALONE_CLOSE_V1
+                   *
+                   * Identidade determinística do fechamento.
+                   * O mesmo ciclo gera a mesma operação lógica.
+                   */
+                  const closeOperationId =
+                    [
+                      'standalone_close',
+                      String(
+                        ctx.projectId
+                      ),
+                      String(
+                        ctx.pesquisaId
+                      ),
+                      String(
+                        ctx.usuarioId
+                      ),
+                      String(
+                        ctx.lojaId ||
+                        'GERAL'
+                      ),
+                      String(
+                        ctx.dataProgramada
+                      )
+                    ]
+                      .join(':');
+
                   const closePayload = {
                     projectId:
                       ctx.projectId,
+
                     pesquisaId:
                       ctx.pesquisaId,
+
                     usuarioId:
                       ctx.usuarioId,
+
                     dataProgramada:
                       ctx.dataProgramada,
+
                     lojaId:
                       ctx.lojaId ||
                       'GERAL',
+
                     closed:
                       true,
+
                     status:
                       'FECHADO',
+
+                    client_operation_id:
+                      closeOperationId,
+
+                    created_offline_at:
+                      new Date()
+                        .toISOString(),
+
                     origem:
-                      'MOBILE'
+                      'MOBILE_OFFLINE'
                   };
 
-                  // OMNI_REPEATABLE_CLOSE_QUEUE_AFTER_RESPONSES_SINGLE_SOURCE_V1
-                  // A fila garante ordem: respostas primeiro, fechamento depois.
+                  /*
+                   * OMNI_REPEATABLE_CLOSE_QUEUE_AFTER_RESPONSES_SINGLE_SOURCE_V1
+                   *
+                   * A Outbox é a única via de mutação.
+                   */
                   await addToSyncQueue(
                     '/standalone-task-close',
                     closePayload,
                     'POST'
                   );
 
+                  /*
+                   * Tenta entregar imediatamente.
+                   *
+                   * Depois consultamos o estado persistido
+                   * da própria Outbox.
+                   */
                   await globalSync();
-
-                  const response =
-                    await api(
-                      '/standalone-task-close',
-                      {
-                        method:
-                          'POST',
-                        headers: {
-                          'Content-Type':
-                            'application/json'
-                        },
-                        body:
-                          JSON.stringify(
-                            closePayload
-                          )
-                      }
-                    );
-
-                  if (!response.ok) {
-                    throw new Error(
-                      'GENERAL_REPEATABLE_CLOSE_FAILED'
-                    );
-                  }
 
                   const db =
                     await getDBConnection();
+
+                  const closeQueueState: any =
+                    await db.getFirstAsync(
+                      `
+                        SELECT
+                          id,
+                          status,
+                          attempts,
+                          last_error,
+                          conflict_code
+                        FROM sync_queue
+                        WHERE
+                          endpoint = ?
+                          AND (
+                            operation_key = ?
+                            OR payload LIKE ?
+                          )
+                        ORDER BY id DESC
+                        LIMIT 1
+                      `,
+                      [
+                        '/standalone-task-close',
+                        closeOperationId,
+                        `%"client_operation_id":"${closeOperationId}"%`
+                      ]
+                    );
+
+                  const closeQueueStatus =
+                    String(
+                      closeQueueState
+                        ?.status ||
+                      ''
+                    )
+                      .trim()
+                      .toUpperCase();
+
+                  /*
+                   * CONFLICT é terminal.
+                   */
+                  if (
+                    closeQueueStatus ===
+                    'CONFLICT'
+                  ) {
+
+                    await addAppLog({
+                      level:
+                        'WARN',
+
+                      module:
+                        'PESQUISA_AVULSA',
+
+                      action:
+                        'STANDALONE_CLOSE_CONFLICT',
+
+                      message:
+                        'Fechamento preservado como conflito de sincronização.',
+
+                      metadata: {
+                        taskId:
+                          String(id),
+
+                        clientOperationId:
+                          closeOperationId,
+
+                        conflictCode:
+                          closeQueueState
+                            ?.conflict_code ||
+                          null,
+
+                        error:
+                          closeQueueState
+                            ?.last_error ||
+                          null
+                      }
+                    });
+
+                    AppAlert.alert(
+                      repeatableMobileText(
+                        language,
+                        'Conflito de sincronização',
+                        'Sync conflict',
+                        'Conflicto de sincronización'
+                      ),
+                      repeatableMobileText(
+                        language,
+                        'O encerramento não foi aplicado porque o servidor possui uma alteração mais recente. A operação foi preservada para reconciliação.',
+                        'The close was not applied because the server has a newer change. The operation was preserved for reconciliation.',
+                        'El cierre no se aplicó porque el servidor tiene un cambio más reciente. La operación fue preservada para conciliación.'
+                      )
+                    );
+
+                    return;
+                  }
+
+                  /*
+                   * Se ainda existe na fila:
+                   * PENDING/RETRY = encerramento durável offline.
+                   *
+                   * Se desapareceu:
+                   * o servidor aceitou e a Outbox removeu.
+                   */
+                  const closePendingSync =
+                    Boolean(
+                      closeQueueState
+                    );
 
                   // OMNI_REPEATABLE_CLOSE_RAW_LOCAL_SINGLE_SOURCE_V1
                   const previousRawForClose =
@@ -2694,7 +2887,20 @@ const handleWatermarkImageLoaded = async () => {
                       true,
 
                     general_repeatable_blocked:
-                      true
+                      true,
+
+                    // MOBILE_DIAMOND_STANDALONE_CLOSE_LOCAL_STATE_V1
+                    omni_repeatable_close_pending:
+                      closePendingSync,
+
+                    general_repeatable_close_pending:
+                      closePendingSync,
+
+                    omni_repeatable_close_operation_id:
+                      closeOperationId,
+
+                    general_repeatable_close_operation_id:
+                      closeOperationId
                   };
 
                   await db.runAsync(
@@ -2747,12 +2953,19 @@ const handleWatermarkImageLoaded = async () => {
                       'Form closed',
                       'Formulario cerrado'
                     ),
-                    repeatableMobileText(
-                      language,
-                      'O formulário foi encerrado com sucesso.',
-                      'The form was closed successfully.',
-                      'El formulario se cerró correctamente.'
-                    ),
+                    closePendingSync
+                      ? repeatableMobileText(
+                          language,
+                          'O formulário foi encerrado neste aparelho e será sincronizado automaticamente quando possível.',
+                          'The form was closed on this device and will sync automatically when possible.',
+                          'El formulario fue cerrado en este dispositivo y se sincronizará automáticamente cuando sea posible.'
+                        )
+                      : repeatableMobileText(
+                          language,
+                          'O formulário foi encerrado com sucesso.',
+                          'The form was closed successfully.',
+                          'El formulario se cerró correctamente.'
+                        ),
                     [
                       {
                         text:
@@ -2819,6 +3032,33 @@ const renderPhotoList = (targetKey: string, mini = false) => {
       </ScrollView>
     );
   };
+
+  const surveySections = useMemo(() => {
+    const sections: Array<{ group: any | null; questions: any[] }> = [];
+    let current: { group: any | null; questions: any[] } = { group: null, questions: [] };
+
+    perguntas.forEach((pergunta: any) => {
+      if (pergunta.isGrupoReal) {
+        if (current.group || current.questions.length > 0) sections.push(current);
+        current = { group: pergunta, questions: [] };
+      } else {
+        current.questions.push(pergunta);
+      }
+    });
+
+    if (current.group || current.questions.length > 0) sections.push(current);
+    return sections;
+  }, [perguntas]);
+
+  const questionIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    let index = 0;
+    perguntas.forEach((pergunta: any) => {
+      if (pergunta.isGrupoReal) return;
+      map.set(String(pergunta.id), index++);
+    });
+    return map;
+  }, [perguntas]);
 
   const renderPergunta = (pergunta: any, index: number) => {
     const pId = String(pergunta.id || index);
@@ -3203,7 +3443,7 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                 <View key={`${opcao}-${i}`}>
                   <TouchableOpacity
                     style={[styles.optionBtn, { backgroundColor: bg, borderColor: isSelected ? accent : border }]}
-                    onPress={() => handleAnswer(pId, opcao)}
+                    onPress={() => applyAnswerWithMatchValidation(pId, opcao)}
                   >
                     {isSelected ? <CheckCircle2 size={20} color={accent} /> : <Circle size={20} color={textSecondary} />}
                     <View style={{ flex: 1 }}>
@@ -3273,6 +3513,8 @@ const renderPhotoList = (targetKey: string, mini = false) => {
             </TouchableOpacity>
           </View>
         )}
+
+        {renderSurveyMatchInlineMessage(pergunta, pId, valorAtual)}
       </View>
     );
   };
@@ -3357,7 +3599,33 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                     </View>
                 ) : perguntas.length === 0 ? (
                     <View style={styles.emptyContainer}><AlertCircle size={40} color={textSecondary} /><Text style={{ color: textSecondary, marginTop: 10 }}>Nenhuma pergunta encontrada.</Text></View>
-                ) : perguntas.map((p, index) => renderPergunta(p, index))}
+                ) : surveySections.map((section, sectionIndex) => (
+                    <View key={`section-${section.group?.id || sectionIndex}`} style={{ marginBottom: 22 }}>
+                      {section.group && (
+                        <View style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                          paddingVertical: 12,
+                          paddingHorizontal: 14,
+                          borderRadius: 12,
+                          backgroundColor: isDark ? '#1E293B' : '#EFF6FF',
+                          marginBottom: 10,
+                        }}>
+                          <FolderOpen size={19} color={accent} />
+                          <Text style={{ color: accent, fontSize: 16, fontWeight: '800', flex: 1 }}>
+                            {section.group.texto || section.group.titulo || section.group.pergunta || 'Grupo'}
+                          </Text>
+                        </View>
+                      )}
+
+                      <View style={section.group ? { paddingLeft: 10, marginLeft: 8, borderLeftWidth: 2, borderLeftColor: accent } : undefined}>
+                        {section.questions.map((p: any) =>
+                          renderPergunta(p, questionIndexById.get(String(p.id)) ?? 0)
+                        )}
+                      </View>
+                    </View>
+                ))}
             </ScrollView>
 
             {watermarkJob && (
@@ -3447,7 +3715,7 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                 }
               ]}
             >
-                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#10B981', opacity: saving || closing || repeatableClosed || repeatableAtLimit ? 0.55 : 1 }]} onPress={handleSave} disabled={saving || closing || repeatableClosed || repeatableAtLimit}>
+                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#10B981', opacity: saving || closing || repeatableClosed || repeatableAtLimit ? 0.55 : 1 }]} onPress={() => handleSave(false)} disabled={saving || closing || repeatableClosed || repeatableAtLimit}>
                     {saving ? <ActivityIndicator color="#FFF" /> : <><Save size={20} color="#FFF" /><Text style={styles.saveBtnText}>
                         {
                           isStandaloneRepeatable

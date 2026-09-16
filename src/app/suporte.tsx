@@ -31,7 +31,7 @@ import {
 import { useAuthStore } from '../store/useAuthStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useSyncStore } from '../store/useSyncStore';
-import { globalSync } from '../services/syncService';
+import { globalSync, getDiamondSyncConflicts, type DiamondSyncConflictItem } from '../services/syncService';
 import { getAppGpsStatus } from '../services/locationService';
 import { api } from '../services/api';
 import { addAppLog, getDBConnection, getRecentAppLogs } from '../database/db';
@@ -42,19 +42,19 @@ const ACCENT_COLOR = '#FF7A00';
 const SUPPORT_TEXTS = {
   'pt-BR': {
     userFallback: 'Usuário', emailNotInformed: 'E-mail não informado', neverSynced: 'Nunca sincronizado', checking: 'Verificando', notInformed: 'Não informado', appVersionNotInformed: 'Não informada', profileLoading: 'Carregando', connected: 'Conectado', offline: 'Offline', notChecked: 'Não verificado', active: 'Ativo', inactive: 'Inativo', operational: 'Operacional', profileNotLoaded: 'Não carregado', localRouteSource: 'SQLite / roteiro local', notFoundLocally: 'Não encontrado localmente', sqliteUnavailable: 'SQLite indisponível', apiRouteSource: 'API / meu-roteiro', apiUnavailable: 'API indisponível', syncing: 'Sincronizando', upToDate: 'Em dia', pending: 'Pendente', loadingSupport: 'Carregando suporte...', gpsPermissionDenied: 'Permissão negada', gpsServiceDisabled: 'GPS desligado', gpsReady: 'Permitido e ativo',
-    title: 'Ajuda e suporte', subtitle: 'Central operacional do app', needHelp: 'Precisa de ajuda?', needHelpText: 'Use o diagnóstico abaixo para acionar suporte com dados reais do aparelho, usuário e sincronização.', internet: 'Internet', gps: 'GPS', version: 'Versão', sync: 'Sync', supportData: 'Dados do atendimento', user: 'Usuário', email: 'E-mail', phone: 'Telefone', client: 'Cliente', project: 'Projeto', supervisor: 'Supervisor', quickActions: 'Ações rápidas', shareDiagnostic: 'Compartilhar diagnóstico', shareDiagnosticSubtitle: 'Envia os dados técnicos para suporte', whatsapp: 'Falar pelo WhatsApp', whatsappSubtitle: 'Abre uma conversa com o diagnóstico pronto', emailSupport: 'Enviar por e-mail', emailSupportSubtitle: 'Cria um e-mail com o diagnóstico do app', technicalDiagnostic: 'Diagnóstico técnico', lastSync: 'Última sincronização', localDb: 'Banco local', profileSource: 'Origem do perfil', localVisits: 'Visitas locais', pendingQueue: 'Fila pendente', platform: 'Plataforma', appTimeline: 'Linha do tempo do app', appTimelineHint: 'Últimos eventos registrados no aparelho para investigação de suporte.', noLogs: 'Nenhum log local encontrado ainda. Os eventos serão registrados a partir desta atualização.', quickHelp: 'Ajuda rápida',
+    title: 'Ajuda e suporte', subtitle: 'Central operacional do app', needHelp: 'Precisa de ajuda?', needHelpText: 'Use o diagnóstico abaixo para acionar suporte com dados reais do aparelho, usuário e sincronização.', internet: 'Internet', gps: 'GPS', version: 'Versão', sync: 'Sync', supportData: 'Dados do atendimento', user: 'Usuário', email: 'E-mail', phone: 'Telefone', client: 'Cliente', project: 'Projeto', supervisor: 'Supervisor', quickActions: 'Ações rápidas', shareDiagnostic: 'Compartilhar diagnóstico', shareDiagnosticSubtitle: 'Envia os dados técnicos para suporte', whatsapp: 'Falar pelo WhatsApp', whatsappSubtitle: 'Abre uma conversa com o diagnóstico pronto', emailSupport: 'Enviar por e-mail', emailSupportSubtitle: 'Cria um e-mail com o diagnóstico do app', technicalDiagnostic: 'Diagnóstico técnico', syncIntegrityHistory: 'Histórico de integridade', syncIntegrityHint: 'Eventos técnicos preservados para suporte e auditoria. Não são exibidos na Central operacional do usuário.', noSyncIntegrityEvents: 'Nenhum evento técnico de sincronização registrado.', syncResolved: 'Resolvido', syncPending: 'Pendente', lastSync: 'Última sincronização', localDb: 'Banco local', profileSource: 'Origem do perfil', localVisits: 'Visitas locais', pendingQueue: 'Fila pendente', platform: 'Plataforma', appTimeline: 'Linha do tempo do app', appTimelineHint: 'Últimos eventos registrados no aparelho para investigação de suporte.', noLogs: 'Nenhum log local encontrado ainda. Os eventos serão registrados a partir desta atualização.', quickHelp: 'Ajuda rápida',
     faqNoInternetTitle: 'Sem internet', faqNoInternetBody: 'Continue usando o app normalmente. Check-in, checkout, tarefas e fotos ficam locais e sincronizam quando a conexão voltar.', faqGpsInactiveTitle: 'GPS inativo', faqGpsInactiveBody: 'Ative a localização do aparelho antes de iniciar check-in ou checkout. Algumas operações podem exigir GPS ativo.', faqSyncPendingTitle: 'Sincronização pendente', faqSyncPendingBody: 'Puxe a tela para baixo ou toque no ícone de sincronização. Se continuar pendente, compartilhe o diagnóstico.', faqVisitTaskProblemTitle: 'Problema em visita ou tarefa', faqVisitTaskProblemBody: 'Informe loja, data, horário aproximado e compartilhe o diagnóstico para o suporte analisar o caso.', operationalGuidance: 'Orientação operacional', operationalGuidanceText: 'Em caso de falha, não reinstale o app antes de falar com suporte. Dados offline ainda podem estar salvos no aparelho.',
     diagnosticTitle: 'DIAGNÓSTICO DO APP', appLogsTitle: 'ÚLTIMOS LOGS DO APP', userId: 'Usuário ID', projectId: 'Projeto ID', appVersion: 'Versão do app', sqlite: 'SQLite', shareErrorTitle: 'Não foi possível compartilhar', shareErrorMessage: 'Tente novamente em instantes.', emailSubject: 'Suporte Omni Field - Diagnóstico do app', emailUnavailableTitle: 'E-mail indisponível', emailUnavailableMessage: 'Não foi possível abrir o aplicativo de e-mail neste dispositivo.', whatsappUnavailableTitle: 'WhatsApp indisponível', whatsappUnavailableMessage: 'Não foi possível abrir o WhatsApp neste dispositivo.', logLoaded: 'Diagnóstico de suporte carregado.', logShared: 'Diagnóstico compartilhado pelo usuário.', app: 'APP', event: 'EVENT', info: 'INFO'
   },
   'en-US': {
     userFallback: 'User', emailNotInformed: 'E-mail not informed', neverSynced: 'Never synced', checking: 'Checking', notInformed: 'Not informed', appVersionNotInformed: 'Not informed', profileLoading: 'Loading', connected: 'Connected', offline: 'Offline', notChecked: 'Not checked', active: 'Active', inactive: 'Inactive', operational: 'Operational', profileNotLoaded: 'Not loaded', localRouteSource: 'SQLite / local route', notFoundLocally: 'Not found locally', sqliteUnavailable: 'SQLite unavailable', apiRouteSource: 'API / my-route', apiUnavailable: 'API unavailable', syncing: 'Syncing', upToDate: 'Up to date', pending: 'Pending', loadingSupport: 'Loading support...', gpsPermissionDenied: 'Permission denied', gpsServiceDisabled: 'GPS disabled', gpsReady: 'Allowed and active',
-    title: 'Help & support', subtitle: 'App operations center', needHelp: 'Need help?', needHelpText: 'Use the diagnostic below to contact support with real device, user and sync data.', internet: 'Internet', gps: 'GPS', version: 'Version', sync: 'Sync', supportData: 'Support data', user: 'User', email: 'E-mail', phone: 'Phone', client: 'Client', project: 'Project', supervisor: 'Supervisor', quickActions: 'Quick actions', shareDiagnostic: 'Share diagnostic', shareDiagnosticSubtitle: 'Sends technical data to support', whatsapp: 'Talk via WhatsApp', whatsappSubtitle: 'Opens a conversation with the diagnostic ready', emailSupport: 'Send by e-mail', emailSupportSubtitle: 'Creates an e-mail with the app diagnostic', technicalDiagnostic: 'Technical diagnostic', lastSync: 'Last sync', localDb: 'Local database', profileSource: 'Profile source', localVisits: 'Local visits', pendingQueue: 'Pending queue', platform: 'Platform', appTimeline: 'App timeline', appTimelineHint: 'Latest events recorded on the device for support investigation.', noLogs: 'No local logs found yet. Events will be recorded from this update onward.', quickHelp: 'Quick help',
+    title: 'Help & support', subtitle: 'App operations center', needHelp: 'Need help?', needHelpText: 'Use the diagnostic below to contact support with real device, user and sync data.', internet: 'Internet', gps: 'GPS', version: 'Version', sync: 'Sync', supportData: 'Support data', user: 'User', email: 'E-mail', phone: 'Phone', client: 'Client', project: 'Project', supervisor: 'Supervisor', quickActions: 'Quick actions', shareDiagnostic: 'Share diagnostic', shareDiagnosticSubtitle: 'Sends technical data to support', whatsapp: 'Talk via WhatsApp', whatsappSubtitle: 'Opens a conversation with the diagnostic ready', emailSupport: 'Send by e-mail', emailSupportSubtitle: 'Creates an e-mail with the app diagnostic', technicalDiagnostic: 'Technical diagnostic', syncIntegrityHistory: 'Integrity history', syncIntegrityHint: 'Technical events preserved for support and audit. They are not shown in the user operational Sync Center.', noSyncIntegrityEvents: 'No technical synchronization events recorded.', syncResolved: 'Resolved', syncPending: 'Pending', lastSync: 'Last sync', localDb: 'Local database', profileSource: 'Profile source', localVisits: 'Local visits', pendingQueue: 'Pending queue', platform: 'Platform', appTimeline: 'App timeline', appTimelineHint: 'Latest events recorded on the device for support investigation.', noLogs: 'No local logs found yet. Events will be recorded from this update onward.', quickHelp: 'Quick help',
     faqNoInternetTitle: 'No internet', faqNoInternetBody: 'Keep using the app normally. Check-in, checkout, tasks and photos stay local and sync when the connection comes back.', faqGpsInactiveTitle: 'GPS inactive', faqGpsInactiveBody: 'Enable device location before starting check-in or checkout. Some operations may require active GPS.', faqSyncPendingTitle: 'Pending synchronization', faqSyncPendingBody: 'Pull the screen down or tap the sync icon. If it remains pending, share the diagnostic.', faqVisitTaskProblemTitle: 'Problem with a visit or task', faqVisitTaskProblemBody: 'Inform store, date, approximate time and share the diagnostic so support can analyze the case.', operationalGuidance: 'Operational guidance', operationalGuidanceText: 'In case of failure, do not reinstall the app before talking to support. Offline data may still be saved on the device.',
     diagnosticTitle: 'APP DIAGNOSTIC', appLogsTitle: 'LATEST APP LOGS', userId: 'User ID', projectId: 'Project ID', appVersion: 'App version', sqlite: 'SQLite', shareErrorTitle: 'Unable to share', shareErrorMessage: 'Please try again shortly.', emailSubject: 'Omni Field Support - App diagnostic', emailUnavailableTitle: 'E-mail unavailable', emailUnavailableMessage: 'Unable to open the e-mail app on this device.', whatsappUnavailableTitle: 'WhatsApp unavailable', whatsappUnavailableMessage: 'Unable to open WhatsApp on this device.', logLoaded: 'Support diagnostic loaded.', logShared: 'Diagnostic shared by the user.', app: 'APP', event: 'EVENT', info: 'INFO'
   },
   'es-ES': {
     userFallback: 'Usuario', emailNotInformed: 'E-mail no informado', neverSynced: 'Nunca sincronizado', checking: 'Verificando', notInformed: 'No informado', appVersionNotInformed: 'No informada', profileLoading: 'Cargando', connected: 'Conectado', offline: 'Sin conexión', notChecked: 'No verificado', active: 'Activo', inactive: 'Inactivo', operational: 'Operacional', profileNotLoaded: 'No cargado', localRouteSource: 'SQLite / ruta local', notFoundLocally: 'No encontrado localmente', sqliteUnavailable: 'SQLite no disponible', apiRouteSource: 'API / mi-ruta', apiUnavailable: 'API no disponible', syncing: 'Sincronizando', upToDate: 'Al día', pending: 'Pendiente', loadingSupport: 'Cargando soporte...', gpsPermissionDenied: 'Permiso denegado', gpsServiceDisabled: 'GPS apagado', gpsReady: 'Permitido y activo',
-    title: 'Ayuda y soporte', subtitle: 'Central operacional de la app', needHelp: '¿Necesitas ayuda?', needHelpText: 'Usa el diagnóstico a continuación para contactar soporte con datos reales del dispositivo, usuario y sincronización.', internet: 'Internet', gps: 'GPS', version: 'Versión', sync: 'Sync', supportData: 'Datos de atención', user: 'Usuario', email: 'E-mail', phone: 'Teléfono', client: 'Cliente', project: 'Proyecto', supervisor: 'Supervisor', quickActions: 'Acciones rápidas', shareDiagnostic: 'Compartir diagnóstico', shareDiagnosticSubtitle: 'Envía los datos técnicos a soporte', whatsapp: 'Hablar por WhatsApp', whatsappSubtitle: 'Abre una conversación con el diagnóstico listo', emailSupport: 'Enviar por e-mail', emailSupportSubtitle: 'Crea un e-mail con el diagnóstico de la app', technicalDiagnostic: 'Diagnóstico técnico', lastSync: 'Última sincronización', localDb: 'Base local', profileSource: 'Origen del perfil', localVisits: 'Visitas locales', pendingQueue: 'Cola pendiente', platform: 'Plataforma', appTimeline: 'Línea de tiempo de la app', appTimelineHint: 'Últimos eventos registrados en el dispositivo para investigación de soporte.', noLogs: 'Aún no se encontró ningún log local. Los eventos se registrarán a partir de esta actualización.', quickHelp: 'Ayuda rápida',
+    title: 'Ayuda y soporte', subtitle: 'Central operacional de la app', needHelp: '¿Necesitas ayuda?', needHelpText: 'Usa el diagnóstico a continuación para contactar soporte con datos reales del dispositivo, usuario y sincronización.', internet: 'Internet', gps: 'GPS', version: 'Versión', sync: 'Sync', supportData: 'Datos de atención', user: 'Usuario', email: 'E-mail', phone: 'Teléfono', client: 'Cliente', project: 'Proyecto', supervisor: 'Supervisor', quickActions: 'Acciones rápidas', shareDiagnostic: 'Compartir diagnóstico', shareDiagnosticSubtitle: 'Envía los datos técnicos a soporte', whatsapp: 'Hablar por WhatsApp', whatsappSubtitle: 'Abre una conversación con el diagnóstico listo', emailSupport: 'Enviar por e-mail', emailSupportSubtitle: 'Crea un e-mail con el diagnóstico de la app', technicalDiagnostic: 'Diagnóstico técnico', syncIntegrityHistory: 'Historial de integridad', syncIntegrityHint: 'Eventos técnicos preservados para soporte y auditoría. No se muestran en el Centro operacional de sincronización del usuario.', noSyncIntegrityEvents: 'No hay eventos técnicos de sincronización registrados.', syncResolved: 'Resuelto', syncPending: 'Pendiente', lastSync: 'Última sincronización', localDb: 'Base local', profileSource: 'Origen del perfil', localVisits: 'Visitas locales', pendingQueue: 'Cola pendiente', platform: 'Plataforma', appTimeline: 'Línea de tiempo de la app', appTimelineHint: 'Últimos eventos registrados en el dispositivo para investigación de soporte.', noLogs: 'Aún no se encontró ningún log local. Los eventos se registrarán a partir de esta actualización.', quickHelp: 'Ayuda rápida',
     faqNoInternetTitle: 'Sin internet', faqNoInternetBody: 'Continúa usando la app normalmente. Check-in, checkout, tareas y fotos quedan locales y sincronizan cuando vuelva la conexión.', faqGpsInactiveTitle: 'GPS inactivo', faqGpsInactiveBody: 'Activa la ubicación del dispositivo antes de iniciar check-in o checkout. Algunas operaciones pueden exigir GPS activo.', faqSyncPendingTitle: 'Sincronización pendiente', faqSyncPendingBody: 'Desliza la pantalla hacia abajo o toca el ícono de sincronización. Si continúa pendiente, comparte el diagnóstico.', faqVisitTaskProblemTitle: 'Problema en visita o tarea', faqVisitTaskProblemBody: 'Informa tienda, fecha, horario aproximado y comparte el diagnóstico para que soporte analice el caso.', operationalGuidance: 'Orientación operacional', operationalGuidanceText: 'En caso de falla, no reinstales la app antes de hablar con soporte. Los datos offline aún pueden estar guardados en el dispositivo.',
     diagnosticTitle: 'DIAGNÓSTICO DE LA APP', appLogsTitle: 'ÚLTIMOS LOGS DE LA APP', userId: 'Usuario ID', projectId: 'Proyecto ID', appVersion: 'Versión de la app', sqlite: 'SQLite', shareErrorTitle: 'No fue posible compartir', shareErrorMessage: 'Inténtalo nuevamente en unos instantes.', emailSubject: 'Soporte Omni Field - Diagnóstico de la app', emailUnavailableTitle: 'E-mail no disponible', emailUnavailableMessage: 'No fue posible abrir la app de e-mail en este dispositivo.', whatsappUnavailableTitle: 'WhatsApp no disponible', whatsappUnavailableMessage: 'No fue posible abrir WhatsApp en este dispositivo.', logLoaded: 'Diagnóstico de soporte cargado.', logShared: 'Diagnóstico compartido por el usuario.', app: 'APP', event: 'EVENT', info: 'INFO'
   },
@@ -264,6 +264,8 @@ export default function AjudaSuporteScreen() {
     queueCount: 0,
   });
   const [logs, setLogs] = useState<AppLogRow[]>([]);
+  // MOBILE_SUPPORT_SYNC_LEDGER_HISTORY_V1
+  const [syncConflicts, setSyncConflicts] = useState<DiamondSyncConflictItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -310,8 +312,12 @@ export default function AjudaSuporteScreen() {
         (await safeCount(db, 'pending_sync')) ||
         0;
 
-      const recentLogs = (await getRecentAppLogs(80)) as AppLogRow[];
+      const [recentLogs, recentSyncConflicts] = await Promise.all([
+        getRecentAppLogs(80) as Promise<AppLogRow[]>,
+        getDiamondSyncConflicts({ unresolvedOnly: false, limit: 40 }),
+      ]);
       setLogs(recentLogs);
+      setSyncConflicts(recentSyncConflicts);
 
       const localProfile = await getPerfilFromVisits(db, language);
 
@@ -473,6 +479,13 @@ export default function AjudaSuporteScreen() {
       `${supportText('userId', language)}: ${getUserId(user) || supportText('notInformed', language)}`,
       `${supportText('projectId', language)}: ${getProjectId(user) || supportText('notInformed', language)}`,
       '',
+      'SYNC CONFLICT LEDGER',
+      ...syncConflicts.slice(0, 30).map((item) => {
+        const status = item.resolvedAt ? 'RESOLVED' : 'PENDING';
+        const when = item.resolvedAt || item.createdAt || '';
+        return `${when} [${status}] ${item.conflictCode || 'SYNC_CONFLICT'} ${item.endpoint || ''} HTTP=${item.httpStatus ?? '-'} resolution=${item.resolution || '-'}`;
+      }),
+      '',
       supportText('appLogsTitle', language),
       ...logs.slice(0, 50).map((log) => {
         const when = new Date(log.created_at);
@@ -489,7 +502,7 @@ export default function AjudaSuporteScreen() {
         return `${whenText} [${log.level}] ${log.module}/${log.action}: ${log.message}`;
       }),
     ].join('\n');
-  }, [profile, diagnostic, user, logs, language]);
+  }, [profile, diagnostic, user, logs, syncConflicts, language]);
 
   const shareDiagnostic = async () => {
     try {
@@ -641,6 +654,42 @@ export default function AjudaSuporteScreen() {
     );
   };
 
+
+  const renderSyncConflict = (item: DiamondSyncConflictItem) => {
+    const resolved = Boolean(item.resolvedAt);
+    const color = resolved ? '#22C55E' : '#F59E0B';
+    const when = new Date(item.resolvedAt || item.createdAt || '');
+    const whenText = Number.isNaN(when.getTime())
+      ? String(item.resolvedAt || item.createdAt || '')
+      : when.toLocaleString(supportLocale(language), {
+          day: '2-digit',
+          month: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+
+    return (
+      <View key={`sync-ledger-${item.id}`} style={[styles.logItem, { backgroundColor: soft, borderColor: border }]}>
+        <View style={[styles.logDot, { backgroundColor: color }]} />
+        <View style={{ flex: 1 }}>
+          <View style={styles.logHeader}>
+            <Text style={[styles.logLevel, { color }]}>
+              {supportText(resolved ? 'syncResolved' : 'syncPending', language)}
+            </Text>
+            <Text style={[styles.logTime, { color: textSecondary }]}>{whenText}</Text>
+          </View>
+          <Text style={[styles.logAction, { color: textPrimary }]} numberOfLines={2}>
+            {item.conflictCode || 'SYNC_CONFLICT'}
+          </Text>
+          <Text style={[styles.logMessage, { color: textSecondary }]} numberOfLines={3}>
+            {[item.endpoint, item.httpStatus ? `HTTP ${item.httpStatus}` : null, item.resolution].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+      </View>
+    );
+  };
+
   if (loading) {
     return (
       <View style={[styles.container, { backgroundColor: bg }]}>
@@ -738,6 +787,25 @@ export default function AjudaSuporteScreen() {
           {renderInfoRow(supportText('localVisits', language), String(diagnostic.visitsCount), MapPin, '#3B82F6')}
           {renderInfoRow(supportText('pendingQueue', language), String(diagnostic.queueCount), AlertTriangle, '#F59E0B')}
           {renderInfoRow(supportText('platform', language), diagnostic.platform, Smartphone, '#64748B')}
+        </View>
+
+        <View style={[styles.sectionCard, { backgroundColor: surface, borderColor: border }]}>
+          <Text style={[styles.sectionTitle, { color: textPrimary }]}>{supportText('syncIntegrityHistory', language)}</Text>
+          <Text style={[styles.sectionHint, { color: textSecondary }]}>
+            {supportText('syncIntegrityHint', language)}
+          </Text>
+
+          <View style={{ height: 12 }} />
+
+          {syncConflicts.length > 0 ? (
+            syncConflicts.slice(0, 15).map(renderSyncConflict)
+          ) : (
+            <View style={[styles.emptyBox, { backgroundColor: soft, borderColor: border }]}>
+              <Text style={[styles.emptyText, { color: textSecondary }]}>
+                {supportText('noSyncIntegrityEvents', language)}
+              </Text>
+            </View>
+          )}
         </View>
 
         <View style={[styles.sectionCard, { backgroundColor: surface, borderColor: border }]}>

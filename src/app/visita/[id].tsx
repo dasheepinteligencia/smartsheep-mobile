@@ -32,7 +32,8 @@ import { getSmartLocation, getDistanceInMeters } from '../../services/locationSe
 import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
-import { addToSyncQueue } from '../../services/syncService';
+import { enqueueSyncOperationInDb } from '../../services/syncService';
+import { materializeFreeVisitExecutionFromManifestInDb } from '../../services/fieldPortfolioService';
 import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveyStatus';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useSyncStore } from '../../store/useSyncStore';
@@ -473,12 +474,64 @@ const toOptionalNumber = (value: any): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// MOBILE_VISIT_REQUIRED_QUESTIONS_BLOCK_CHECKOUT_V1
+// Uma pesquisa da visita também é obrigatória para o checkout quando contém
+// ao menos uma pergunta obrigatória. Isso vale para Carteira Livre e visita
+// agendada, pois ambas convergem para tarefasRenderizadas nesta tela.
+const hasMandatoryQuestionForCheckout = (source: any): boolean => {
+  if (!source || typeof source !== 'object') return false;
+
+  const validation = safeParseJson(
+    source?.validacao ||
+    source?.validation ||
+    source?.validacoes ||
+    source?.validacaoPergunta ||
+    source?.validacao_normalizada ||
+    source?.validacaoNormalizada ||
+    {},
+    {}
+  );
+
+  if (truthyConfig(firstFilled(
+    source?.obrigatoria,
+    source?.obrigatório,
+    source?.obrigatorio,
+    source?.mandatory,
+    source?.required,
+    validation?.obrigatoria,
+    validation?.obrigatório,
+    validation?.obrigatorio,
+    validation?.mandatory,
+    validation?.required
+  ))) {
+    return true;
+  }
+
+  const childrenRaw =
+    source?.perguntas ||
+    source?.questoes ||
+    source?.questions ||
+    source?.campos ||
+    source?.children ||
+    source?.items ||
+    source?.itens ||
+    source?.blocos ||
+    source?.groups ||
+    [];
+
+  const parsedChildren = safeParseJson(childrenRaw, childrenRaw);
+  const children = Array.isArray(parsedChildren) ? parsedChildren : [];
+  return children.some((child: any) => hasMandatoryQuestionForCheckout(child));
+};
+
 const isSurveyMandatoryForCheckout = (source: any) => {
   const validation = safeParseJson(
     source?.validacao ||
     source?.validation ||
     source?.validacoes ||
     source?.validacaoPergunta ||
+    source?.validacao_normalizada ||
+    source?.validacaoNormalizada ||
     {},
     {}
   );
@@ -489,6 +542,8 @@ const isSurveyMandatoryForCheckout = (source: any) => {
     source?.obrigatorio,
     source?.mandatory,
     source?.required,
+    source?.checkout_required,
+    source?.checkoutRequired,
     source?.requiredToCheckout,
     source?.required_to_checkout,
     source?.bloqueiaCheckout,
@@ -509,8 +564,27 @@ const isSurveyMandatoryForCheckout = (source: any) => {
     validation?.block_checkout,
     validation?.exigeCheckout,
     validation?.exige_checkout
-  ));
+  )) || hasMandatoryQuestionForCheckout(source);
 };
+
+// MOBILE_VISIT_CHECKOUT_PENDING_TASK_CONTRACT_V2
+// Única função de decisão usada tanto pelo clique quanto pelo estado disabled
+// do botão. Evita divergência entre UX e validação efetiva.
+const isRequiredCheckoutTaskPending = (tarefa: any): boolean => {
+  if (tarefa?.obrigatoria !== true) return false;
+
+  if (tarefa?.repetivel === true) {
+    const rawMin = Number(tarefa?.repeticaoMin ?? 1);
+    const minRequired = Number.isFinite(rawMin) && rawMin > 0 ? rawMin : 1;
+    const doneCount = Math.max(0, Number(tarefa?.coletasCount || 0));
+    return doneCount < minRequired;
+  }
+
+  return tarefa?.concluida !== true;
+};
+
+const getRequiredCheckoutPendingTasks = (tarefas: any[]) =>
+  (Array.isArray(tarefas) ? tarefas : []).filter(isRequiredCheckoutTaskPending);
 
 const getRepeatableSurveyMeta = (survey: any) => {
   const questions =
@@ -1046,29 +1120,13 @@ export default function VisitaDetailScreen() {
     carregarDadosCompletos();
   }, [id, isSyncing, lastSync]);
 
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      let running = false;
-
-      const reloadFromLocalDb = async () => {
-        if (cancelled || running || !id || checkinLoading || checkoutLoading || justifyLoading) return;
-        running = true;
-        try {
-          await carregarDadosCompletos();
-        } finally {
-          running = false;
-        }
-      };
-
-      const timer = setInterval(reloadFromLocalDb, 2500);
-
-      return () => {
-        cancelled = true;
-        clearInterval(timer);
-      };
-    }, [id, checkinLoading, checkoutLoading, justifyLoading])
-  );
+  /*
+   * MOBILE_VISIT_EVENT_DRIVEN_REFRESH_V1
+   *
+   * Não fazemos polling SQLite a cada 2,5 s. A tela já recarrega ao ganhar foco
+   * e após mudanças de sincronização; pesquisa -> voltar também dispara focus.
+   * Isso remove trabalho contínuo do JS/SQLite enquanto o usuário interage.
+   */
 
   useEffect(() => {
     if (visita && userLocation && mapRef.current) {
@@ -1469,6 +1527,13 @@ export default function VisitaDetailScreen() {
             concluida:
               taskStatus ===
               'REALIZADA',
+
+            // MOBILE_VISIT_REQUIRED_FLAG_PROPAGATION_V2
+            // O surveysMap já havia calculado a obrigatoriedade a partir das
+            // perguntas, mas o mapper final descartava esse campo. Com isso,
+            // handleCheckout enxergava a pesquisa como opcional.
+            obrigatoria:
+              survey?.obrigatoria === true,
           });
         }
       }
@@ -2008,17 +2073,8 @@ export default function VisitaDetailScreen() {
   };
 
   const handleCheckout = async () => {
-    const tarefasObrigatoriasPendentes = tarefasRenderizadas.filter((tarefa: any) => {
-      if (tarefa?.obrigatoria !== true) return false;
-
-      if (tarefa?.repetivel === true) {
-        const minRequired = Number(tarefa?.repeticaoMin ?? 1);
-        const doneCount = Number(tarefa?.coletasCount || 0);
-        return doneCount < minRequired;
-      }
-
-      return tarefa?.concluida !== true;
-    });
+    const tarefasObrigatoriasPendentes =
+      getRequiredCheckoutPendingTasks(tarefasRenderizadas);
 
     if (tarefasObrigatoriasPendentes.length > 0) {
       const listaPendencias = tarefasObrigatoriasPendentes
@@ -2149,30 +2205,6 @@ export default function VisitaDetailScreen() {
       const campoData = acao === 'CHECKIN' ? 'checkin_at' : acao === 'CHECKOUT' ? 'checkout_at' : null;
       const operationId = buildOperationId(String(visita.id), acao);
 
-      if (campoData) {
-        await db.runAsync(
-          `UPDATE visits SET status = ?, ${campoData} = ?, latitude = ?, longitude = ?, pending_sync = 1, client_operation_id = ?, updated_at = ? WHERE id = ?`,
-          [novoStatus, now, lat, lng, operationId, now, visita.id]
-        );
-      } else {
-        await db.runAsync(
-          `UPDATE visits SET status = ?, latitude = ?, longitude = ?, pending_sync = 1, client_operation_id = ?, updated_at = ? WHERE id = ?`,
-          [novoStatus, lat, lng, operationId, now, visita.id]
-        );
-      }
-
-      if (fotoUri) {
-        const fotoField = getPhotoFieldByAction(acao);
-
-        await db
-          .runAsync(`UPDATE visits SET ${fotoField} = ?, pending_sync = 1, updated_at = ? WHERE id = ?`, [
-            fotoUri,
-            now,
-            visita.id,
-          ])
-          .catch(() => {});
-      }
-
       const endpoint =
         acao === 'CHECKIN'
           ? '/visitas/checkin'
@@ -2180,7 +2212,16 @@ export default function VisitaDetailScreen() {
             ? '/visitas/checkout'
             : '/visitas/justificar';
 
-      const payload = buildVisitPayload(lat, lng, acao, now, operationId, justificativa, detalhe, fotoUri);
+      const payload = buildVisitPayload(
+        lat,
+        lng,
+        acao,
+        now,
+        operationId,
+        justificativa,
+        detalhe,
+        fotoUri
+      );
 
       const updatedVisit = {
         ...visita,
@@ -2196,16 +2237,218 @@ export default function VisitaDetailScreen() {
         ...(fotoUri ? { [getPhotoFieldByAction(acao)]: fotoUri } : {}),
       };
 
-      // Além do pending_sync da tabela visits, deixamos a operação explícita na fila.
-      // Isso aumenta a segurança para checkout/justificativa, que não eram enviados pelo sync antigo.
+      let freeVisitMaterialization:
+        any = null;
+
+      /*
+       * MOBILE_FREE_VISIT_ATOMIC_MATERIALIZATION_V1
+       *
+       * CHECK-IN Carteira Livre:
+       * visita + tarefas + Outbox formam uma transação única.
+       */
+
+      /*
+       * MOBILE_SYNC_ATOMIC_VISIT_MUTATION_V2
+       *
+       * Estado operacional + Outbox são uma única transação SQLite.
+       * Não existe mais visita alterada sem operação durável correspondente.
+       */
       try {
-        await addToSyncQueue(endpoint, payload, 'POST', token || undefined);
+        await db.withTransactionAsync(async () => {
+          const currentVisit: any = await db.getFirstAsync(
+            `SELECT id FROM visits WHERE id = ? LIMIT 1`,
+            [visita.id]
+          );
+
+          if (!currentVisit?.id) {
+            throw new Error(
+              'A visita não está mais disponível no roteiro local após a última sincronização.'
+            );
+          }
+
+          if (campoData) {
+            await db.runAsync(
+              `UPDATE visits SET status = ?, ${campoData} = ?, latitude = ?, longitude = ?, pending_sync = 1, client_operation_id = ?, updated_at = ? WHERE id = ?`,
+              [novoStatus, now, lat, lng, operationId, now, visita.id]
+            );
+          } else {
+            await db.runAsync(
+              `UPDATE visits SET status = ?, latitude = ?, longitude = ?, pending_sync = 1, client_operation_id = ?, updated_at = ? WHERE id = ?`,
+              [novoStatus, lat, lng, operationId, now, visita.id]
+            );
+          }
+
+          if (fotoUri) {
+            const fotoField = getPhotoFieldByAction(acao);
+            await db.runAsync(
+              `UPDATE visits SET ${fotoField} = ?, pending_sync = 1, updated_at = ? WHERE id = ?`,
+              [fotoUri, now, visita.id]
+            );
+          }
+
+          /*
+           * MOBILE_FREE_VISIT_ATOMIC_MATERIALIZATION_V1
+           *
+           * Só CHECK-IN de CARTEIRA_LIVRE materializa
+           * definições do manifesto.
+           *
+           * O helper roda nesta MESMA transação SQLite.
+           * Qualquer falha desfaz:
+           * - status da visita;
+           * - tarefas materializadas;
+           * - fotos;
+           * - Outbox.
+           */
+          const isFreePortfolioCheckin =
+            acao ===
+              'CHECKIN' &&
+            (
+              String(
+                payload
+                  ?.field_visit_mode ||
+                payload
+                  ?.fieldVisitMode ||
+                ''
+              )
+                .trim()
+                .toUpperCase() ===
+                'CARTEIRA_LIVRE' ||
+              String(
+                payload
+                  ?.origem ||
+                ''
+              )
+                .trim()
+                .toUpperCase() ===
+                'CARTEIRA_LIVRE'
+            );
+
+          if (
+            isFreePortfolioCheckin
+          ) {
+            const manifestProjectId =
+              String(
+                payload
+                  ?.projectId ||
+                payload
+                  ?.project_id ||
+                ''
+              ).trim();
+
+            const manifestUserId =
+              String(
+                user?.id ||
+                payload
+                  ?.usuario_id ||
+                ''
+              ).trim();
+
+            if (
+              !manifestProjectId ||
+              !manifestUserId
+            ) {
+              const contextError:
+                any =
+                new Error(
+                  'MOBILE_EXECUTION_CONTEXT_MISSING'
+                );
+
+              contextError.code =
+                'MOBILE_EXECUTION_CONTEXT_MISSING';
+
+              throw contextError;
+            }
+
+            freeVisitMaterialization =
+              await materializeFreeVisitExecutionFromManifestInDb({
+                db,
+
+                projectId:
+                  manifestProjectId,
+
+                userId:
+                  manifestUserId,
+
+                visit: {
+                  ...visita,
+
+                  status:
+                    novoStatus,
+
+                  checkin_at:
+                    now,
+
+                  latitude:
+                    lat,
+
+                  longitude:
+                    lng,
+                },
+
+                checkinAt:
+                  now,
+              });
+
+            Object.assign(
+              payload,
+              {
+                execution_manifest_contract:
+                  freeVisitMaterialization
+                    ?.contract ||
+                  null,
+
+                execution_manifest_version:
+                  freeVisitMaterialization
+                    ?.manifestVersion ??
+                  null,
+
+                /*
+                 * MOBILE_FREE_VISIT_MANIFEST_REVISION_PAYLOAD_V1
+                 *
+                 * Permite ao servidor auditar exatamente
+                 * qual configuração offline originou a operação.
+                 */
+                execution_manifest_revision:
+                  freeVisitMaterialization
+                    ?.manifestRevision ||
+                  null,
+
+                execution_manifest_generated_at:
+                  freeVisitMaterialization
+                    ?.manifestGeneratedAt ||
+                  null,
+
+                execution_manifest_received_at:
+                  freeVisitMaterialization
+                    ?.manifestReceivedAt ||
+                  null,
+
+                locally_materialized_visit_surveys:
+                  freeVisitMaterialization
+                    ?.visitSurveyIds ||
+                  [],
+
+                locally_materialized_store_tasks:
+                  freeVisitMaterialization
+                    ?.taskIds ||
+                  [],
+              }
+            );
+          }
+
+          await enqueueSyncOperationInDb(
+            db,
+            endpoint,
+            payload,
+            'POST'
+          );
+        });
       } catch (queueError: any) {
         await addAppLog({
           level: 'ERROR',
           module: 'VISITA',
-          action: `SYNC_QUEUE_${acao}`,
-          message: 'Falha ao enfileirar ação crítica de visita.',
+          action: `ATOMIC_LOCAL_OUTBOX_${acao}`,
+          message: 'Falha atômica ao salvar ação de visita e Outbox.',
           metadata: {
             endpoint,
             visitId: visita?.id,
@@ -2215,21 +2458,124 @@ export default function VisitaDetailScreen() {
           },
         });
 
-        setVisita(updatedVisit);
         setCheckinLoading(false);
         setCheckoutLoading(false);
         setJustifyLoading(false);
+        const atomicErrorCode =
+          String(
+            queueError?.code ||
+            queueError?.message ||
+            ''
+          )
+            .trim()
+            .toUpperCase();
+
+        const manifestMissing =
+          atomicErrorCode.includes(
+            'MOBILE_EXECUTION_MANIFEST'
+          );
+
         showCustomAlert(
-          'Ação salva sem sincronização',
-          'A ação foi preservada no celular, mas não entrou na fila de sincronização. Tente sincronizar novamente mais tarde ou avise o suporte antes de apagar dados do app.',
+          manifestMissing
+            ? 'Sincronização necessária'
+            : 'Não foi possível salvar a ação',
+
+          manifestMissing
+            ? 'Este aparelho ainda não possui um manifesto offline confirmado para esta Carteira Livre. Sincronize o aplicativo enquanto estiver online e tente o check-in novamente. Nenhum estado parcial foi mantido.'
+            : 'A operação não foi confirmada localmente porque não foi possível gravar todo o estado e a fila de sincronização de forma atômica. Tente novamente; nenhum estado parcial foi mantido.',
+
           'error'
         );
         return;
       }
 
-      setVisita(updatedVisit);
+      if (
+        freeVisitMaterialization
+          ?.pesquisaJson
+      ) {
+        updatedVisit.pesquisa_json =
+          freeVisitMaterialization
+            .pesquisaJson;
+      }
+
+      if (
+        freeVisitMaterialization
+          ?.projectConfigJson
+      ) {
+        updatedVisit.project_config_json =
+          freeVisitMaterialization
+            .projectConfigJson;
+      }
+
+      setVisita(
+        updatedVisit
+      );
+
+      if (
+        freeVisitMaterialization
+      ) {
+        await addAppLog({
+          level:
+            'INFO',
+
+          module:
+            'VISITA',
+
+          action:
+            'FREE_VISIT_EXECUTION_MATERIALIZED',
+
+          message:
+            'Obrigações da Carteira Livre materializadas no check-in.',
+
+          metadata: {
+            visitId:
+              visita?.id,
+
+            manifestVersion:
+              freeVisitMaterialization
+                ?.manifestVersion ??
+              null,
+
+            manifestRevision:
+              freeVisitMaterialization
+                ?.manifestRevision ||
+              null,
+
+            manifestGeneratedAt:
+              freeVisitMaterialization
+                ?.manifestGeneratedAt ||
+              null,
+
+            manifestReceivedAt:
+              freeVisitMaterialization
+                ?.manifestReceivedAt ||
+              null,
+
+            visitSurveyIds:
+              freeVisitMaterialization
+                ?.visitSurveyIds ||
+              [],
+
+            taskIds:
+              freeVisitMaterialization
+                ?.taskIds ||
+              [],
+          },
+        }).catch(
+          () => {}
+        );
+      }
 
       if (acao === 'CHECKIN') {
+        /*
+         * Recarrega imediatamente:
+         * POR_VISITA nasce na própria tela no instante do check-in.
+         */
+        if (
+          freeVisitMaterialization
+        ) {
+          await carregarDadosCompletos();
+        }
         setCheckinLoading(false);
         showCustomAlert(
           'Entrada Registrada',
@@ -2324,6 +2670,12 @@ export default function VisitaDetailScreen() {
   const isAndamento = normalizedStatus === 'EM_ANDAMENTO' || normalizedStatus === 'INICIADA';
   const isPendente = normalizedStatus === 'PENDENTE' || normalizedStatus === 'AGENDADA';
   const isRealizada = isDoneStatus(normalizedStatus);
+
+  // MOBILE_VISIT_CHECKOUT_DISABLED_WHILE_REQUIRED_PENDING_V1
+  const tarefasObrigatoriasPendentesCheckout =
+    getRequiredCheckoutPendingTasks(tarefasRenderizadas);
+  const checkoutBlockedByRequiredTask =
+    isAndamento && tarefasObrigatoriasPendentesCheckout.length > 0;
 
   let displayTime = '--:--';
   let timeLabel = 'Previsão:';
@@ -2713,6 +3065,27 @@ export default function VisitaDetailScreen() {
         </View>
       </ScrollView>
 
+      {checkoutBlockedByRequiredTask && (
+        <View
+          testID="visit-checkout-required-warning"
+          accessibilityLabel="visit-checkout-required-warning"
+          style={[
+            styles.checkoutRequirementBanner,
+            {
+              backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : 'rgba(245, 158, 11, 0.10)',
+              borderColor: isDark ? 'rgba(245, 158, 11, 0.35)' : 'rgba(217, 119, 6, 0.30)',
+            },
+          ]}
+        >
+          <AlertTriangle size={17} color="#F59E0B" />
+          <Text style={[styles.checkoutRequirementText, { color: textPrimary }]}>
+            {tarefasObrigatoriasPendentesCheckout.length === 1
+              ? 'Conclua a pesquisa obrigatória para liberar o check-out.'
+              : `Conclua as ${tarefasObrigatoriasPendentesCheckout.length} pesquisas obrigatórias para liberar o check-out.`}
+          </Text>
+        </View>
+      )}
+
       <View style={[styles.footer, { backgroundColor: cardBg, borderTopColor: border }]}>
         {isPendente ? (
           <>
@@ -2777,9 +3150,17 @@ export default function VisitaDetailScreen() {
             <TouchableOpacity
               testID="visit-checkout-button"
               accessibilityLabel="visit-checkout-button"
-              style={[styles.btnAction, { backgroundColor: colorCheckout, flex: 1.5, opacity: checkoutLoading ? 0.7 : 1 }]}
+              style={[
+                styles.btnAction,
+                {
+                  backgroundColor: checkoutBlockedByRequiredTask ? '#6B7280' : colorCheckout,
+                  flex: 1.5,
+                  opacity: checkoutLoading || checkoutBlockedByRequiredTask ? 0.5 : 1,
+                },
+              ]}
               onPress={handleCheckout}
-              disabled={checkoutLoading}
+              disabled={checkoutLoading || checkoutBlockedByRequiredTask}
+              accessibilityState={{ disabled: checkoutLoading || checkoutBlockedByRequiredTask }}
             >
               {checkoutLoading ? (
                 <ActivityIndicator color="#FFF" />
@@ -3013,6 +3394,23 @@ const styles = StyleSheet.create({
   taskTitle: { fontSize: 15, fontWeight: '700', marginBottom: 4 },
   taskSubtitle: { fontSize: 13, fontWeight: '500' },
   emptyTaskCard: { padding: 20, borderRadius: 12, borderWidth: 1, alignItems: 'center', borderStyle: 'dashed' },
+  checkoutRequirementBanner: {
+    marginHorizontal: 20,
+    marginBottom: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  checkoutRequirementText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
   footer: { flexDirection: 'row', padding: 20, paddingBottom: 30, borderTopWidth: 1 },
   btnAction: { flex: 1, flexDirection: 'row', paddingVertical: 16, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   btnIcon: { marginRight: 8 },

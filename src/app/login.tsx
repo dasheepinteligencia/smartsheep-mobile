@@ -6,17 +6,22 @@ import {
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Lock, Mail, Eye, AlertCircle, Sun, Moon } from 'lucide-react-native';
+import { Lock, UserRound, Eye, AlertCircle, Sun, Moon } from 'lucide-react-native';
 import { useAuthStore } from '../store/useAuthStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { i18n, setI18nLocale } from '../utils/i18n';
 import { api } from '../services/api';
-import { globalSync } from '../services/syncService';
-import { clearLocalDatabase } from '../database/db'; 
+import {
+  globalSync,
+  pauseGlobalSyncForWorkspaceSwitch,
+  resumeGlobalSyncAfterWorkspaceSwitch,
+  waitForGlobalSyncIdle,
+} from '../services/syncService';
+import { activateLocalWorkspaceForUser } from '../database/db';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ACCENT_COLOR = '#FF7A00';
-const REMEMBERED_EMAIL_KEY = 'OmniFieldRememberedEmail';
+const REMEMBERED_LOGIN_KEY = 'OmniFieldRememberedEmail';
 
 
 const getReadableTextColor = (hexColor?: string) => {
@@ -182,48 +187,48 @@ export default function LoginScreen() {
 
   i18n.locale = language;
 
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
-  const [rememberEmail, setRememberEmail] = useState(false);
+  const [rememberLogin, setRememberLogin] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [focusedInput, setFocusedInput] = useState<'email' | 'password' | null>(null);
+  const [focusedInput, setFocusedInput] = useState<'identifier' | 'password' | null>(null);
 
   const isDark = theme === 'dark';
 
   useEffect(() => {
     let active = true;
 
-    const loadRememberedEmail = async () => {
+    const loadRememberedLogin = async () => {
       try {
-        const savedEmail = await AsyncStorage.getItem(REMEMBERED_EMAIL_KEY);
+        const savedLogin = await AsyncStorage.getItem(REMEMBERED_LOGIN_KEY);
 
-        if (active && savedEmail) {
-          setEmail(savedEmail);
-          setRememberEmail(true);
+        if (active && savedLogin) {
+          setIdentifier(savedLogin);
+          setRememberLogin(true);
         }
       } catch (error) {
-        console.warn('[Login] Não foi possível carregar o e-mail lembrado:', error);
+        console.warn('[Login] Não foi possível carregar o login lembrado:', error);
       }
     };
 
-    loadRememberedEmail();
+    loadRememberedLogin();
 
     return () => {
       active = false;
     };
   }, []);
 
-  const toggleRememberEmail = async () => {
-    const nextValue = !rememberEmail;
-    setRememberEmail(nextValue);
+  const toggleRememberLogin = async () => {
+    const nextValue = !rememberLogin;
+    setRememberLogin(nextValue);
 
     if (!nextValue) {
       try {
-        await AsyncStorage.removeItem(REMEMBERED_EMAIL_KEY);
+        await AsyncStorage.removeItem(REMEMBERED_LOGIN_KEY);
       } catch (error) {
-        console.warn('[Login] Não foi possível remover o e-mail lembrado:', error);
+        console.warn('[Login] Não foi possível remover o login lembrado:', error);
       }
     }
   };
@@ -231,7 +236,7 @@ export default function LoginScreen() {
   const handleLogin = async () => {
     setErrorMessage(null);
 
-    if (!email || !password) {
+    if (!identifier.trim() || !password) {
       setErrorMessage(i18n.t('errorEmpty'));
       return;
     }
@@ -241,7 +246,7 @@ export default function LoginScreen() {
     try {
       const response = await api('/login', {
         method: 'POST',
-        body: JSON.stringify({ email: email.trim(), senha: password })
+        body: JSON.stringify({ identifier: identifier.trim(), senha: password })
       });
 
       const data = await response.json();
@@ -278,20 +283,53 @@ export default function LoginScreen() {
       }
 
       try {
-        if (rememberEmail) {
-          await AsyncStorage.setItem(REMEMBERED_EMAIL_KEY, email.trim());
+        if (rememberLogin) {
+          await AsyncStorage.setItem(REMEMBERED_LOGIN_KEY, identifier.trim());
         } else {
-          await AsyncStorage.removeItem(REMEMBERED_EMAIL_KEY);
+          await AsyncStorage.removeItem(REMEMBERED_LOGIN_KEY);
         }
       } catch (error) {
-        console.warn('[Login] Não foi possível atualizar o e-mail lembrado:', error);
+        console.warn('[Login] Não foi possível atualizar o login lembrado:', error);
       }
 
-      await clearLocalDatabase();
-      await login(String(mainToken), userData);
+      /*
+       * MOBILE_MULTIUSER_LOGIN_SWITCH_V2
+       *
+       * NUNCA limpamos o SQLite ao trocar de usuário. A autenticação remota já
+       * foi validada, mas a sessão anterior ainda é a autoridade local. Então:
+       * 1. bloqueamos novos globalSync;
+       * 2. aguardamos um sync já em execução encerrar;
+       * 3. arquivamos/restauramos o workspace transacionalmente;
+       * 4. só depois publicamos a nova sessão.
+       */
+      const previousSessionUser = useAuthStore.getState().user;
+      let workspaceActivated = false;
+
+      pauseGlobalSyncForWorkspaceSwitch();
+
+      try {
+        const previousSyncIdle = await waitForGlobalSyncIdle(60000);
+
+        if (!previousSyncIdle) {
+          throw new Error('LOCAL_WORKSPACE_SYNC_BUSY');
+        }
+
+        await activateLocalWorkspaceForUser(userData);
+        workspaceActivated = true;
+        await login(String(mainToken), userData);
+      } catch (workspaceError) {
+        // Se a persistência da nova sessão falhar depois do swap, voltamos ao
+        // workspace anterior para não deixar autenticação A apontando para B.
+        if (workspaceActivated && previousSessionUser?.id) {
+          await activateLocalWorkspaceForUser(previousSessionUser).catch(() => {});
+        }
+        throw workspaceError;
+      } finally {
+        resumeGlobalSyncAfterWorkspaceSwitch();
+      }
 
       console.log('⏳ [Login] Sessão estabelecida. Baixando roteiro...');
-      await globalSync(); 
+      await globalSync();
 
       setIsLoading(false);
       router.replace('/(tabs)' as any); 
@@ -385,19 +423,20 @@ export default function LoginScreen() {
           )}
 
           <View style={styles.inputGroup}>
-            <View style={[styles.inputContainer, { backgroundColor: inputBgColor, borderColor: focusedInput === 'email' ? accent : borderColor }]}>
-              <Mail color={focusedInput === 'email' ? accent : placeholderColor} size={20} style={styles.inputIcon} />
+            <View style={[styles.inputContainer, { backgroundColor: inputBgColor, borderColor: focusedInput === 'identifier' ? accent : borderColor }]}>
+              <UserRound color={focusedInput === 'identifier' ? accent : placeholderColor} size={20} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: inputTextColor }]}
-                testID="login-email-input"
-                accessibilityLabel="login-email-input"
-                placeholder={i18n.t('emailPlaceholder')}
+                testID="login-identifier-input"
+                accessibilityLabel="login-identifier-input"
+                placeholder={i18n.t('loginIdentifierPlaceholder')}
                 placeholderTextColor={placeholderColor}
                 autoCapitalize="none"
-                keyboardType="email-address"
-                value={email}
-                onChangeText={setEmail}
-                onFocus={() => setFocusedInput('email')}
+                keyboardType="default"
+                autoCorrect={false}
+                value={identifier}
+                onChangeText={setIdentifier}
+                onFocus={() => setFocusedInput('identifier')}
                 onBlur={() => setFocusedInput(null)}
               />
             </View>
@@ -425,29 +464,29 @@ export default function LoginScreen() {
           </View>
 
           <Pressable
-            testID="login-remember-email"
-            accessibilityLabel={i18n.t('rememberEmail')}
+            testID="login-remember-identifier"
+            accessibilityLabel={i18n.t('rememberLoginIdentifier')}
             accessibilityRole="checkbox"
-            accessibilityState={{ checked: rememberEmail }}
-            onPress={toggleRememberEmail}
+            accessibilityState={{ checked: rememberLogin }}
+            onPress={toggleRememberLogin}
             style={styles.rememberRow}
           >
             <View
               style={[
                 styles.rememberCheckbox,
                 {
-                  borderColor: rememberEmail ? accent : borderColor,
-                  backgroundColor: rememberEmail ? accent : 'transparent',
+                  borderColor: rememberLogin ? accent : borderColor,
+                  backgroundColor: rememberLogin ? accent : 'transparent',
                 },
               ]}
             >
-              {rememberEmail && (
+              {rememberLogin && (
                 <Text style={[styles.rememberCheck, { color: accentText }]}>✓</Text>
               )}
             </View>
 
             <Text style={[styles.rememberText, { color: externalTextColor }]}>
-              {i18n.t('rememberEmail')}
+              {i18n.t('rememberLoginIdentifier')}
             </Text>
           </Pressable>
 

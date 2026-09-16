@@ -1091,17 +1091,22 @@ const isSurveyActiveToday = (
   return true;
 };
 
-export const createFreePortfolioVisitDraft =
+const freeVisitDraftInFlight =
+  new Map<string, Promise<any>>();
+
+const createFreePortfolioVisitDraftUnlocked =
   async ({
     projectId,
     userId,
     user,
     store,
+    allowRevisit = false,
   }: {
     projectId: string;
     userId: string;
     user: any;
     store: LocalFieldPortfolioStore;
+    allowRevisit?: boolean;
   }) => {
     const db =
       await ensureStorage();
@@ -1114,9 +1119,13 @@ export const createFreePortfolioVisitDraft =
      * antes de finalizar, reutilizamos o
      * mesmo UUID.
      *
-     * Uma visita concluída NÃO é
-     * reutilizada: novo toque cria uma
-     * nova visita legítima no mesmo dia.
+     * MOBILE_FIELD_PORTFOLIO_REVISIT_POLICY_V1
+     *
+     * Uma visita concluída hoje NÃO autoriza automaticamente
+     * outra visita. Revisita é uma intenção explícita da UI.
+     *
+     * Mesmo com allowRevisit=true, visita PENDENTE/EM_ANDAMENTO
+     * sempre é reutilizada para impedir duas execuções concorrentes.
      */
     const existing: any =
       await db.getFirstAsync(
@@ -1168,7 +1177,106 @@ export const createFreePortfolioVisitDraft =
       );
 
     if (existing?.id) {
+      /*
+       * MOBILE_FREE_VISIT_EXISTING_DRAFT_CLEANUP_V1
+       *
+       * Builds anteriores podiam ter colocado POR_VISITA
+       * em pesquisa_json apenas ao ABRIR a loja.
+       *
+       * Se a visita ainda não iniciou, removemos essa
+       * materialização antecipada.
+       */
+      const existingStatus =
+        String(
+          existing?.status ||
+          ''
+        )
+          .trim()
+          .toUpperCase();
+
+      const existingHasCheckin =
+        Boolean(
+          existing?.checkin_at ||
+          existing?.checkinAt
+        );
+
+      if (
+        !existingHasCheckin &&
+        (
+          existingStatus === 'PENDENTE' ||
+          existingStatus === 'AGENDADA'
+        )
+      ) {
+        const cleanupAt =
+          new Date().toISOString();
+
+        await db.runAsync(
+          `
+            UPDATE visits
+            SET
+              pesquisa_json = '[]',
+              updated_at = ?
+            WHERE id = ?
+          `,
+          [
+            cleanupAt,
+            existing.id,
+          ]
+        );
+
+        existing.pesquisa_json =
+          '[]';
+
+        existing.updated_at =
+          cleanupAt;
+      }
+
       return existing;
+    }
+
+    if (!allowRevisit) {
+      const completedToday: any =
+        await db.getFirstAsync(
+          `
+            SELECT *
+            FROM visits
+            WHERE loja_id = ?
+              AND substr(COALESCE(data_programada, ''), 1, 10) = ?
+              AND UPPER(COALESCE(field_visit_mode, '')) = 'CARTEIRA_LIVRE'
+              AND UPPER(COALESCE(status, '')) IN (
+                'REALIZADA',
+                'COMPLETA',
+                'COMPLETO',
+                'CONCLUIDA',
+                'CONCLUÍDA',
+                'FINALIZADA',
+                'VISITADA',
+                'JUSTIFICADA'
+              )
+            ORDER BY datetime(
+              COALESCE(updated_at, checkout_at, checkin_at, data_programada)
+            ) DESC
+            LIMIT 1
+          `,
+          [String(store.loja_id), today]
+        );
+
+      if (completedToday?.id) {
+        await addAppLog({
+          level: 'INFO',
+          module: 'FIELD_PORTFOLIO',
+          action: 'REVISIT_REQUIRES_EXPLICIT_INTENT',
+          message: 'Visita concluída hoje preservada; revisita exige ação explícita.',
+          metadata: {
+            visitId: completedToday.id,
+            projectId,
+            userId,
+            lojaId: store.loja_id,
+          },
+        }).catch(() => {});
+
+        return completedToday;
+      }
     }
 
     const state: any =
@@ -1213,36 +1321,18 @@ export const createFreePortfolioVisitDraft =
       custom?.project ||
       {};
 
-    const surveysRows: any[] =
-      await db.getAllAsync(
-        `
-          SELECT *
-          FROM pesquisas
-        `
-      );
-
-    const surveys =
-      surveysRows
-        .map((row: any) => {
-          const raw =
-            safeParse(
-              row.pesquisa_raw_json,
-              row
-            );
-
-          return {
-            row,
-            raw,
-          };
-        })
-        .filter(({ row, raw }) =>
-          isSurveyActiveToday(
-            row,
-            raw,
-            today
-          )
-        )
-        .map(({ raw }) => raw);
+    /*
+     * MOBILE_FREE_VISIT_DRAFT_NO_TASKS_V2
+     *
+     * Abrir uma loja da Carteira Livre cria somente
+     * um DRAFT operacional local.
+     *
+     * DEFINIÇÃO disponível != obrigação existente.
+     *
+     * POR_VISITA e LOJA_CICLO só são materializados
+     * quando o CHECK-IN realmente acontece.
+     */
+    const surveys: any[] = [];
 
     const lojaRaw =
       store.loja_raw || {};
@@ -1410,8 +1500,10 @@ export const createFreePortfolioVisitDraft =
           store.loja_id,
         lojaNome:
           store.loja_nome,
-        surveys:
-          surveys.length,
+        materializedSurveys:
+          0,
+        allowRevisit:
+          allowRevisit === true,
       },
     }).catch(() => {});
 
@@ -1419,4 +1511,1646 @@ export const createFreePortfolioVisitDraft =
       `SELECT * FROM visits WHERE id = ?`,
       [id]
     );
+  };
+
+export const createFreePortfolioVisitDraft =
+  async (args: {
+    projectId: string;
+    userId: string;
+    user: any;
+    store: LocalFieldPortfolioStore;
+    allowRevisit?: boolean;
+  }) => {
+    const key = [
+      String(args.projectId),
+      String(args.userId),
+      String(args.store?.loja_id || ''),
+    ].join('::');
+
+    const current =
+      freeVisitDraftInFlight.get(key);
+
+    if (current) {
+      return await current;
+    }
+
+    const operation =
+      createFreePortfolioVisitDraftUnlocked(args);
+
+    freeVisitDraftInFlight.set(
+      key,
+      operation
+    );
+
+    try {
+      return await operation;
+    } finally {
+      if (
+        freeVisitDraftInFlight.get(key) ===
+        operation
+      ) {
+        freeVisitDraftInFlight.delete(key);
+      }
+    }
+  };
+
+
+/*
+ * MOBILE_FREE_VISIT_CHECKIN_MATERIALIZATION_V1
+ *
+ * Fonte do conhecimento:
+ * MOBILE_EXECUTION_MANIFEST_V1 confirmado no último sync.
+ *
+ * Fato gerador:
+ * CHECK-IN da visita Carteira Livre.
+ *
+ * Resultado atômico:
+ * - POR_VISITA entra em visits.pesquisa_json;
+ * - LOJA_CICLO entra em other_tasks;
+ * - AVULSO é ignorado aqui;
+ * - repetir o mesmo CHECK-IN é idempotente.
+ */
+export const materializeFreeVisitExecutionFromManifestInDb =
+  async ({
+    db,
+    projectId,
+    userId,
+    visit,
+    checkinAt,
+  }: {
+    db: any;
+    projectId: string;
+    userId: string;
+    visit: any;
+    checkinAt: string;
+  }) => {
+
+    const normalizeToken =
+      (value: any) =>
+        String(
+          value ||
+          ''
+        )
+          .normalize('NFD')
+          .replace(
+            /[\u0300-\u036f]/g,
+            ''
+          )
+          .trim()
+          .toUpperCase()
+          .replace(
+            /\s+/g,
+            '_'
+          );
+
+
+    const normalizeDateOnly =
+      (value: any) => {
+        const raw =
+          String(
+            value ||
+            ''
+          ).trim();
+
+        const match =
+          raw.match(
+            /^(\d{4})-(\d{2})-(\d{2})/
+          );
+
+        if (!match) {
+          return '';
+        }
+
+        return (
+          `${match[1]}-${match[2]}-${match[3]}`
+        );
+      };
+
+
+    const parseDateOnly =
+      (value: string) => {
+        const match =
+          String(
+            value ||
+            ''
+          ).match(
+            /^(\d{4})-(\d{2})-(\d{2})$/
+          );
+
+        if (!match) {
+          return null;
+        }
+
+        const year =
+          Number(
+            match[1]
+          );
+
+        const month =
+          Number(
+            match[2]
+          );
+
+        const day =
+          Number(
+            match[3]
+          );
+
+        const date =
+          new Date(
+            Date.UTC(
+              year,
+              month - 1,
+              day,
+              12,
+              0,
+              0,
+              0
+            )
+          );
+
+        return {
+          year,
+          month,
+          day,
+          date,
+        };
+      };
+
+
+    const formatDateOnly =
+      (date: Date) =>
+        `${date.getUTCFullYear()}-${String(
+          date.getUTCMonth() + 1
+        ).padStart(
+          2,
+          '0'
+        )}-${String(
+          date.getUTCDate()
+        ).padStart(
+          2,
+          '0'
+        )}`;
+
+
+    const getCyclePeriod =
+      (
+        dateKey: string,
+        frequencyRaw: any
+      ) => {
+        const parsed =
+          parseDateOnly(
+            dateKey
+          );
+
+        if (!parsed) {
+          return {
+            start:
+              dateKey,
+            end:
+              dateKey,
+          };
+        }
+
+        const frequency =
+          normalizeToken(
+            frequencyRaw
+          );
+
+        if (
+          frequency === 'DIARIA' ||
+          frequency === 'DIARIO' ||
+          frequency === 'DAILY' ||
+          frequency === 'POR_VISITA' ||
+          frequency === 'POR_VISITA'
+        ) {
+          return {
+            start:
+              dateKey,
+            end:
+              dateKey,
+          };
+        }
+
+        if (
+          frequency === 'SEMANAL' ||
+          frequency === 'WEEKLY'
+        ) {
+          const weekday =
+            parsed.date
+              .getUTCDay();
+
+          const mondayOffset =
+            weekday === 0
+              ? -6
+              : 1 - weekday;
+
+          const start =
+            new Date(
+              parsed.date
+                .getTime()
+            );
+
+          start.setUTCDate(
+            start.getUTCDate() +
+            mondayOffset
+          );
+
+          const end =
+            new Date(
+              start.getTime()
+            );
+
+          end.setUTCDate(
+            end.getUTCDate() +
+            6
+          );
+
+          return {
+            start:
+              formatDateOnly(
+                start
+              ),
+
+            end:
+              formatDateOnly(
+                end
+              ),
+          };
+        }
+
+        if (
+          frequency === 'QUINZENAL' ||
+          frequency === 'FORTNIGHTLY'
+        ) {
+          const firstHalf =
+            parsed.day <= 15;
+
+          const start =
+            new Date(
+              Date.UTC(
+                parsed.year,
+                parsed.month - 1,
+                firstHalf
+                  ? 1
+                  : 16,
+                12,
+                0,
+                0,
+                0
+              )
+            );
+
+          const end =
+            firstHalf
+              ? new Date(
+                  Date.UTC(
+                    parsed.year,
+                    parsed.month - 1,
+                    15,
+                    12,
+                    0,
+                    0,
+                    0
+                  )
+                )
+              : new Date(
+                  Date.UTC(
+                    parsed.year,
+                    parsed.month,
+                    0,
+                    12,
+                    0,
+                    0,
+                    0
+                  )
+                );
+
+          return {
+            start:
+              formatDateOnly(
+                start
+              ),
+
+            end:
+              formatDateOnly(
+                end
+              ),
+          };
+        }
+
+        if (
+          frequency === 'MENSAL' ||
+          frequency === 'MONTHLY'
+        ) {
+          const start =
+            new Date(
+              Date.UTC(
+                parsed.year,
+                parsed.month - 1,
+                1,
+                12,
+                0,
+                0,
+                0
+              )
+            );
+
+          const end =
+            new Date(
+              Date.UTC(
+                parsed.year,
+                parsed.month,
+                0,
+                12,
+                0,
+                0,
+                0
+              )
+            );
+
+          return {
+            start:
+              formatDateOnly(
+                start
+              ),
+
+            end:
+              formatDateOnly(
+                end
+              ),
+          };
+        }
+
+        return {
+          start:
+            dateKey,
+          end:
+            dateKey,
+        };
+      };
+
+
+    const getWeekday =
+      (
+        dateKey: string
+      ) => {
+        const parsed =
+          parseDateOnly(
+            dateKey
+          );
+
+        if (!parsed) {
+          return {
+            number:
+              null,
+            key:
+              null,
+          };
+        }
+
+        const number =
+          parsed.date
+            .getUTCDay();
+
+        const keys = [
+          'SUN',
+          'MON',
+          'TUE',
+          'WED',
+          'THU',
+          'FRI',
+          'SAT',
+        ];
+
+        return {
+          number,
+          key:
+            keys[number] ||
+            null,
+        };
+      };
+
+
+    const surveyIsRepeatable =
+      (
+        survey: any
+      ) => {
+        const truthy =
+          (value: any) => {
+            if (
+              value === true ||
+              value === 1
+            ) {
+              return true;
+            }
+
+            return [
+              'TRUE',
+              '1',
+              'SIM',
+              'YES',
+              'S',
+              'Y',
+            ].includes(
+              normalizeToken(
+                value
+              )
+            );
+          };
+
+        if (
+          truthy(
+            survey?.repetivel
+          ) ||
+          truthy(
+            survey?.repeatable
+          )
+        ) {
+          return true;
+        }
+
+        const scan =
+          (
+            questions: any[]
+          ): boolean => {
+            for (
+              const question
+              of questions || []
+            ) {
+              const validation =
+                question?.validacao ||
+                question?.validacoes ||
+                {};
+
+              if (
+                truthy(
+                  question?.repetivel
+                ) ||
+                truthy(
+                  question?.repeatable
+                ) ||
+                truthy(
+                  validation?.repetivel
+                ) ||
+                truthy(
+                  validation?.repeatable
+                )
+              ) {
+                return true;
+              }
+
+              const children =
+                question?.perguntas ||
+                question?.questions ||
+                question?.questoes ||
+                question?.children ||
+                question?.itens ||
+                [];
+
+              if (
+                Array.isArray(
+                  children
+                ) &&
+                scan(
+                  children
+                )
+              ) {
+                return true;
+              }
+            }
+
+            return false;
+          };
+
+        return scan(
+          safeArray(
+            survey?.perguntas ||
+            survey?.questions ||
+            survey?.questoes
+          )
+        );
+      };
+
+
+    const state: any =
+      await db.getFirstAsync(
+        `
+          SELECT
+            project_config_json,
+            updated_at
+          FROM field_portfolio_state
+          WHERE project_id = ?
+            AND user_id = ?
+          LIMIT 1
+        `,
+        [
+          String(
+            projectId
+          ),
+          String(
+            userId
+          ),
+        ]
+      );
+
+
+    const projectConfig =
+      safeParse(
+        state?.project_config_json,
+        {}
+      );
+
+
+    const manifest =
+      projectConfig
+        ?.executionManifest ||
+      projectConfig
+        ?.execution_manifest ||
+      null;
+
+
+    const contract =
+      String(
+        manifest?.contract ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+
+
+    /*
+     * MOBILE_FREE_VISIT_MANIFEST_REVISION_REQUIRED_V1
+     *
+     * Toda obrigação offline registra exatamente
+     * qual configuração operacional a materializou.
+     */
+    const manifestRevision =
+      String(
+        manifest?.manifest_revision ||
+        manifest?.manifestRevision ||
+        projectConfig
+          ?.executionManifestRevision ||
+        projectConfig
+          ?.execution_manifest_revision ||
+        ''
+      )
+        .trim();
+
+
+    if (
+      contract !==
+      'MOBILE_EXECUTION_MANIFEST_V1'
+    ) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_MANIFEST_REQUIRED: sincronize o aparelho antes de iniciar uma Carteira Livre.'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_MANIFEST_REQUIRED';
+
+      throw error;
+    }
+
+
+    if (
+      !manifestRevision
+    ) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_MANIFEST_REVISION_REQUIRED: sincronize o aparelho novamente antes de iniciar uma Carteira Livre.'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_MANIFEST_REVISION_REQUIRED';
+
+      throw error;
+    }
+
+
+
+    /*
+     * MOBILE_FREE_VISIT_OPERATIONAL_DATE_V2
+     *
+     * A data operacional da Carteira Livre nasce no CHECK-IN.
+     *
+     * checkinAt é um TIMESTAMP UTC.
+     * Ciclos, dias úteis e dias_execucao usam DATE-ONLY
+     * convertido na timezone oficial do projeto.
+     *
+     * Nunca inferir o dia civil por substring do UTC.
+     */
+    const manifestTimezone =
+      String(
+        manifest?.timezone ||
+        projectConfig?.timezone ||
+        projectConfig?.timeZone ||
+        ''
+      ).trim();
+
+
+    if (
+      !manifestTimezone
+    ) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_TIMEZONE_REQUIRED: o manifesto offline não contém a timezone do projeto.'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_TIMEZONE_REQUIRED';
+
+      throw error;
+    }
+
+
+    const checkinTimestamp =
+      String(
+        checkinAt ||
+        visit?.checkin_at ||
+        visit?.checkinAt ||
+        ''
+      ).trim();
+
+
+    if (
+      !checkinTimestamp
+    ) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_CHECKIN_TIMESTAMP_REQUIRED'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_CHECKIN_TIMESTAMP_REQUIRED';
+
+      throw error;
+    }
+
+
+    const checkinDate =
+      new Date(
+        checkinTimestamp
+      );
+
+
+    if (
+      Number.isNaN(
+        checkinDate.getTime()
+      )
+    ) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_CHECKIN_TIMESTAMP_INVALID'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_CHECKIN_TIMESTAMP_INVALID';
+
+      throw error;
+    }
+
+
+    const operationalParts =
+      new Intl.DateTimeFormat(
+        'en-US',
+        {
+          timeZone:
+            manifestTimezone,
+
+          year:
+            'numeric',
+
+          month:
+            '2-digit',
+
+          day:
+            '2-digit',
+        }
+      )
+        .formatToParts(
+          checkinDate
+        );
+
+
+    const operationalMap =
+      Object.fromEntries(
+        operationalParts.map(
+          part => [
+            part.type,
+            part.value,
+          ]
+        )
+      );
+
+
+    const today =
+      (
+        operationalMap.year &&
+        operationalMap.month &&
+        operationalMap.day
+      )
+        ? (
+            `${operationalMap.year}-${operationalMap.month}-${operationalMap.day}`
+          )
+        : '';
+
+
+    if (!today) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_DATE_INVALID: não foi possível determinar a data operacional da visita.'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_DATE_INVALID';
+
+      throw error;
+    }
+
+
+    const weekday =
+      getWeekday(
+        today
+      );
+
+
+    const workingDays =
+      safeArray(
+        manifest?.working_days ||
+        manifest?.workingDays
+      )
+        .map(
+          (
+            value: any
+          ) =>
+            Number(
+              value
+            )
+        )
+        .filter(
+          (
+            value: number
+          ) =>
+            Number.isInteger(
+              value
+            ) &&
+            value >= 0 &&
+            value <= 6
+        );
+
+
+    const projectAllowsDate =
+      workingDays.length === 0 ||
+      (
+        weekday.number !==
+          null &&
+        workingDays.includes(
+          Number(
+            weekday.number
+          )
+        )
+      );
+
+
+    const definitions =
+      safeArray(
+        manifest?.surveys
+      );
+
+
+    const eligibleDefinitions =
+      projectAllowsDate
+        ? definitions.filter(
+            (
+              survey: any
+            ) => {
+              const active =
+                survey?.ativo ??
+                survey?.active ??
+                true;
+
+              if (
+                active === false ||
+                String(
+                  active
+                )
+                  .trim()
+                  .toLowerCase() ===
+                  'false' ||
+                String(
+                  active
+                ).trim() ===
+                  '0'
+              ) {
+                return false;
+              }
+
+
+              const start =
+                normalizeDateOnly(
+                  survey?.data_inicio ||
+                  survey?.dataInicio ||
+                  survey?.startDate
+                );
+
+
+              const end =
+                normalizeDateOnly(
+                  survey?.data_fim ||
+                  survey?.dataFim ||
+                  survey?.endDate
+                );
+
+
+              if (
+                start &&
+                today < start
+              ) {
+                return false;
+              }
+
+
+              if (
+                end &&
+                !end.startsWith(
+                  '2099'
+                ) &&
+                today > end
+              ) {
+                return false;
+              }
+
+
+              const frequency =
+                normalizeToken(
+                  survey?.frequencia ||
+                  survey?.frequency
+                );
+
+
+              /*
+               * dias_execucao restringe somente DIARIA.
+               * Semanal/quinzenal/mensal usam o ciclo normal.
+               */
+              if (
+                frequency === 'DIARIA' ||
+                frequency === 'DIARIO' ||
+                frequency === 'DAILY'
+              ) {
+                const executionDays =
+                  safeArray(
+                    survey
+                      ?.dias_execucao ||
+                    survey
+                      ?.diasExecucao ||
+                    survey
+                      ?.executionDays
+                  )
+                    .map(
+                      normalizeToken
+                    )
+                    .filter(
+                      Boolean
+                    );
+
+                if (
+                  executionDays.length >
+                    0 &&
+                  (
+                    !weekday.key ||
+                    !executionDays.includes(
+                      String(
+                        weekday.key
+                      )
+                    )
+                  )
+                ) {
+                  return false;
+                }
+              }
+
+
+              const activation =
+                normalizeToken(
+                  survey
+                    ?.activation_policy ||
+                  survey
+                    ?.activationPolicy
+                );
+
+
+              const frequencyIsVisit =
+                frequency ===
+                  'POR_VISITA' ||
+                frequency ===
+                  'POR_VISITA' ||
+                frequency ===
+                  'PER_VISIT';
+
+
+              const scope =
+                normalizeToken(
+                  survey
+                    ?.escopo_execucao ||
+                  survey
+                    ?.escopoExecucao
+                );
+
+
+              return (
+                activation ===
+                  'ON_VISIT_START' ||
+                activation ===
+                  'ON_STORE_VISIT_START' ||
+                frequencyIsVisit ||
+                scope ===
+                  'LOJA_CICLO'
+              );
+            }
+          )
+        : [];
+
+
+    const perVisitDefinitions =
+      eligibleDefinitions.filter(
+        (
+          survey: any
+        ) => {
+          const activation =
+            normalizeToken(
+              survey
+                ?.activation_policy ||
+              survey
+                ?.activationPolicy
+            );
+
+          const frequency =
+            normalizeToken(
+              survey
+                ?.frequencia ||
+              survey
+                ?.frequency
+            );
+
+          return (
+            activation ===
+              'ON_VISIT_START' ||
+            frequency ===
+              'POR_VISITA' ||
+            frequency ===
+              'PER_VISIT'
+          );
+        }
+      );
+
+
+    const storeCycleDefinitions =
+      eligibleDefinitions.filter(
+        (
+          survey: any
+        ) => {
+          const activation =
+            normalizeToken(
+              survey
+                ?.activation_policy ||
+              survey
+                ?.activationPolicy
+            );
+
+          const scope =
+            normalizeToken(
+              survey
+                ?.escopo_execucao ||
+              survey
+                ?.escopoExecucao
+            );
+
+          return (
+            activation ===
+              'ON_STORE_VISIT_START' ||
+            scope ===
+              'LOJA_CICLO'
+          );
+        }
+      );
+
+
+    const currentVisit: any =
+      await db.getFirstAsync(
+        `
+          SELECT *
+          FROM visits
+          WHERE id = ?
+          LIMIT 1
+        `,
+        [
+          String(
+            visit?.id
+          ),
+        ]
+      );
+
+
+    if (!currentVisit?.id) {
+      const error: any =
+        new Error(
+          'MOBILE_EXECUTION_VISIT_NOT_FOUND'
+        );
+
+      error.code =
+        'MOBILE_EXECUTION_VISIT_NOT_FOUND';
+
+      throw error;
+    }
+
+
+    const existingVisitSurveys =
+      safeArray(
+        safeParse(
+          currentVisit
+            ?.pesquisa_json,
+          []
+        )
+      );
+
+
+    const visitSurveyMap =
+      new Map<
+        string,
+        any
+      >();
+
+
+    for (
+      const survey
+      of existingVisitSurveys
+    ) {
+      const surveyId =
+        String(
+          survey?.id ||
+          survey?.pesquisa_id ||
+          survey?.pesquisaId ||
+          ''
+        ).trim();
+
+      if (surveyId) {
+        visitSurveyMap.set(
+          surveyId,
+          survey
+        );
+      }
+    }
+
+
+    for (
+      const survey
+      of perVisitDefinitions
+    ) {
+      const surveyId =
+        String(
+          survey?.id ||
+          survey?.pesquisa_id ||
+          survey?.pesquisaId ||
+          ''
+        ).trim();
+
+      if (!surveyId) {
+        continue;
+      }
+
+      visitSurveyMap.set(
+        surveyId,
+        {
+          ...survey,
+
+          id:
+            surveyId,
+
+          pesquisa_id:
+            surveyId,
+
+          materialized_at:
+            checkinAt,
+
+          materialized_by:
+            'MOBILE_CHECKIN',
+
+          field_visit_mode:
+            'CARTEIRA_LIVRE',
+
+          source_visit_id:
+            String(
+              visit?.id
+            ),
+        }
+      );
+    }
+
+
+    const visitSurveys =
+      Array.from(
+        visitSurveyMap.values()
+      );
+
+
+    const previousVisitConfig =
+      safeParse(
+        currentVisit
+          ?.project_config_json,
+        {}
+      );
+
+
+    const nextVisitConfig = {
+      ...previousVisitConfig,
+
+      execution_manifest: {
+        contract:
+          contract,
+
+        manifest_version:
+          manifest
+            ?.manifest_version ??
+          manifest
+            ?.manifestVersion ??
+          null,
+
+        manifest_revision:
+          manifestRevision,
+
+        generated_at:
+          manifest
+            ?.generated_at ??
+          manifest
+            ?.generatedAt ??
+          null,
+
+        received_at:
+          projectConfig
+            ?.executionManifestReceivedAt ||
+          projectConfig
+            ?.execution_manifest_received_at ||
+          state
+            ?.updated_at ||
+          null,
+
+        materialized_at:
+          checkinAt,
+      },
+    };
+
+
+    await db.runAsync(
+      `
+        UPDATE visits
+        SET
+          pesquisa_json = ?,
+          project_config_json = ?,
+          updated_at = ?
+        WHERE id = ?
+      `,
+      [
+        JSON.stringify(
+          visitSurveys
+        ),
+
+        JSON.stringify(
+          nextVisitConfig
+        ),
+
+        checkinAt,
+
+        String(
+          visit?.id
+        ),
+      ]
+    );
+
+
+    const storeId =
+      String(
+        currentVisit?.loja_id ||
+        visit?.loja_id ||
+        ''
+      ).trim();
+
+
+    if (
+      storeCycleDefinitions.length >
+        0 &&
+      !storeId
+    ) {
+      const error: any =
+        new Error(
+          'MOBILE_STORE_CYCLE_WITHOUT_STORE'
+        );
+
+      error.code =
+        'MOBILE_STORE_CYCLE_WITHOUT_STORE';
+
+      throw error;
+    }
+
+
+    const materializedTaskIds:
+      string[] = [];
+
+
+    for (
+      const survey
+      of storeCycleDefinitions
+    ) {
+      const surveyId =
+        String(
+          survey?.id ||
+          survey?.pesquisa_id ||
+          survey?.pesquisaId ||
+          ''
+        ).trim();
+
+      if (!surveyId) {
+        continue;
+      }
+
+
+      const frequency =
+        normalizeToken(
+          survey?.frequencia ||
+          survey?.frequency ||
+          'DIARIA'
+        );
+
+
+      const period =
+        getCyclePeriod(
+          today,
+          frequency
+        );
+
+
+      const taskId =
+        `task-${surveyId}-${storeId}-${period.start}`;
+
+
+      const existingTask: any =
+        await db.getFirstAsync(
+          `
+            SELECT *
+            FROM other_tasks
+            WHERE id = ?
+            LIMIT 1
+          `,
+          [
+            taskId,
+          ]
+        );
+
+
+      /*
+       * Se o snapshot do servidor já criou a tarefa,
+       * não voltamos seu estado para PENDENTE.
+       */
+      if (existingTask?.id) {
+        materializedTaskIds.push(
+          taskId
+        );
+
+        continue;
+      }
+
+
+      const countRow: any =
+        await db.getFirstAsync(
+          `
+            SELECT
+              COUNT(*) AS total
+            FROM coletas
+            WHERE pesquisa_id = ?
+              AND loja_id = ?
+              AND substr(
+                COALESCE(
+                  NULLIF(
+                    data_programada,
+                    ''
+                  ),
+                  NULLIF(
+                    data_inicio,
+                    ''
+                  ),
+                  NULLIF(
+                    created_at,
+                    ''
+                  ),
+                  ''
+                ),
+                1,
+                10
+              ) >= ?
+              AND substr(
+                COALESCE(
+                  NULLIF(
+                    data_programada,
+                    ''
+                  ),
+                  NULLIF(
+                    data_inicio,
+                    ''
+                  ),
+                  NULLIF(
+                    created_at,
+                    ''
+                  ),
+                  ''
+                ),
+                1,
+                10
+              ) <= ?
+              AND UPPER(
+                COALESCE(
+                  status,
+                  ''
+                )
+              ) IN (
+                'COMPLETA',
+                'COMPLETO',
+                'CONCLUIDA',
+                'CONCLUÍDA',
+                'REALIZADA',
+                'FINALIZADA'
+              )
+          `,
+          [
+            surveyId,
+            storeId,
+            period.start,
+            period.end,
+          ]
+        );
+
+
+      const currentCount =
+        Number(
+          countRow?.total ||
+          0
+        );
+
+
+      const repeatable =
+        surveyIsRepeatable(
+          survey
+        );
+
+
+      const initialStatus =
+        currentCount > 0
+          ? (
+              repeatable
+                ? 'EM_ANDAMENTO'
+                : 'REALIZADA'
+            )
+          : 'PENDENTE';
+
+
+      const questions =
+        safeArray(
+          survey?.perguntas ||
+          survey?.questions ||
+          survey?.questoes
+        );
+
+
+      const taskRaw = {
+        ...survey,
+
+        id:
+          taskId,
+
+        task_id:
+          taskId,
+
+        titulo:
+          survey?.titulo ||
+          survey?.nome ||
+          'Pesquisa',
+
+        pesquisa_id:
+          surveyId,
+
+        pesquisaId:
+          surveyId,
+
+        frequencia:
+          frequency,
+
+        escopo_execucao:
+          'LOJA_CICLO',
+
+        pesquisa_json:
+          questions,
+
+        perguntas:
+          questions,
+
+        loja_id:
+          storeId,
+
+        loja_nome:
+          currentVisit
+            ?.loja_nome ||
+          visit
+            ?.loja_nome ||
+          'Loja',
+
+        usuario_id:
+          String(
+            userId
+          ),
+
+        projectId:
+          String(
+            projectId
+          ),
+
+        project_id:
+          String(
+            projectId
+          ),
+
+        status:
+          initialStatus,
+
+        data_inicio:
+          period.start,
+
+        data_programada:
+          today,
+
+        data_vencimento:
+          period.end,
+
+        cycle_start:
+          period.start,
+
+        cycle_end:
+          period.end,
+
+        repetivel:
+          repeatable,
+
+        current_count:
+          currentCount,
+
+        standalone_status:
+          initialStatus,
+
+        task_source:
+          'FREE_VISIT_STARTED_OFFLINE',
+
+        field_visit_mode:
+          'CARTEIRA_LIVRE',
+
+        source_visit_id:
+          String(
+            visit?.id
+          ),
+
+        materialized_at:
+          checkinAt,
+
+        manifest_version:
+          manifest
+            ?.manifest_version ??
+          manifest
+            ?.manifestVersion ??
+          null,
+
+        manifest_revision:
+          manifestRevision,
+
+        manifest_generated_at:
+          manifest
+            ?.generated_at ??
+          manifest
+            ?.generatedAt ??
+          null,
+
+        project_config:
+          nextVisitConfig,
+
+        produtos:
+          safeArray(
+            projectConfig
+              ?.mobile_catalog
+              ?.produtos ||
+            projectConfig
+              ?.mobile_catalog
+              ?.products
+          ),
+      };
+
+
+      await db.runAsync(
+        `
+          INSERT OR IGNORE INTO other_tasks (
+            id,
+            titulo,
+            status,
+            frequencia,
+            data_vencimento,
+            task_raw_json,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          taskId,
+
+          taskRaw.titulo,
+
+          initialStatus,
+
+          frequency,
+
+          period.end,
+
+          JSON.stringify(
+            taskRaw
+          ),
+
+          checkinAt,
+        ]
+      );
+
+
+      materializedTaskIds.push(
+        taskId
+      );
+    }
+
+
+    return {
+      contract:
+        contract,
+
+      manifestVersion:
+        manifest
+          ?.manifest_version ??
+        manifest
+          ?.manifestVersion ??
+        null,
+
+      manifestRevision:
+        manifestRevision,
+
+      manifestGeneratedAt:
+        manifest
+          ?.generated_at ??
+        manifest
+          ?.generatedAt ??
+        null,
+
+      manifestReceivedAt:
+        projectConfig
+          ?.executionManifestReceivedAt ||
+        projectConfig
+          ?.execution_manifest_received_at ||
+        state
+          ?.updated_at ||
+        null,
+
+      materializedAt:
+        checkinAt,
+
+      visitSurveyIds:
+        perVisitDefinitions
+          .map(
+            (
+              survey: any
+            ) =>
+              String(
+                survey?.id ||
+                survey?.pesquisa_id ||
+                survey?.pesquisaId ||
+                ''
+              )
+          )
+          .filter(
+            Boolean
+          ),
+
+      taskIds:
+        materializedTaskIds,
+
+      pesquisaJson:
+        JSON.stringify(
+          visitSurveys
+        ),
+
+      projectConfigJson:
+        JSON.stringify(
+          nextVisitConfig
+        ),
+    };
   };

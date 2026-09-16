@@ -217,13 +217,39 @@ export const fetchSupervisorCommand =
         );
       }
 
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        throw new Error(
+          'SUPERVISOR_RESPONSE_INVALID'
+        );
+      }
+
+      const normalized: SupervisorCommandData = {
+        ...body,
+        team:
+          Array.isArray(body?.team)
+            ? body.team
+            : [],
+        priorities:
+          Array.isArray(body?.priorities)
+            ? body.priorities
+            : [],
+        criticalStores:
+          Array.isArray(body?.criticalStores)
+            ? body.criticalStores
+            : []
+      };
+
       await saveCache(
         String(projectId),
         String(userId),
-        body
+        normalized
       );
 
-      return body;
+      return normalized;
     } catch (error) {
       if (
         options
@@ -285,8 +311,13 @@ export const getFieldTeamMembers = (
           'ADMIN',
           'DIRETOR',
           'GERENTE',
+          'COORDENADOR',
           'BACKOFFICE',
-          'SUPERVISOR'
+          'SUPERVISOR',
+          'SUPORTE',
+          'LIDER DE SUPORTE',
+          'SUPPORT',
+          'SUPPORT LEAD'
         ].some(
           key =>
             role.includes(key)

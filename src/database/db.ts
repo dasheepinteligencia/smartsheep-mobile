@@ -8,6 +8,49 @@ const db = SQLite.openDatabaseSync(DB_NAME);
 
 export const getDBConnection = () => db;
 
+/*
+ * MOBILE_MULTIUSER_WORKSPACE_V1
+ *
+ * As tabelas operacionais legadas do Omni Field foram desenhadas como um
+ * workspace ativo único. Em vez de reescrever centenas de queries de uma vez,
+ * preservamos esse contrato e particionamos o dispositivo por usuário/projeto
+ * através de um cofre transacional.
+ *
+ * Trocar de usuário:
+ * 1. arquiva atomicamente o workspace ativo;
+ * 2. limpa apenas as tabelas operacionais ativas;
+ * 3. restaura o workspace do próximo usuário;
+ * 4. nunca descarta Outbox, coletas, visitas ou conflitos offline.
+ */
+const LOCAL_WORKSPACE_TABLES = [
+  'visits',
+  'other_tasks',
+  'scorecards',
+  'campanhas_gamificacao',
+  'pesquisas',
+  'coletas',
+  'justificativas',
+  'alerts',
+  'field_portfolio_state',
+  'field_portfolio_stores',
+  'sync_queue',
+  'sync_conflicts',
+  'sync_server_changes',
+] as const;
+
+const getWorkspaceProjectIdFromUser = (user: any): string =>
+  String(
+    user?.allowed_project_ids?.[0] ||
+      user?.allowedProjectIds?.[0] ||
+      user?.projectId ||
+      user?.project_id ||
+      user?.projeto_id ||
+      ''
+  ).trim();
+
+const getWorkspaceUserIdFromUser = (user: any): string =>
+  String(user?.id || user?.userId || user?.usuario_id || '').trim();
+
 export type AppLogLevel = 'INFO' | 'WARNING' | 'ERROR' | 'DEBUG';
 
 export type AppLogInput = {
@@ -761,6 +804,167 @@ const initializeDatabaseInternal = async () => {
     await addColumnIfMissing('sync_queue', 'attempts', 'INTEGER DEFAULT 0');
     await addColumnIfMissing('sync_queue', 'last_error', 'TEXT');
 
+    /*
+     * MOBILE_ENTERPRISE_OUTBOX_V2
+     *
+     * Outbox persistente resiliente.
+     */
+    await addColumnIfMissing(
+      'sync_queue',
+      'operation_key',
+      'TEXT'
+    );
+
+    await addColumnIfMissing(
+      'sync_queue',
+      'status',
+      "TEXT DEFAULT 'PENDING'"
+    );
+
+    await addColumnIfMissing(
+      'sync_queue',
+      'next_retry_at',
+      'TEXT'
+    );
+
+    await addColumnIfMissing(
+      'sync_queue',
+      'updated_at',
+      'TEXT'
+    );
+
+    /*
+     * MOBILE_DIAMOND_CONFLICT_LEDGER_V1
+     *
+     * CONFLICT é terminal para retry automático.
+     */
+    await addColumnIfMissing(
+      'sync_queue',
+      'conflict_code',
+      'TEXT'
+    );
+
+    await addColumnIfMissing(
+      'sync_queue',
+      'conflict_json',
+      'TEXT'
+    );
+
+    await addColumnIfMissing(
+      'sync_queue',
+      'conflict_at',
+      'TEXT'
+    );
+
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_sync_queue_status
+        ON sync_queue(status);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_queue_next_retry
+        ON sync_queue(next_retry_at);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_queue_operation_key
+        ON sync_queue(operation_key);
+    `);
+
+    /*
+     * MOBILE_DIAMOND_CONFLICT_LEDGER_V1
+     *
+     * Ledger persistente independente da outbox.
+     */
+    /*
+     * MOBILE_SYNC_STATE_V2
+     *
+     * Estado persistente do pull servidor -> mobile e evidências de
+     * alterações administrativas aplicadas localmente.
+     */
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sync_state (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS sync_server_changes (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        user_id TEXT,
+        entity_type TEXT,
+        entity_id TEXT,
+        visita_agendada_id TEXT,
+        registro_visita_id TEXT,
+        action TEXT NOT NULL,
+        server_changed_at TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        local_evidence_json TEXT,
+        orphan_evidence INTEGER DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sync_server_changes_project
+        ON sync_server_changes(project_id, server_changed_at);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_server_changes_orphan
+        ON sync_server_changes(orphan_evidence);
+    `);
+
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sync_conflicts (
+        id TEXT PRIMARY KEY,
+        queue_id INTEGER NOT NULL UNIQUE,
+        operation_key TEXT,
+        endpoint TEXT NOT NULL,
+        method TEXT,
+        payload TEXT NOT NULL,
+        http_status INTEGER,
+        conflict_code TEXT NOT NULL,
+        conflict_message TEXT,
+        response_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolution TEXT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_conflicts_queue_id
+        ON sync_conflicts(queue_id);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_conflicts_operation_key
+        ON sync_conflicts(operation_key);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_conflicts_code
+        ON sync_conflicts(conflict_code);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_conflicts_created_at
+        ON sync_conflicts(created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved_at
+        ON sync_conflicts(resolved_at);
+    `);
+
+    // MOBILE_MULTIUSER_WORKSPACE_V1
+    // Cofre local de workspaces. É uma evolução apenas do SQLite do aparelho;
+    // não existe migration Prisma/backend associada.
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS mobile_user_workspaces (
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        saved_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS mobile_workspace_state (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        project_id TEXT,
+        user_id TEXT,
+        activated_at TEXT,
+        updated_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mobile_user_workspaces_saved
+        ON mobile_user_workspaces(saved_at);
+    `);
+
     await addAppLog({
       level: 'INFO',
       module: 'DB',
@@ -791,6 +995,281 @@ export const initializeDatabase = async () => {
     });
 
   await databaseInitializing;
+};
+
+type LocalWorkspaceIdentity = {
+  projectId: string;
+  userId: string;
+};
+
+const readActiveLocalWorkspaceIdentity = async (): Promise<LocalWorkspaceIdentity | null> => {
+  const row: any = await db.getFirstAsync(`
+    SELECT project_id, user_id
+    FROM mobile_workspace_state
+    WHERE singleton_id = 1
+    LIMIT 1
+  `);
+
+  const projectId = String(row?.project_id || '').trim();
+  const userId = String(row?.user_id || '').trim();
+
+  return projectId && userId
+    ? { projectId, userId }
+    : null;
+};
+
+const setActiveLocalWorkspaceIdentity = async (identity: LocalWorkspaceIdentity) => {
+  const now = new Date().toISOString();
+
+  await db.runAsync(
+    `INSERT INTO mobile_workspace_state (
+       singleton_id, project_id, user_id, activated_at, updated_at
+     ) VALUES (1, ?, ?, ?, ?)
+     ON CONFLICT(singleton_id) DO UPDATE SET
+       project_id = excluded.project_id,
+       user_id = excluded.user_id,
+       activated_at = excluded.activated_at,
+       updated_at = excluded.updated_at`,
+    [identity.projectId, identity.userId, now, now]
+  );
+};
+
+const readOperationalWorkspaceSnapshot = async () => {
+  const tables: Record<string, any[]> = {};
+
+  for (const tableName of LOCAL_WORKSPACE_TABLES) {
+    try {
+      tables[tableName] = await db.getAllAsync(`SELECT * FROM ${tableName}`);
+    } catch {
+      tables[tableName] = [];
+    }
+  }
+
+  return {
+    version: 1,
+    capturedAt: new Date().toISOString(),
+    tables,
+  };
+};
+
+const persistOperationalWorkspaceSnapshot = async (identity: LocalWorkspaceIdentity) => {
+  const snapshot = await readOperationalWorkspaceSnapshot();
+  const savedAt = new Date().toISOString();
+
+  await db.runAsync(
+    `INSERT INTO mobile_user_workspaces (
+       project_id, user_id, snapshot_json, saved_at
+     ) VALUES (?, ?, ?, ?)
+     ON CONFLICT(project_id, user_id) DO UPDATE SET
+       snapshot_json = excluded.snapshot_json,
+       saved_at = excluded.saved_at`,
+    [
+      identity.projectId,
+      identity.userId,
+      JSON.stringify(snapshot),
+      savedAt,
+    ]
+  );
+};
+
+const clearOperationalWorkspaceTables = async () => {
+  // Ordem defensiva: primeiro dependentes/ledger, depois entidades-base.
+  const deleteOrder = [
+    'sync_conflicts',
+    'sync_queue',
+    'coletas',
+    'other_tasks',
+    'visits',
+    'scorecards',
+    'campanhas_gamificacao',
+    'pesquisas',
+    'justificativas',
+    'alerts',
+    'field_portfolio_stores',
+    'field_portfolio_state',
+    'sync_server_changes',
+  ];
+
+  for (const tableName of deleteOrder) {
+    await db.runAsync(`DELETE FROM ${tableName}`);
+  }
+};
+
+const restoreOperationalWorkspaceSnapshot = async (identity: LocalWorkspaceIdentity) => {
+  const row: any = await db.getFirstAsync(
+    `SELECT snapshot_json
+     FROM mobile_user_workspaces
+     WHERE project_id = ? AND user_id = ?
+     LIMIT 1`,
+    [identity.projectId, identity.userId]
+  );
+
+  if (!row?.snapshot_json) return false;
+
+  let parsed: any = null;
+
+  try {
+    parsed = JSON.parse(String(row.snapshot_json));
+  } catch {
+    parsed = null;
+  }
+
+  const tables = parsed?.tables;
+  if (!tables || typeof tables !== 'object') return false;
+
+  for (const tableName of LOCAL_WORKSPACE_TABLES) {
+    const rows = Array.isArray(tables?.[tableName])
+      ? tables[tableName]
+      : [];
+
+    if (!rows.length) continue;
+
+    const currentColumns = new Set(await getTableColumns(tableName));
+
+    for (const rowData of rows) {
+      if (!rowData || typeof rowData !== 'object') continue;
+
+      const columns = Object.keys(rowData).filter(column => currentColumns.has(column));
+      if (!columns.length) continue;
+
+      const placeholders = columns.map(() => '?').join(', ');
+      const values = columns.map(column => rowData[column] ?? null);
+
+      await db.runAsync(
+        `INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')})
+         VALUES (${placeholders})`,
+        values
+      );
+    }
+  }
+
+  return true;
+};
+
+const hasAnyOperationalWorkspaceData = async () => {
+  for (const tableName of ['visits', 'coletas', 'sync_queue', 'other_tasks', 'field_portfolio_stores']) {
+    try {
+      const row: any = await db.getFirstAsync(`SELECT COUNT(*) AS total FROM ${tableName}`);
+      if (Number(row?.total || 0) > 0) return true;
+    } catch {}
+  }
+
+  return false;
+};
+
+const workspaceIdentityFromUser = (user: any): LocalWorkspaceIdentity | null => {
+  const projectId = getWorkspaceProjectIdFromUser(user);
+  const userId = getWorkspaceUserIdFromUser(user);
+
+  return projectId && userId
+    ? { projectId, userId }
+    : null;
+};
+
+/*
+ * MOBILE_MULTIUSER_WORKSPACE_SESSION_ADOPT_V1
+ *
+ * Chamado quando uma sessão já existente é hidratada ao abrir o app.
+ * Se esta é a primeira execução após a atualização, o banco operacional atual
+ * pertence à sessão autenticada e passa a ser identificado sem ser limpo.
+ */
+export const ensureActiveLocalWorkspaceForUser = async (user: any) => {
+  const identity = workspaceIdentityFromUser(user);
+  if (!identity) return { ok: false, reason: 'WORKSPACE_CONTEXT_MISSING' as const };
+
+  await initializeDatabase();
+
+  let result: any = null;
+
+  await db.withTransactionAsync(async () => {
+    const active = await readActiveLocalWorkspaceIdentity();
+
+    if (!active) {
+      await setActiveLocalWorkspaceIdentity(identity);
+      result = { ok: true, adopted: true, restored: false };
+      return;
+    }
+
+    if (active.projectId === identity.projectId && active.userId === identity.userId) {
+      result = { ok: true, adopted: false, restored: false };
+      return;
+    }
+
+    await persistOperationalWorkspaceSnapshot(active);
+    await clearOperationalWorkspaceTables();
+    const restored = await restoreOperationalWorkspaceSnapshot(identity);
+    await setActiveLocalWorkspaceIdentity(identity);
+
+    result = { ok: true, adopted: false, restored, switched: true };
+  });
+
+  await addAppLog({
+    level: 'INFO',
+    module: 'DB',
+    action: 'LOCAL_WORKSPACE_SESSION_READY',
+    message: 'Workspace local da sessão foi confirmado.',
+    metadata: { projectId: identity.projectId, userId: identity.userId, ...result },
+  }).catch(() => {});
+
+  return result;
+};
+
+/*
+ * MOBILE_MULTIUSER_WORKSPACE_SWITCH_V1
+ *
+ * Chamado depois que as credenciais do próximo usuário foram validadas, mas
+ * ANTES de trocar a sessão Zustand/SecureStore. O swap inteiro ocorre em uma
+ * transação SQLite, impedindo que dados do usuário anterior sejam apagados ou
+ * enviados com a sessão do próximo usuário.
+ */
+export const activateLocalWorkspaceForUser = async (user: any) => {
+  const identity = workspaceIdentityFromUser(user);
+  if (!identity) throw new Error('LOCAL_WORKSPACE_CONTEXT_MISSING');
+
+  await initializeDatabase();
+
+  let result: any = null;
+
+  await db.withTransactionAsync(async () => {
+    const active = await readActiveLocalWorkspaceIdentity();
+
+    if (active && active.projectId === identity.projectId && active.userId === identity.userId) {
+      result = { ok: true, switched: false, restored: false };
+      return;
+    }
+
+    if (active) {
+      await persistOperationalWorkspaceSnapshot(active);
+    } else if (await hasAnyOperationalWorkspaceData()) {
+      // Cenário raro: atualização instalada quando não havia sessão persistida.
+      // Nunca descartamos o conteúdo sem dono: vai para uma quarentena auditável.
+      await persistOperationalWorkspaceSnapshot({
+        projectId: '__LEGACY_UNKNOWN__',
+        userId: `unknown_${Date.now()}`,
+      });
+    }
+
+    await clearOperationalWorkspaceTables();
+    const restored = await restoreOperationalWorkspaceSnapshot(identity);
+    await setActiveLocalWorkspaceIdentity(identity);
+
+    result = { ok: true, switched: true, restored };
+  });
+
+  await addAppLog({
+    level: 'INFO',
+    module: 'DB',
+    action: 'LOCAL_WORKSPACE_ACTIVATED',
+    message: 'Workspace local foi trocado sem descartar evidência offline.',
+    metadata: { projectId: identity.projectId, userId: identity.userId, ...result },
+  }).catch(() => {});
+
+  return result;
+};
+
+export const getActiveLocalWorkspace = async () => {
+  await initializeDatabase();
+  return readActiveLocalWorkspaceIdentity();
 };
 
 
@@ -937,23 +1416,17 @@ const localVisitHasUnsyncedWork = async (visitId: string, localData: any) => {
 };
 
 const deletePendingSyncQueueForVisit = async (visitId: string, localData: any) => {
-  try {
-    const patterns = [
-      visitId,
-      localData?.visita_id_json,
-      localData?.client_operation_id,
-    ]
-      .filter(Boolean)
-      .map((value) => `%${String(value)}%`);
-
-    if (patterns.length === 0) return;
-
-    const where = patterns.map(() => `payload LIKE ?`).join(' OR ');
-
-    await db.runAsync(`DELETE FROM sync_queue WHERE ${where}`, patterns);
-  } catch (error) {
-    console.warn('[DB] Falha ao remover fila local superada pelo servidor:', error);
-  }
+  /*
+   * MOBILE_SYNC_NO_SILENT_OUTBOX_DELETE_V2
+   *
+   * Nunca apagamos intenção offline porque um snapshot parece mais novo.
+   * A Outbox só sai por recibo explícito do backend. Alterações administrativas
+   * são tratadas pelo changefeed/tombstone e viram conflito preservado.
+   */
+  console.warn(
+    '[DB] Operação pendente preservada; snapshot não pode apagar Outbox.',
+    { visitId, clientOperationId: localData?.client_operation_id || null }
+  );
 };
 
 const getVisitConflictDecision = async (visitId: string, localData: any, serverVisit: any) => {
@@ -971,31 +1444,38 @@ const getVisitConflictDecision = async (visitId: string, localData: any, serverV
     };
   }
 
-  if (localTime > 0 && serverTime > 0) {
-    if (localTime > serverTime && hasUnsyncedWork) {
-      return {
-        winner: 'LOCAL',
-        localTime,
-        serverTime,
-        hasUnsyncedWork,
-        reason: 'pending-local-newer',
-      };
-    }
+  /*
+   * MOBILE_SYNC_PENDING_WORK_WINS_SNAPSHOT_V2
+   *
+   * Snapshot não é recibo nem evento causal. Enquanto houver trabalho não
+   * confirmado, preservamos o local. DELETE/REOPEN/CANCEL chegam pelo
+   * changefeed e têm autoridade explícita.
+   */
+  if (hasUnsyncedWork) {
+    return {
+      winner: 'LOCAL',
+      localTime,
+      serverTime,
+      hasUnsyncedWork,
+      reason: 'pending-local-awaiting-explicit-receipt-or-changefeed',
+    };
+  }
 
+  if (localTime > 0 && serverTime > 0) {
     return {
       winner: 'SERVER',
       localTime,
       serverTime,
       hasUnsyncedWork,
       reason: serverTime > localTime
-        ? 'server-newer'
+        ? 'server-newer-no-pending-work'
         : localTime > serverTime
-          ? 'local-newer-but-no-pending-sync-server-source-of-truth'
+          ? 'local-newer-but-already-confirmed-server-source-of-truth'
           : 'same-time-server-source-of-truth',
     };
   }
 
-  if (hasUnsyncedWork && localTime > 0 && !serverTime) {
+  if (localTime > 0 && !serverTime) {
     return {
       winner: 'LOCAL',
       localTime,
@@ -1226,12 +1706,9 @@ export const saveRoteiroCompletoOffline = async (
           continue;
         }
 
-        // Se o servidor venceu, qualquer operação local pendente daquela visita ficou obsoleta.
-        // Removemos da fila para evitar que uma justificativa/check-in antigo seja reenviado
-        // depois de o gestor já ter feito um ajuste mais recente no web.
-        if (localData && conflictDecision.hasUnsyncedWork) {
-          await deletePendingSyncQueueForVisit(visitId, localData);
-        }
+        // MOBILE_SYNC_NO_SILENT_OUTBOX_DELETE_V2
+        // Snapshot nunca descarta Outbox. Se houver alteração administrativa,
+        // o changefeed explícito cuidará da autoridade e preservará a evidência.
         const serverCheckinAt = v.checkin_at || v.checkinAt || v.data_checkin || v.entrada_at || null;
         const serverCheckoutAt = v.checkout_at || v.checkoutAt || v.data_checkout || v.saida_at || null;
 

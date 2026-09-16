@@ -1019,8 +1019,38 @@ export default function DashboardScreen() {
         const naoVenceu = !vencimento || vencimento >= todayStr;
 
         if (jaIniciou && naoVenceu) {
-          const freq = String(row.frequencia || raw.frequencia || '').toUpperCase();
-          const dependeDeVisita = freq.includes('VISITA') || freq.includes('DIARIA') || freq.includes('DIÁRIA');
+          const freq =
+            String(
+              row.frequencia ||
+              raw.frequencia ||
+              ''
+            )
+              .trim()
+              .toUpperCase();
+
+          /*
+           * MOBILE_STANDALONE_SCOPE_V1
+           *
+           * Frequência e escopo são conceitos diferentes.
+           * DIARIA / SEMANAL / MENSAL não significam
+           * dependência de visita.
+           */
+          const executionScope =
+            String(
+              raw.escopo_execucao ||
+              raw.executionScope ||
+              raw.execution_scope ||
+              (row as any).escopo_execucao ||
+              ''
+            )
+              .trim()
+              .toUpperCase();
+
+          const dependeDeVisita =
+            executionScope === 'POR_VISITA' ||
+            freq.includes('POR_VISITA') ||
+            freq.includes('POR VISITA') ||
+            freq.includes('PER VISIT');
 
           if (!dependeDeVisita || vHojeTotal > 0) {
             tAvulsaHojeTotal++;

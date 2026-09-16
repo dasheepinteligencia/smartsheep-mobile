@@ -401,7 +401,13 @@ const deleteAlertLocal = async (id: string) => {
   return new Date().toISOString();
 };
 
-export default function Alertas() {
+type AlertasProps = {
+  showBackButton?: boolean;
+};
+
+export default function Alertas({
+  showBackButton = true
+}: AlertasProps = {}) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { theme, language, accentColor } = useSettingsStore();
@@ -689,13 +695,17 @@ export default function Alertas() {
     <View>
       <View style={[styles.headerBackground, { backgroundColor: bg, borderBottomColor: border }]}>
         <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            style={[styles.headerIconBg, { backgroundColor: surface, borderColor: border }]}
-            onPress={() => router.back()}
-            activeOpacity={0.85}
-          >
-            <ArrowLeft size={22} color={textPrimary} />
-          </TouchableOpacity>
+          {showBackButton ? (
+            <TouchableOpacity
+              style={[styles.headerIconBg, { backgroundColor: surface, borderColor: border }]}
+              onPress={() => router.back()}
+              activeOpacity={0.85}
+            >
+              <ArrowLeft size={22} color={textPrimary} />
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.headerIconPlaceholder} />
+          )}
 
           <View style={{ flex: 1 }}>
             <Text style={[styles.pageTitle, { color: textPrimary }]}>{alertText('title', language)}</Text>
@@ -963,6 +973,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  headerIconPlaceholder: {
+    width: 42,
+    height: 42,
   },
 
   topCardWrapper: {

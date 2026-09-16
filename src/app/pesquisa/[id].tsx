@@ -13,10 +13,11 @@ import {
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { addAppLog, getDBConnection } from '../../database/db';
-import { addToSyncQueue } from '../../services/syncService';
+import { enqueueSyncOperationInDb } from '../../services/syncService';
 import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
+import { evaluateSurveyMatchAnswer, flattenSurveyQuestionsPreservingGroups, getSurveyMatchInlineState, resolveSingleSurveyProductIdFromAnswer, shouldShowProductBySurveyMatch } from '../../utils/surveyMatch';
 
 import { AppAlert } from '../../components/AppAlert';
 const normalizar = (val: any) => String(val || '').normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
@@ -1090,7 +1091,10 @@ export default function SurveyExecutionScreen() {
   const translate = useCallback(
       (key: string, fallback: string, params?: Record<string, string | number>) => {
           const value = t(key, params as any);
-          if (value && value !== key) return String(value);
+          const translated = String(value || '');
+          const isMissingMarker = translated.startsWith('[missing "') && translated.endsWith(' translation]');
+
+          if (translated && translated !== key && !isMissingMarker) return translated;
 
           return fallback.replace(/\{\{(\w+)\}\}/g, (_, paramKey) => String(params?.[paramKey] ?? ''));
       },
@@ -1324,12 +1328,12 @@ export default function SurveyExecutionScreen() {
           return;
       }
 
-      handleTextChange(
+      const applied = applyAnswerWithMatchValidation(
           selectionSheet.answerKey,
           option.value
       );
 
-      closeSelectionSheet();
+      if (applied) closeSelectionSheet();
   };
 
   const applySelectionSheet = () => {
@@ -1340,12 +1344,12 @@ export default function SurveyExecutionScreen() {
           return;
       }
 
-      handleTextChange(
+      const applied = applyAnswerWithMatchValidation(
           selectionSheet.answerKey,
           selectionSheet.selectedValues as any
       );
 
-      closeSelectionSheet();
+      if (applied) closeSelectionSheet();
   };
 
   useEffect(() => {
@@ -1421,14 +1425,7 @@ export default function SurveyExecutionScreen() {
   }, [id, pesquisaId]);
 
   const perguntas = useMemo(() => {
-      let listaPlana: any[] = [];
-      if (pesquisasRaw.length > 0) {
-          if (pesquisasRaw[0].perguntas) {
-              pesquisasRaw.forEach(p => { if (Array.isArray(p.perguntas)) listaPlana = [...listaPlana, ...p.perguntas]; });
-          } else {
-              listaPlana = pesquisasRaw;
-          }
-      }
+      const listaPlana = flattenSurveyQuestionsPreservingGroups(pesquisasRaw);
 
       return listaPlana.map((p: any) => {
           let v = p.validacao || {};
@@ -1485,7 +1482,7 @@ export default function SurveyExecutionScreen() {
               acao_estoque: acaoRaw || {},
               escopo: String(p.escopo || v.escopo || 'GLOBAL').toUpperCase()
           };
-      }).sort((a: any, b: any) => (Number(a.ordem) || 999) - (Number(b.ordem) || 999));
+      });
   }, [pesquisasRaw]);
 
   const perguntasLookup = useMemo(() => {
@@ -1638,6 +1635,7 @@ export default function SurveyExecutionScreen() {
       if (f.categoriaId && prodCategoriaId !== f.categoriaId) return false;
       if (f.subcategoriaId && prodSubcategoriaId !== f.subcategoriaId) return false;
       if (f.marca?.trim().toLowerCase() && prod.marca?.trim().toLowerCase() !== f.marca?.trim().toLowerCase()) return false;
+      if (!shouldShowProductBySurveyMatch(p, prod, perguntas, answers, sortedProdutosDoMix)) return false;
 
       return true;
   };
@@ -1668,7 +1666,7 @@ export default function SurveyExecutionScreen() {
       });
 
       return cache;
-  }, [perguntas, sortedProdutosDoMix]);
+  }, [perguntas, sortedProdutosDoMix, answers]);
 
   const buildProductOptionsForQuestion = useCallback((pergunta: any) => {
       return productOptionsByQuestionId.get(String(pergunta.id)) || [];
@@ -2026,6 +2024,67 @@ const handleWatermarkImageLoaded = async () => {
       }
   };
 
+
+
+  const applyAnswerWithMatchValidation = (answerKey: string, value: any) => {
+      // A seleção nunca abre popup de Match.
+      // Igual ao web: a inconsistência fica visível de forma inline e
+      // AVISO/BLOQUEAR só entram em ação quando o usuário tenta salvar.
+      handleTextChange(answerKey, value as any);
+      return true;
+  };
+
+  const renderSurveyMatchInlineMessage = (pergunta: any, answerKey: string) => {
+      const state = getSurveyMatchInlineState(
+          pergunta,
+          answers[answerKey],
+          perguntas,
+          answers,
+          sortedProdutosDoMix
+      );
+
+      if (state.kind === 'none') return null;
+
+      const message =
+          state.reason === 'WAIT_SOURCE'
+              ? translate(
+                  'surveyMatchWaitSource',
+                  'Selecione primeiro o produto na pergunta base.'
+                )
+              : state.reason === 'NO_MAPPING'
+                  ? translate(
+                      'surveyMatchNoMapping',
+                      'O produto selecionado na pergunta base não possui match cadastrado.'
+                    )
+                  : state.config.message || translate(
+                      'surveyMatchInvalidSelection',
+                      'O produto selecionado não corresponde aos matches configurados para o produto base.'
+                    );
+
+      const color =
+          state.kind === 'error'
+              ? '#DC2626'
+              : state.kind === 'warning'
+                  ? '#F97316'
+                  : textSecondary;
+
+      const Icon =
+          state.kind === 'error'
+              ? XCircle
+              : state.kind === 'warning'
+                  ? AlertTriangle
+                  : Package;
+
+      return (
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginTop: 7 }}>
+              <Icon size={13} color={color} style={{ marginTop: 1 }} />
+              <Text style={{ color, fontSize: 11, lineHeight: 16, flex: 1 }}>
+                  {message}
+              </Text>
+          </View>
+      );
+  };
+
   const scrollToError = (key: string) => {
       if (layoutRefs.current[key] !== undefined && scrollViewRef.current) {
           scrollViewRef.current.scrollTo({ y: Math.max(0, layoutRefs.current[key] - 50), animated: true });
@@ -2170,9 +2229,21 @@ const handleWatermarkImageLoaded = async () => {
               const perguntaConfig = perguntas.find(p => String(p.id) === String(pId));
               if (!perguntaConfig || !isQuestionVisible(perguntaConfig, prodId || undefined)) continue;
 
+              // MOBILE_PRODUCT_ID_CANONICAL_V1
+              // Perguntas globais alimentadas por PRODUTOS guardam o nome/label
+              // como valor visual. O backend de Match precisa também da identidade
+              // canônica em produto_id, igual ao renderer web.
+              const canonicalProductId =
+                  prodId ||
+                  resolveSingleSurveyProductIdFromAnswer(
+                      perguntaConfig,
+                      baseAnswer,
+                      produtosDoMix
+                  );
+
               if (perguntaConfig.tipo === 'FOTO') {
                   const actualFotos = photosRef.current[baseKey] || [];
-                  if (actualFotos.length > 0) respostasArray.push({ pergunta_id: pId, produto_id: prodId, valor: JSON.stringify(
+                  if (actualFotos.length > 0) respostasArray.push({ pergunta_id: pId, produto_id: canonicalProductId, valor: JSON.stringify(
                       actualFotos.map((f: any) => ({
                           url:
                               f.url ||
@@ -2195,7 +2266,7 @@ const handleWatermarkImageLoaded = async () => {
               }
 
               const isMultiple = Array.isArray(baseAnswer);
-              respostasArray.push({ pergunta_id: pId, produto_id: prodId, valor: isMultiple ? JSON.stringify(baseAnswer) : String(baseAnswer) });
+              respostasArray.push({ pergunta_id: pId, produto_id: canonicalProductId, valor: isMultiple ? JSON.stringify(baseAnswer) : String(baseAnswer) });
 
               const isFotoPorOpcao =
                   perguntaConfig.validacao?.foto_por_opcao === true ||
@@ -2346,16 +2417,39 @@ const finalizadoAt = new Date().toISOString();
           };
           const db = await getDBConnection();
 
-          if (typeof addToSyncQueue !== 'function') {
-              throw new Error(translate('syncQueueFunctionMissing', 'A função addToSyncQueue não foi encontrada'));
-          }
 
-          let collectionPersistedLocally = false;
 
           try {
-              const exists = await db.getAllAsync(`SELECT name FROM sqlite_master WHERE type='table' AND name='coletas'`);
+              const exists = await db.getAllAsync(
+                  `SELECT name FROM sqlite_master WHERE type='table' AND name='coletas'`
+              );
 
-              if (exists?.length > 0) {
+              if (!exists?.length) {
+                  throw new Error('Tabela local coletas não encontrada.');
+              }
+
+              /*
+               * MOBILE_SYNC_ATOMIC_LINKED_COLLECTION_V2
+               *
+               * Respostas + Outbox + atualização temporal da visita entram
+               * na mesma transação SQLite. Se qualquer etapa falha, nada é
+               * confirmado localmente e o formulário continua recuperável.
+               */
+              await db.withTransactionAsync(async () => {
+                  const currentVisit: any = await db.getFirstAsync(
+                      `SELECT id FROM visits WHERE id = ? LIMIT 1`,
+                      [String(id)]
+                  );
+
+                  if (!currentVisit?.id) {
+                      throw new Error(
+                          translate(
+                              'surveyVisitNoLongerAvailable',
+                              'Esta visita foi removida ou alterada no servidor e não está mais disponível para coleta.'
+                          )
+                      );
+                  }
+
                   await db.runAsync(
                       `INSERT OR REPLACE INTO coletas (
                           id, project_id, usuario_id, loja_id, visita_id, pesquisa_id, status,
@@ -2379,67 +2473,40 @@ const finalizadoAt = new Date().toISOString();
                       ]
                   );
 
-                  collectionPersistedLocally = true;
-              }
-          } catch (localPersistError: any) {
-              await addAppLog({
-                  level: 'ERROR',
-                  module: 'PESQUISA',
-                  action: 'PERSIST_LOCAL_COLETA',
-                  message: 'Falha ao preservar coleta localmente antes de enfileirar.',
-                  metadata: {
-                      visitId: id,
-                      pesquisaId: idDaPesquisa,
-                      clientOperationId: operationId,
-                      error: localPersistError?.message || String(localPersistError),
-                  },
+                  await enqueueSyncOperationInDb(
+                      db,
+                      '/coletas',
+                      payload,
+                      'POST'
+                  );
+
+                  await db.runAsync(
+                      `UPDATE visits SET updated_at = ? WHERE id = ?`,
+                      [finalizadoAt, String(id)]
+                  );
               });
-
-              throw new Error(translate('surveyLocalPersistErrorMessage', 'Não foi possível preservar as respostas no banco local. Não saia da tela e tente salvar novamente.'));
-          }
-
-          if (!collectionPersistedLocally) {
+          } catch (atomicSaveError: any) {
               await addAppLog({
                   level: 'ERROR',
                   module: 'PESQUISA',
-                  action: 'PERSIST_LOCAL_COLETA_MISSING_TABLE',
-                  message: 'Tabela local de coletas não encontrada para preservar respostas.',
-                  metadata: {
-                      visitId: id,
-                      pesquisaId: idDaPesquisa,
-                      clientOperationId: operationId,
-                  },
-              });
-
-              throw new Error(translate('surveyLocalPersistErrorMessage', 'Não foi possível preservar as respostas no banco local. Não saia da tela e tente salvar novamente.'));
-          }
-
-          try {
-              await addToSyncQueue('/coletas', payload, 'POST', token);
-          } catch (queueError: any) {
-              await addAppLog({
-                  level: 'ERROR',
-                  module: 'PESQUISA',
-                  action: 'SYNC_QUEUE_COLETA',
-                  message: 'Falha ao enfileirar coleta de pesquisa.',
+                  action: 'ATOMIC_LOCAL_OUTBOX_COLETA',
+                  message: 'Falha atômica ao preservar coleta e Outbox.',
                   metadata: {
                       endpoint: '/coletas',
                       visitId: id,
                       pesquisaId: idDaPesquisa,
                       clientOperationId: operationId,
-                      error: queueError?.message || String(queueError),
+                      error: atomicSaveError?.message || String(atomicSaveError),
                   },
               });
 
-              throw new Error(translate('surveyQueueErrorMessage', 'As respostas foram salvas no banco local, mas não entraram na fila de sincronização. Não apague os dados do app e avise o suporte.'));
+              throw new Error(
+                  translate(
+                      'surveyLocalPersistErrorMessage',
+                      'Não foi possível preservar as respostas e a fila de sincronização como uma única operação. As respostas continuam nesta tela; tente salvar novamente.'
+                  )
+              );
           }
-
-          await db.runAsync(
-               `UPDATE visits SET updated_at = ? WHERE id = ?`,
-               [finalizadoAt, String(id)]
-           ).catch(async () => {
-               // Compatibilidade com bancos locais antigos que ainda não possuem updated_at.
-           });
 
           await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 
@@ -2529,6 +2596,26 @@ const finalizadoAt = new Date().toISOString();
               }
 
               if (isAnswered) {
+                  const matchState = evaluateSurveyMatchAnswer(p, answer, perguntas, answers, sortedProdutosDoMix);
+
+                  if (!matchState.valid) {
+                      const matchMessage = matchState.config.message || translate(
+                          'surveyMatchInvalidSelection',
+                          'O produto selecionado não é um match válido para o produto informado anteriormente.'
+                      );
+
+                      if (matchState.config.mode === 'SOMENTE_MATCHES' || matchState.config.behavior === 'BLOQUEAR') {
+                          setErrorKey(answerKey);
+                          focusTargetKey = answerKey;
+                          hardError = matchMessage;
+                          break;
+                      }
+
+                      if (matchState.config.behavior === 'AVISO') {
+                          softWarningsList.push(`• ${p.titulo || p.texto}: ${matchMessage}`);
+                      }
+                  }
+
                   const acaoEstoque = getStockActionFromQuestion(p);
 
                   if (acaoEstoque) {
@@ -3243,7 +3330,7 @@ const finalizadoAt = new Date().toISOString();
                                   let newAns = [...ansArr];
                                   if (isChecked) newAns = newAns.filter(a => a !== opcao);
                                   else newAns.push(opcao);
-                                  handleTextChange(answerKey, newAns as any);
+                                  applyAnswerWithMatchValidation(answerKey, newAns as any);
                               }}>
                                   <View style={[styles.checkboxBox, { borderColor: textSecondary }, isChecked && { backgroundColor: accent, borderColor: accent, borderWidth: 0 }]}>{isChecked && <Check size={14} color="#fff" />}</View>
                                   <View style={{ flex: 1 }}>
@@ -3416,6 +3503,7 @@ const finalizadoAt = new Date().toISOString();
                                             {checkSurveyIsMandatory(p) && <Asterisk size={12} color={errorColor} />}
                                         </View>
                                         {renderInputUI(p, p.id)}
+                                        {renderSurveyMatchInlineMessage(p, p.id)}
                                     </View>
                                 )
                             })}
@@ -3451,6 +3539,7 @@ const finalizadoAt = new Date().toISOString();
                                                             {checkSurveyIsMandatory(p) && <Asterisk size={10} color={errorColor} />}
                                                         </View>
                                                         {renderInputUI(p, `${p.id}::${prod.id}`)}
+                                                        {renderSurveyMatchInlineMessage(p, `${p.id}::${prod.id}`)}
                                                     </View>
                                                 ))}
                                             </View>

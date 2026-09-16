@@ -1,6 +1,8 @@
 import React, {
   useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState
 } from 'react';
 
@@ -18,14 +20,18 @@ import {
 } from 'react-native';
 
 import {
-  useFocusEffect
+  useFocusEffect,
+  useRouter
 } from 'expo-router';
 
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronRight,
   CircleGauge,
   Clock3,
+  MapPinned,
+  RotateCcw,
   Search,
   Store,
   Trophy,
@@ -51,6 +57,11 @@ import {
   SupervisorCommandData,
   SupervisorMember
 } from '../../services/supervisorCommandService';
+
+import {
+  fetchSupervisorMemberHistory,
+  SupervisorHistoryDetail
+} from '../../services/supervisorPhase2Service';
 
 const TEXTS = {
   'pt-BR': {
@@ -84,6 +95,11 @@ const TEXTS = {
     noVisit:
       'Nenhuma visita hoje',
 
+    visitDate: 'Data/hora',
+    checkin: 'Check-in',
+    checkout: 'Check-out',
+    openMap: 'Ver no mapa',
+
     planned:
       'planejadas',
 
@@ -106,7 +122,20 @@ const TEXTS = {
       'Fechar',
 
     empty:
-      'Nenhum promotor encontrado.'
+      'Nenhum promotor encontrado.',
+
+    unavailable:
+      'Não foi possível atualizar a equipe agora.',
+
+    retry:
+      'Tentar novamente',
+
+    psHistory: 'Histórico Perfect Store',
+    performanceHistory: 'Histórico Performance',
+    loadingHistory: 'Carregando histórico...',
+    noHistory: 'Sem registros no período.',
+    fullHistory: 'Ver histórico detalhado',
+    campaignHistory: 'Campanhas e extrato completo'
   },
 
   'en-US': {
@@ -140,6 +169,11 @@ const TEXTS = {
     noVisit:
       'No visits today',
 
+    visitDate: 'Date/time',
+    checkin: 'Check-in',
+    checkout: 'Check-out',
+    openMap: 'View on map',
+
     planned:
       'planned',
 
@@ -162,7 +196,20 @@ const TEXTS = {
       'Close',
 
     empty:
-      'No promoters found.'
+      'No promoters found.',
+
+    unavailable:
+      'Unable to update the team right now.',
+
+    retry:
+      'Try again',
+
+    psHistory: 'Perfect Store history',
+    performanceHistory: 'Performance history',
+    loadingHistory: 'Loading history...',
+    noHistory: 'No records in the period.',
+    fullHistory: 'View detailed history',
+    campaignHistory: 'Campaigns and full statement'
   },
 
   'es-ES': {
@@ -196,6 +243,11 @@ const TEXTS = {
     noVisit:
       'Sin visitas hoy',
 
+    visitDate: 'Fecha/hora',
+    checkin: 'Check-in',
+    checkout: 'Check-out',
+    openMap: 'Ver en el mapa',
+
     planned:
       'planificadas',
 
@@ -218,7 +270,20 @@ const TEXTS = {
       'Cerrar',
 
     empty:
-      'No se encontraron promotores.'
+      'No se encontraron promotores.',
+
+    unavailable:
+      'No fue posible actualizar el equipo ahora.',
+
+    retry:
+      'Intentar de nuevo',
+
+    psHistory: 'Historial Perfect Store',
+    performanceHistory: 'Historial Performance',
+    loadingHistory: 'Cargando historial...',
+    noHistory: 'Sin registros en el período.',
+    fullHistory: 'Ver historial detallado',
+    campaignHistory: 'Campañas y extracto completo'
   }
 } as const;
 
@@ -233,6 +298,9 @@ const texts = (
   ];
 
 export default function SupervisorTeam() {
+  const router =
+    useRouter();
+
   const insets =
     useSafeAreaInsets();
 
@@ -322,11 +390,46 @@ export default function SupervisorTeam() {
       null
     );
 
+  const [
+    error,
+    setError
+  ] =
+    useState('');
+
+  const [
+    history,
+    setHistory
+  ] =
+    useState<SupervisorHistoryDetail>({
+      perfectStore: [],
+      performance: []
+    });
+
+  const [
+    historyLoading,
+    setHistoryLoading
+  ] =
+    useState(false);
+
+  // SUPERVISOR_TEAM_REFRESH_FIX_V2
+  // Evita chamadas concorrentes por foco + pull-to-refresh.
+  const requestInFlight =
+    useRef(false);
+
   const load =
     useCallback(
       async (
         refresh = false
       ) => {
+        if (
+          requestInFlight.current
+        ) {
+          return;
+        }
+
+        requestInFlight.current =
+          true;
+
         if (refresh) {
           setRefreshing(
             true
@@ -334,16 +437,30 @@ export default function SupervisorTeam() {
         }
 
         try {
-          setData(
+          const result =
             await fetchSupervisorCommand(
               user,
               {
                 allowCacheFallback:
                   true
               }
+            );
+
+          setData(result);
+          setError('');
+        } catch (
+          e: any
+        ) {
+          setError(
+            String(
+              e?.message ||
+              t.unavailable
             )
           );
         } finally {
+          requestInFlight.current =
+            false;
+
           setLoading(
             false
           );
@@ -353,7 +470,10 @@ export default function SupervisorTeam() {
           );
         }
       },
-      [user]
+      [
+        user,
+        t.unavailable
+      ]
     );
 
   useFocusEffect(
@@ -414,6 +534,88 @@ export default function SupervisorTeam() {
         query
       ]
     );
+
+  useEffect(
+    () => {
+      if (
+        !selected?.id
+      ) {
+        return;
+      }
+
+      const fresh =
+        getFieldTeamMembers(
+          data,
+          user?.id
+        ).find(
+          member =>
+            String(member.id) ===
+            String(selected.id)
+        );
+
+      if (fresh) {
+        setSelected(fresh);
+      } else {
+        setSelected(null);
+      }
+    },
+    [
+      data,
+      user?.id,
+      selected?.id
+    ]
+  );
+
+  useEffect(
+    () => {
+      let active = true;
+
+      if (!selected?.id) {
+        setHistory({ perfectStore: [], performance: [] });
+        setHistoryLoading(false);
+        return () => { active = false; };
+      }
+
+      setHistoryLoading(true);
+
+      fetchSupervisorMemberHistory(
+        user,
+        String(selected.id)
+      )
+        .then(result => {
+          if (active) setHistory(result);
+        })
+        .catch(() => {
+          if (active) {
+            setHistory({ perfectStore: [], performance: [] });
+          }
+        })
+        .finally(() => {
+          if (active) setHistoryLoading(false);
+        });
+
+      return () => {
+        active = false;
+      };
+    },
+    [selected?.id, user]
+  );
+
+  const formatHistoryDate = (value: any, includeTime = false) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    return includeTime
+      ? date.toLocaleString([], {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      : date.toLocaleDateString();
+  };
 
   const psColor =
     (
@@ -542,6 +744,71 @@ export default function SupervisorTeam() {
         >
           {t.subtitle}
         </Text>
+
+        {error ? (
+          <View
+            style={[
+              styles.errorCard,
+              {
+                backgroundColor:
+                  dark
+                    ? '#3F1D24'
+                    : '#FEF2F2',
+
+                borderColor:
+                  dark
+                    ? '#7F1D1D'
+                    : '#FECACA'
+              }
+            ]}
+          >
+            <AlertTriangle
+              size={18}
+              color="#EF4444"
+            />
+
+            <Text
+              style={[
+                styles.errorText,
+                {
+                  color:
+                    dark
+                      ? '#FECACA'
+                      : '#991B1B'
+                }
+              ]}
+            >
+              {t.unavailable}
+            </Text>
+
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() =>
+                load(true)
+              }
+              style={
+                styles.retryButton
+              }
+            >
+              <RotateCcw
+                size={15}
+                color={accent}
+              />
+
+              <Text
+                style={[
+                  styles.retryText,
+                  {
+                    color:
+                      accent
+                  }
+                ]}
+              >
+                {t.retry}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View
           style={[
@@ -1267,51 +1534,72 @@ export default function SupervisorTeam() {
                   }
                 ]}
               >
-                <Store
-                  size={20}
-                  color={
-                    accent
-                  }
-                />
+                <View style={styles.lastVisitTopRow}>
+                  <Store
+                    size={20}
+                    color={accent}
+                  />
 
-                <View
-                  style={{
-                    flex: 1
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.lastVisitName,
-                      {
-                        color:
-                          primary
-                      }
-                    ]}
-                  >
-                    {selected
-                      ?.lastVisit
-                      ?.storeName ||
-                      t.noVisit}
-                  </Text>
-
-                  {selected
-                    ?.lastVisit
-                    ?.status && (
+                  <View style={{ flex: 1 }}>
                     <Text
-                      style={[
-                        styles.lastVisitStatus,
-                        {
-                          color:
-                            secondary
-                        }
-                      ]}
+                      style={[styles.lastVisitName, { color: primary }]}
+                      numberOfLines={2}
                     >
-                      {selected
-                        .lastVisit
-                        .status}
+                      {selected?.lastVisit?.storeName || t.noVisit}
                     </Text>
-                  )}
+
+                    {selected?.lastVisit?.status ? (
+                      <Text style={[styles.lastVisitStatus, { color: secondary }]}>
+                        {selected.lastVisit.status}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
+
+                {selected?.lastVisit ? (
+                  <>
+                    <View style={styles.lastVisitDetails}>
+                      {selected.lastVisit.checkinAt ? (
+                        <View style={styles.lastVisitDetailRow}>
+                          <Clock3 size={14} color={secondary} />
+                          <Text style={[styles.lastVisitDetailText, { color: secondary }]}>
+                            {t.checkin}: {formatHistoryDate(selected.lastVisit.checkinAt, true)}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {selected.lastVisit.checkoutAt ? (
+                        <View style={styles.lastVisitDetailRow}>
+                          <CheckCircle2 size={14} color={secondary} />
+                          <Text style={[styles.lastVisitDetailText, { color: secondary }]}>
+                            {t.checkout}: {formatHistoryDate(selected.lastVisit.checkoutAt, true)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => {
+                        if (!selected?.id) return;
+                        router.push({
+                          pathname: '/(supervisor)/mapa' as any,
+                          params: {
+                            userId: String(selected.id),
+                            visitId: String(selected.lastVisit?.id || '')
+                          }
+                        });
+                      }}
+                      style={[styles.mapVisitButton, { backgroundColor: `${accent}14` }]}
+                    >
+                      <MapPinned size={16} color={accent} />
+                      <Text style={[styles.mapVisitButtonText, { color: accent }]}>
+                        {t.openMap}
+                      </Text>
+                      <ChevronRight size={15} color={accent} />
+                    </TouchableOpacity>
+                  </>
+                ) : null}
               </View>
 
               <Text
@@ -1331,6 +1619,133 @@ export default function SupervisorTeam() {
                 )}{' '}
                 {t.audits}
               </Text>
+
+              <View style={styles.historySectionHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.blockTitle, { color: primary, marginBottom: 2 }]}>
+                    {t.psHistory}
+                  </Text>
+                  <Text style={[styles.historySectionHint, { color: secondary }]}>
+                    {t.campaignHistory}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => {
+                    if (!selected?.id) return;
+                    router.push({
+                      pathname: '/(supervisor)/historico-equipe' as any,
+                      params: {
+                        userId: String(selected.id),
+                        userName: String(selected.nome || ''),
+                        section: 'perfectStore'
+                      }
+                    });
+                  }}
+                  style={[styles.fullHistoryButton, { backgroundColor: `${accent}14` }]}
+                >
+                  <Text style={[styles.fullHistoryButtonText, { color: accent }]}>
+                    {t.fullHistory}
+                  </Text>
+                  <ChevronRight size={16} color={accent} />
+                </TouchableOpacity>
+              </View>
+
+              {historyLoading ? (
+                <Text style={[styles.historyEmpty, { color: secondary }]}>
+                  {t.loadingHistory}
+                </Text>
+              ) : history.perfectStore.length === 0 ? (
+                <Text style={[styles.historyEmpty, { color: secondary }]}>
+                  {t.noHistory}
+                </Text>
+              ) : (
+                history.perfectStore.slice(0, 5).map((item: any, index: number) => (
+                  <View key={item?.id || index} style={[styles.historyRow, { borderColor: border }]}>
+                    <Store size={16} color={accent} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.historyTitle, { color: primary }]} numberOfLines={1}>
+                        {item?.lojaNome || item?.loja_nome || item?.storeName || item?.store_name || item?.loja?.nome || item?.nome || 'Perfect Store'}
+                      </Text>
+                      <Text style={[styles.historyMeta, { color: secondary }]} numberOfLines={1}>
+                        {[
+                          item?.scorePercent != null ? `${Math.round(Number(item.scorePercent))}%` : null,
+                          item?.percentual != null ? `${Math.round(Number(item.percentual))}%` : null,
+                          item?.scoreAtual != null ? `${Math.round(Number(item.scoreAtual))}%` : null,
+                          item?.scoreAtingido != null && item?.scoreMaximo
+                            ? `${Math.round((Number(item.scoreAtingido) / Math.max(1, Number(item.scoreMaximo))) * 100)}%`
+                            : null,
+                          item?.nivel || item?.level || null,
+                          formatHistoryDate(item?.data || item?.dataAvaliacao || item?.criado_em || item?.createdAt)
+                        ].filter(Boolean).join(' · ')}
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              )}
+
+              <View style={[styles.historySectionHeader, { marginTop: 20 }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.blockTitle, { color: primary, marginBottom: 2 }]}>
+                    {t.performanceHistory}
+                  </Text>
+                  <Text style={[styles.historySectionHint, { color: secondary }]}>
+                    {t.campaignHistory}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  onPress={() => {
+                    if (!selected?.id) return;
+                    router.push({
+                      pathname: '/(supervisor)/historico-equipe' as any,
+                      params: {
+                        userId: String(selected.id),
+                        userName: String(selected.nome || ''),
+                        section: 'performance'
+                      }
+                    });
+                  }}
+                  style={[styles.fullHistoryButton, { backgroundColor: '#F59E0B14' }]}
+                >
+                  <Text style={[styles.fullHistoryButtonText, { color: '#F59E0B' }]}>
+                    {t.fullHistory}
+                  </Text>
+                  <ChevronRight size={16} color="#F59E0B" />
+                </TouchableOpacity>
+              </View>
+
+              {historyLoading ? (
+                <Text style={[styles.historyEmpty, { color: secondary }]}>
+                  {t.loadingHistory}
+                </Text>
+              ) : history.performance.length === 0 ? (
+                <Text style={[styles.historyEmpty, { color: secondary }]}>
+                  {t.noHistory}
+                </Text>
+              ) : (
+                history.performance.slice(0, 8).map((item: any, index: number) => (
+                  <View key={item?.id || index} style={[styles.historyRow, { borderColor: border }]}>
+                    <Trophy size={16} color="#F59E0B" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.historyTitle, { color: primary }]} numberOfLines={1}>
+                        {item?.descricao || item?.description || item?.regra_nome || item?.ruleName || item?.campanhaNome || item?.campaignName || item?.origem || 'Performance'}
+                      </Text>
+                      <Text style={[styles.historyMeta, { color: secondary }]} numberOfLines={1}>
+                        {[
+                          item?.pontos != null ? `${Number(item.pontos)} pts` : null,
+                          item?.points != null ? `${Number(item.points)} pts` : null,
+                          item?.score != null ? `${Number(item.score)} pts` : null,
+                          item?.lojaNome || item?.loja_nome || item?.storeName || null,
+                          formatHistoryDate(item?.data || item?.dataEvento || item?.criado_em || item?.createdAt)
+                        ].filter(Boolean).join(' · ')}
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              )}
             </ScrollView>
           </View>
         </View>
@@ -1423,6 +1838,52 @@ const styles =
       marginTop: 14,
 
       gap: 12
+    },
+
+    errorCard: {
+      marginTop: 16,
+
+      borderWidth: 1,
+
+      borderRadius: 16,
+
+      padding: 12,
+
+      flexDirection:
+        'row',
+
+      alignItems:
+        'center',
+
+      gap: 10
+    },
+
+    errorText: {
+      flex: 1,
+
+      fontSize: 11,
+
+      fontWeight:
+        '700',
+
+      lineHeight: 16
+    },
+
+    retryButton: {
+      flexDirection:
+        'row',
+
+      alignItems:
+        'center',
+
+      gap: 5
+    },
+
+    retryText: {
+      fontSize: 10,
+
+      fontWeight:
+        '900'
     },
 
     empty: {
@@ -1546,6 +2007,57 @@ const styles =
 
       overflow:
         'hidden'
+    },
+
+    historySectionHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      marginBottom: 10
+    },
+
+    historySectionHint: {
+      fontSize: 10,
+      fontWeight: '600'
+    },
+
+    fullHistoryButton: {
+      minHeight: 36,
+      borderRadius: 12,
+      paddingHorizontal: 10,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5
+    },
+
+    fullHistoryButtonText: {
+      fontSize: 9,
+      fontWeight: '900'
+    },
+
+    historyRow: {
+      minHeight: 58,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10
+    },
+
+    historyTitle: {
+      fontSize: 12,
+      fontWeight: '900'
+    },
+
+    historyMeta: {
+      marginTop: 3,
+      fontSize: 10,
+      fontWeight: '600'
+    },
+
+    historyEmpty: {
+      fontSize: 11,
+      fontWeight: '600',
+      paddingVertical: 12
     },
 
     modalOverlay: {
@@ -1725,18 +2237,50 @@ const styles =
     },
 
     lastVisit: {
-      borderRadius:
-        18,
-
+      borderRadius: 18,
       padding: 14,
+      gap: 10
+    },
 
-      flexDirection:
-        'row',
-
-      alignItems:
-        'center',
-
+    lastVisitTopRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
       gap: 11
+    },
+
+    lastVisitDetails: {
+      marginTop: 2,
+      gap: 6
+    },
+
+    lastVisitDetailRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7
+    },
+
+    lastVisitDetailText: {
+      flex: 1,
+      fontSize: 10,
+      fontWeight: '700'
+    },
+
+    mapVisitButton: {
+      marginTop: 4,
+      minHeight: 38,
+      borderRadius: 13,
+      paddingHorizontal: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 7
+    },
+
+    mapVisitButtonText: {
+      flex: 1,
+      fontSize: 11,
+      fontWeight: '900',
+      textAlign: 'center'
     },
 
     lastVisitName: {

@@ -35,7 +35,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useSyncStore } from '../../store/useSyncStore';
-import { globalSync } from '../../services/syncService';
+// MOBILE_DIAMOND_SYNC_MENU_IMPORT_V1
+import {
+  globalSync,
+  getDiamondSyncHealth,
+  type DiamondSyncHealth,
+} from '../../services/syncService';
 import { api } from '../../services/api';
 import { getDBConnection } from '../../database/db';
 import { setI18nLocale, t } from '../../utils/i18n';
@@ -355,6 +360,10 @@ export default function MenuScreen() {
   const statusBarStyle = isDark ? 'light-content' : 'dark-content';
 
   const [syncingNow, setSyncingNow] = useState(false);
+
+  // MOBILE_DIAMOND_SYNC_MENU_STATE_V1
+  const [diamondSyncHealth, setDiamondSyncHealth] =
+    useState<DiamondSyncHealth | null>(null);
   const [imgError, setImgError] = useState(false);
   const [languageRenderKey, setLanguageRenderKey] = useState(0);
 
@@ -542,11 +551,216 @@ export default function MenuScreen() {
     });
   };
 
+  /*
+   * MOBILE_DIAMOND_SYNC_MENU_HEALTH_V1
+   *
+   * Snapshot local read-only:
+   * nenhuma mutação, nenhum replay, nenhum delete.
+   */
+  const loadDiamondSyncHealth =
+    useCallback(
+      async () => {
+
+        try {
+
+          const health =
+            await getDiamondSyncHealth();
+
+          setDiamondSyncHealth(
+            health
+          );
+
+        } catch {
+
+          setDiamondSyncHealth(
+            null
+          );
+        }
+      },
+      []
+    );
+
+  useFocusEffect(
+    useCallback(
+      () => {
+
+        loadDiamondSyncHealth();
+
+        return undefined;
+      },
+      [
+        loadDiamondSyncHealth
+      ]
+    )
+  );
+
+  const diamondSyncStatusLabel =
+    useMemo(
+      () => {
+
+        if (
+          !diamondSyncHealth
+        ) {
+
+          if (
+            language ===
+            'en-US'
+          ) {
+            return 'Checking offline data...';
+          }
+
+          if (
+            language ===
+            'es-ES'
+          ) {
+            return 'Verificando datos offline...';
+          }
+
+          return 'Verificando dados offline...';
+        }
+
+        const pending =
+          Number(
+            diamondSyncHealth.pending ||
+            0
+          );
+
+        const retry =
+          Number(
+            diamondSyncHealth.retry ||
+            0
+          );
+
+        const conflict =
+          Number(
+            diamondSyncHealth.unresolvedConflicts ||
+            diamondSyncHealth.conflict ||
+            0
+          );
+
+        const configurationPending =
+          Number(
+            diamondSyncHealth.configurationPending ||
+            0
+          );
+
+        const manifestReason =
+          String(
+            diamondSyncHealth.manifestReason ||
+            ''
+          )
+            .trim()
+            .toUpperCase();
+
+        if (
+          conflict > 0
+        ) {
+
+          if (
+            language ===
+            'en-US'
+          ) {
+            return `${conflict} conflict(s) require attention • ${pending + retry} pending`;
+          }
+
+          if (
+            language ===
+            'es-ES'
+          ) {
+            return `${conflict} conflicto(s) requieren atención • ${pending + retry} pendiente(s)`;
+          }
+
+          return `${conflict} conflito(s) precisam de atenção • ${pending + retry} pendência(s)`;
+        }
+
+        /*
+         * MOBILE_DIAMOND_SYNC_MENU_MANIFEST_V2
+         *
+         * A mesma verdade do getDiamondSyncHealth impede o menu de exibir
+         * "Tudo sincronizado" com manifesto/reconciliação pendente.
+         */
+        if (
+          configurationPending > 0
+        ) {
+          const reconciliationPending =
+            manifestReason ===
+            'LOCAL_TASK_RECONCILIATION_PENDING';
+
+          if (
+            language ===
+            'en-US'
+          ) {
+            return reconciliationPending
+              ? 'Offline work protected • reconciliation pending'
+              : 'Offline configuration awaiting confirmation';
+          }
+
+          if (
+            language ===
+            'es-ES'
+          ) {
+            return reconciliationPending
+              ? 'Trabajo offline protegido • conciliación pendiente'
+              : 'Configuración offline pendiente de confirmación';
+          }
+
+          return reconciliationPending
+            ? 'Trabalho offline protegido • reconciliação pendente'
+            : 'Configuração offline aguardando confirmação';
+        }
+
+        if (
+          pending > 0 ||
+          retry > 0
+        ) {
+
+          if (
+            language ===
+            'en-US'
+          ) {
+            return `${pending} pending • ${retry} retrying automatically`;
+          }
+
+          if (
+            language ===
+            'es-ES'
+          ) {
+            return `${pending} pendiente(s) • ${retry} en reintento automático`;
+          }
+
+          return `${pending} pendência(s) • ${retry} em nova tentativa automática`;
+        }
+
+        if (
+          language ===
+          'en-US'
+        ) {
+          return 'Everything synchronized and protected';
+        }
+
+        if (
+          language ===
+          'es-ES'
+        ) {
+          return 'Todo sincronizado y protegido';
+        }
+
+        return 'Tudo sincronizado e protegido';
+      },
+      [
+        diamondSyncHealth,
+        language
+      ]
+    );
+
   const handleSync = async () => {
     setSyncingNow(true);
 
     try {
       await globalSync();
+
+      // MOBILE_DIAMOND_SYNC_MENU_REFRESH_AFTER_SYNC_V1
+      await loadDiamondSyncHealth();
 
       // Sem popup de confirmação: a própria tela já mostra a última sincronização.
     } catch {
@@ -695,7 +909,11 @@ export default function MenuScreen() {
           icon: RefreshCw,
           color: accent,
           loading: syncingNow || isSyncing,
-          onPress: handleSync,
+          // MOBILE_DIAMOND_SYNC_CENTER_MENU_V1
+          onPress: () =>
+            router.push(
+              '/sincronizacao' as any
+            ),
         },
         {
           title: translate('menuSettingsTitle', 'Configurações'),
@@ -841,7 +1059,48 @@ export default function MenuScreen() {
               <Wifi size={20} color={accent} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.syncTitle, { color: textPrimary }]}>{translate('menuOfflineProtected', 'Dados offline protegidos')}</Text>
+              {/* MOBILE_DIAMOND_SYNC_MENU_VISUAL_V1 */}
+              <Text
+                style={[
+                  styles.syncTitle,
+                  {
+                    color:
+                      diamondSyncHealth &&
+                      Number(
+                        diamondSyncHealth.unresolvedConflicts ||
+                        diamondSyncHealth.conflict ||
+                        0
+                      ) > 0
+                        ? '#DC2626'
+                        : textPrimary
+                  }
+                ]}
+              >
+                {translate(
+                  'menuOfflineProtected',
+                  'Dados offline protegidos'
+                )}
+              </Text>
+
+              <Text
+                style={[
+                  styles.syncSubtitle,
+                  {
+                    color:
+                      diamondSyncHealth &&
+                      Number(
+                        diamondSyncHealth.unresolvedConflicts ||
+                        diamondSyncHealth.conflict ||
+                        0
+                      ) > 0
+                        ? '#DC2626'
+                        : textSecondary
+                  }
+                ]}
+                numberOfLines={2}
+              >
+                {diamondSyncStatusLabel}
+              </Text>
               <Text style={[styles.syncSubtitle, { color: textSecondary }]}>
                 {translate('menuSyncSubtitle', `Última atualização: ${formatLastSyncLabel(lastSync)}`, { date: formatLastSyncLabel(lastSync) })}
               </Text>

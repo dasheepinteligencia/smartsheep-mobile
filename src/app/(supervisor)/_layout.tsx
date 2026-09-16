@@ -354,6 +354,13 @@ export default function SupervisorLayout() {
       <Tabs.Screen
         name="menu"
       />
+
+      <Tabs.Screen
+        name="historico-equipe"
+        options={{
+          href: null
+        }}
+      />
     </Tabs>
   );
 }
