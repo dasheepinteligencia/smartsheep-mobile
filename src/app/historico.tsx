@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Modal,
   StatusBar,
+  Platform,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -5930,8 +5931,7 @@ export default function HistoricoScreen() {
                       fontSize:
                         17,
 
-                      fontWeight:
-                        '900',
+                      fontWeight: Platform.OS === 'ios' ? '700' : '900',
 
                       marginBottom:
                         14
@@ -5999,8 +5999,7 @@ export default function HistoricoScreen() {
                                 fontSize:
                                   13,
 
-                                fontWeight:
-                                  '900',
+                                fontWeight: Platform.OS === 'ios' ? '700' : '900',
 
                                 marginBottom:
                                   12
@@ -6087,8 +6086,7 @@ export default function HistoricoScreen() {
                                         fontSize:
                                           12,
 
-                                        fontWeight:
-                                          '800',
+                                        fontWeight: Platform.OS === 'ios' ? '700' : '800',
 
                                         marginBottom:
                                           4
@@ -6240,7 +6238,7 @@ const styles = StyleSheet.create({
   },
   pageTitle: {
     fontSize: 28,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     letterSpacing: -0.7,
   },
   pageSubtitle: {
@@ -6263,12 +6261,12 @@ const styles = StyleSheet.create({
   },
   heroScoreLabel: {
     fontSize: 12,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     textTransform: 'uppercase',
   },
   heroScoreValue: {
     fontSize: 36,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     letterSpacing: -1,
   },
   heroScoreSuffix: {
@@ -6288,7 +6286,7 @@ const styles = StyleSheet.create({
   levelBadgeText: {
     color: '#FFFFFF',
     fontSize: 11,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     textTransform: 'uppercase',
   },
   heroProgressTrack: {
@@ -6340,7 +6338,7 @@ const styles = StyleSheet.create({
   },
   periodButtonText: {
     fontSize: 11,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   mainTabButton: {
     flex: 1,
@@ -6367,11 +6365,11 @@ const styles = StyleSheet.create({
   },
   mainTabTitle: {
     fontSize: 14,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   mainTabSubtitle: {
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: Platform.OS === 'ios' ? '700' : '800',
     marginTop: 3,
   },
   subTabsCard: {
@@ -6391,7 +6389,7 @@ const styles = StyleSheet.create({
   },
   subTabText: {
     fontSize: 12,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
 
   sectionContent: {
@@ -6427,12 +6425,12 @@ const styles = StyleSheet.create({
   },
   kpiValue: {
     fontSize: 21,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     marginTop: 8,
   },
   kpiLabel: {
     fontSize: 9,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     textTransform: 'uppercase',
     marginTop: 3,
     textAlign: 'center',
@@ -6458,7 +6456,7 @@ const styles = StyleSheet.create({
   },
   metricTitle: {
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   metricSubtitle: {
     fontSize: 12,
@@ -6467,7 +6465,7 @@ const styles = StyleSheet.create({
   },
   metricPercent: {
     fontSize: 22,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   progressTrack: {
     height: 8,
@@ -6501,7 +6499,7 @@ const styles = StyleSheet.create({
   highlightTitle: {
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   highlightSubtitle: {
     color: '#CBD5E1',
@@ -6512,7 +6510,7 @@ const styles = StyleSheet.create({
   },
   blockTitle: {
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     marginBottom: 12,
   },
 
@@ -6536,7 +6534,7 @@ const styles = StyleSheet.create({
   },
   itemTitle: {
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   itemSubtitle: {
     fontSize: 12,
@@ -6550,7 +6548,7 @@ const styles = StyleSheet.create({
   },
   itemBadgeText: {
     fontSize: 10,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     textTransform: 'uppercase',
   },
   itemFooter: {
@@ -6568,7 +6566,7 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: Platform.OS === 'ios' ? '700' : '800',
   },
 
   groupCard: {
@@ -6584,7 +6582,7 @@ const styles = StyleSheet.create({
   },
   groupTitle: {
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   groupSubtitle: {
     fontSize: 12,
@@ -6593,7 +6591,7 @@ const styles = StyleSheet.create({
   },
   groupPercent: {
     fontSize: 21,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   miniRow: {
     borderTopWidth: 1,
@@ -6605,11 +6603,11 @@ const styles = StyleSheet.create({
   },
   miniTitle: {
     fontSize: 13,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   miniSubtitle: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: Platform.OS === 'ios' ? '700' : '800',
     marginTop: 2,
   },
   miniRight: {
@@ -6619,11 +6617,11 @@ const styles = StyleSheet.create({
   },
   miniStatus: {
     fontSize: 13,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   moreText: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: Platform.OS === 'ios' ? '700' : '800',
     textAlign: 'center',
     marginTop: 12,
   },
@@ -6633,7 +6631,7 @@ const styles = StyleSheet.create({
   },
   dateTitle: {
     fontSize: 17,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     marginBottom: 10,
   },
 
@@ -6651,11 +6649,11 @@ const styles = StyleSheet.create({
   },
   summaryLabel: {
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: Platform.OS === 'ios' ? '700' : '800',
   },
   summaryValue: {
     fontSize: 13,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     flexShrink: 1,
     textAlign: 'right',
   },
@@ -6670,7 +6668,7 @@ const styles = StyleSheet.create({
   },
   emptySmallTitle: {
     fontSize: 16,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     marginTop: 12,
     textAlign: 'center',
   },
@@ -6712,11 +6710,11 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     fontSize: 19,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   modalSubtitle: {
     fontSize: 11,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     textTransform: 'uppercase',
     marginTop: 3,
   },
@@ -6751,7 +6749,7 @@ const styles = StyleSheet.create({
   modalHeroValue: {
     color: '#FFFFFF',
     fontSize: 30,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
     letterSpacing: -0.7,
     marginTop: 4,
   },

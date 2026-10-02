@@ -8,7 +8,9 @@ import {
   Modal,
   ScrollView,
   TextInput,
-  Platform,} from 'react-native';
+  Platform,
+  RefreshControl,
+} from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Constants from 'expo-constants';
 import { persistVisitPhotoLocally } from '../../services/mobileAwsUploadService';
@@ -20,6 +22,7 @@ import {
   AlertTriangle,
   LogIn,
   ClipboardCheck,
+  ClipboardList,
   ChevronRight,
   LogOut,
   CheckCircle2,
@@ -32,7 +35,7 @@ import { getSmartLocation, getDistanceInMeters } from '../../services/locationSe
 import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
-import { enqueueSyncOperationInDb } from '../../services/syncService';
+import { enqueueSyncOperationInDb, globalSync } from '../../services/syncService';
 import { materializeFreeVisitExecutionFromManifestInDb } from '../../services/fieldPortfolioService';
 import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveyStatus';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -92,6 +95,33 @@ const safeParseJson = (value: any, fallback: any = {}) => {
 };
 
 
+
+
+// MOBILE_VISIT_I18N_RUNTIME_V1
+const visitT = (
+  key: string,
+  fallback: string,
+  params?: Record<string, string | number>
+) => {
+  const value = String(i18n.t(key, params || {}) || '');
+  const missing = value.startsWith('[missing "') && value.endsWith(' translation]');
+
+  if (value && value !== key && !missing) {
+    return value;
+  }
+
+  return fallback.replace(
+    /\{\{(\w+)\}\}/g,
+    (_match, paramKey) => String(params?.[paramKey] ?? '')
+  );
+};
+
+const getVisitLocale = () => {
+  const locale = String(i18n.locale || 'pt-BR').toLowerCase();
+  if (locale.startsWith('en')) return 'en-US';
+  if (locale.startsWith('es')) return 'es-ES';
+  return 'pt-BR';
+};
 
 const parseAddressGpsConfig = (endereco: any) => {
   const rawAddress = String(endereco || '');
@@ -297,9 +327,9 @@ const getPhotoFieldByAction = (action: VisitAction) => {
 };
 
 const getPhotoLabelByAction = (action: VisitAction) => {
-  if (action === 'CHECKIN') return 'entrada';
-  if (action === 'CHECKOUT') return 'saída';
-  return 'justificativa';
+  if (action === 'CHECKIN') return visitT('visitPhotoActionEntry', 'entrada');
+  if (action === 'CHECKOUT') return visitT('visitPhotoActionExit', 'saída');
+  return visitT('visitPhotoActionJustification', 'justificativa');
 };
 
 const validatePhotoOrientation = (asset: any, expected: string) => {
@@ -323,6 +353,34 @@ const isDoneStatus = (status: any) => {
     String(status || '').toUpperCase()
   );
 };
+
+// MOBILE_VISIT_STATUS_I18N_V1
+const getVisitStatusLabel = (status: any) => {
+  const normalized = normalizeStatus(status);
+
+  if (normalized === 'PENDENTE') {
+    return visitT('visitStatusPending', 'Pendente');
+  }
+
+  if (normalized === 'EM_ANDAMENTO' || normalized === 'INICIADA') {
+    return visitT('visitStatusInProgress', 'Em andamento');
+  }
+
+  if (isDoneStatus(normalized)) {
+    if (normalized === 'JUSTIFICADA') {
+      return visitT('visitStatusJustified', 'Justificada');
+    }
+
+    return visitT('visitStatusCompleted', 'Concluída');
+  }
+
+  return String(normalized || '')
+    .toLowerCase()
+    .replace(/(^|_)([a-z])/g, (_match, prefix, letter) =>
+      `${prefix ? ' ' : ''}${letter.toUpperCase()}`
+    );
+};
+
 
 const getLocalISO = () => {
   // Mantém ISO para backend, mas gerado uma única vez por ação.
@@ -351,6 +409,72 @@ const formatTime = (dateValue?: string | null) => {
   } catch {
     return '--:--';
   }
+};
+
+// MOBILE_VISIT_OPEN_VISIT_DIAGNOSTIC_V1
+const formatDateLabel = (dateValue?: string | null) => {
+  if (!dateValue) return visitT('visitNotInformed', 'Não informada');
+
+  const raw = String(dateValue).trim();
+  const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+  if (ymd) {
+    return `${ymd[3]}/${ymd[2]}/${ymd[1]}`;
+  }
+
+  try {
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return raw;
+    return d.toLocaleDateString(getVisitLocale());
+  } catch {
+    return raw;
+  }
+};
+
+const formatDateTimeLabel = (dateValue?: string | null) => {
+  if (!dateValue) return visitT('visitNotInformedMale', 'Não informado');
+
+  try {
+    const d = new Date(dateValue);
+    if (Number.isNaN(d.getTime())) return String(dateValue);
+    return `${d.toLocaleDateString(getVisitLocale())} ${d.toLocaleTimeString(getVisitLocale(), {
+      hour: '2-digit',
+      minute: '2-digit',
+    })}`;
+  } catch {
+    return String(dateValue);
+  }
+};
+
+// MOBILE_VISIT_OPENED_BY_V1
+const getVisitOpenedByName = (visit: any): string | null => {
+  const nestedCheckinUser =
+    visit?.checkin_user ||
+    visit?.checkinUser ||
+    visit?.usuario ||
+    visit?.user ||
+    visit?.promotor ||
+    null;
+
+  const name = firstFilled(
+    visit?.checkin_user_name,
+    visit?.checkinUserName,
+    visit?.opened_by_name,
+    visit?.openedByName,
+    visit?.usuario_nome,
+    visit?.usuarioNome,
+    visit?.promotor_nome,
+    visit?.promotorNome,
+    visit?.responsavel_nome,
+    visit?.responsavelNome,
+    nestedCheckinUser?.nome,
+    nestedCheckinUser?.name
+  );
+
+  const normalized = String(name ?? '').trim();
+  return normalized && normalized !== 'null' && normalized !== 'undefined'
+    ? normalized
+    : null;
 };
 
 const buildOperationId = (visitId: string, action: string) => {
@@ -895,20 +1019,29 @@ const getRepeatableTaskSubtitle = (
   const label =
     count === 1
       ? params.labelSingular ||
-        'registro'
+        visitT('visitRecordSingular', 'registro')
       : params.labelPlural ||
-        'registros';
+        visitT('visitRecordPlural', 'registros');
 
   if (params.closed) {
-    return `Fechado - ${count} ${label}`;
+    return visitT(
+      'visitRepeatableClosed',
+      'Fechado - {{count}} {{label}}',
+      { count, label }
+    );
   }
 
   if (count === 0) {
-    return 'Pendente';
+    return visitT('visitRepeatablePending', 'Pendente');
   }
 
-  return `Aberto - ${count} ${label}`;
+  return visitT(
+    'visitRepeatableOpen',
+    'Aberto - {{count}} {{label}}',
+    { count, label }
+  );
 };
+
 
 const getSurveyServerStateUpdatedAt = (survey: any, visit: any) => firstFilled(
   survey?.serverStateUpdatedAt,
@@ -1008,7 +1141,7 @@ const getOpenVisitDifferentFromCurrent = async (db: any, currentVisitId: string)
   try {
     const openVisit: any = await db.getFirstAsync(
       `
-        SELECT id, loja_nome, status, checkin_at
+        SELECT *
         FROM visits
         WHERE id <> ?
         AND UPPER(COALESCE(status, '')) IN ('EM_ANDAMENTO', 'INICIADA')
@@ -1054,6 +1187,11 @@ export default function VisitaDetailScreen() {
   const [selectedJustificativaId, setSelectedJustificativaId] = useState<string | null>(null);
   const [detalheJustificativa, setDetalheJustificativa] = useState('');
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  // MOBILE_VISIT_MAP_READY_FIT_V1
+  const [mapReady, setMapReady] = useState(false);
+
+  // MOBILE_VISIT_PULL_TO_SYNC_V1
+  const [refreshing, setRefreshing] = useState(false);
 
   // =========================================================================
   // 🎯 SISTEMA DE MODAL CUSTOMIZADO
@@ -1129,19 +1267,67 @@ export default function VisitaDetailScreen() {
    */
 
   useEffect(() => {
-    if (visita && userLocation && mapRef.current) {
-      const config = safeParseJson(visita.project_config_json, {});
-      const addressConfig = parseAddressGpsConfig(visita.endereco);
-      const lojaLat = parseFloat(String(addressConfig.lojaLatConfig ?? config.loja_lat ?? visita.latitude ?? 0));
-      const lojaLng = parseFloat(String(addressConfig.lojaLngConfig ?? config.loja_lng ?? visita.longitude ?? 0));
+    if (
+      visita &&
+      userLocation &&
+      mapReady &&
+      mapRef.current
+    ) {
+      const config =
+        safeParseJson(
+          visita.project_config_json,
+          {}
+        );
 
-      if (lojaLat !== 0 && lojaLng !== 0) {
-        setTimeout(() => {
-          ajustarZoomMapa(lojaLat, lojaLng);
-        }, 600);
+      const addressConfig =
+        parseAddressGpsConfig(
+          visita.endereco
+        );
+
+      const lojaLat =
+        parseFloat(
+          String(
+            addressConfig.lojaLatConfig ??
+            config.loja_lat ??
+            visita.latitude ??
+            0
+          )
+        );
+
+      const lojaLng =
+        parseFloat(
+          String(
+            addressConfig.lojaLngConfig ??
+            config.loja_lng ??
+            visita.longitude ??
+            0
+          )
+        );
+
+      if (
+        lojaLat !== 0 &&
+        lojaLng !== 0
+      ) {
+        const timer =
+          setTimeout(
+            () => {
+              ajustarZoomMapa(
+                lojaLat,
+                lojaLng
+              );
+            },
+            250
+          );
+
+        return () =>
+          clearTimeout(timer);
       }
     }
-  }, [userLocation, visita]);
+  }, [
+    userLocation,
+    visita,
+    mapReady
+  ]);
 
   const carregarJustificativas = async () => {
     try {
@@ -1174,9 +1360,9 @@ export default function VisitaDetailScreen() {
 
     // Fallback para não deixar o promotor travado caso o sync ainda não baixe as justificativas.
     setJustificativas([
-      { id: 'loja_fechada', descricao: 'Loja Fechada' },
-      { id: 'demandas_extras', descricao: 'Demandas Extras' },
-      { id: 'outro', descricao: 'Outro (Justifique)' },
+      { id: 'loja_fechada', descricao: visitT('visitStoreClosedReason', 'Loja fechada') },
+      { id: 'demandas_extras', descricao: visitT('visitExtraDemandsReason', 'Demandas extras') },
+      { id: 'outro', descricao: visitT('visitOtherReason', 'Outro (justifique)') },
     ]);
   };
 
@@ -1299,7 +1485,7 @@ export default function VisitaDetailScreen() {
                   item?.nome ||
                   item?.surveyTitle ||
                   item?.survey_title ||
-                  'Pesquisa da visita',
+                  visitT('visitDefaultSurveyTitle', 'Pesquisa da visita'),
                 qtdPerguntas: Array.isArray(directQuestions) ? directQuestions.length : 0,
                 concluida: repeatableMeta.repetivel
                   ? visitClosedForRepeatable
@@ -1364,7 +1550,7 @@ export default function VisitaDetailScreen() {
                 item?.survey_title ||
                 item?.tituloPesquisa ||
                 item?.titulo_pesquisa ||
-                'Pesquisa da visita',
+                visitT('visitDefaultSurveyTitle', 'Pesquisa da visita'),
               qtdPerguntas: (current?.qtdPerguntas || 0) + 1,
               concluida: finalRepeatable
                 ? visitClosedForRepeatable
@@ -1440,7 +1626,7 @@ export default function VisitaDetailScreen() {
           const nomeFinal =
             row?.nome ||
             survey.titulo ||
-            'Pesquisa da visita';
+            visitT('visitDefaultSurveyTitle', 'Pesquisa da visita');
 
           const repeatableCount =
             Number(
@@ -1586,7 +1772,7 @@ export default function VisitaDetailScreen() {
                 t.titulo ||
                 raw.titulo ||
                 raw.nome ||
-                'Tarefa Adicional',
+                visitT('visitAdditionalTaskTitle', 'Tarefa adicional'),
               qtdPerguntas:
                 Array.isArray(perguntas)
                   ? perguntas.length
@@ -1638,7 +1824,7 @@ export default function VisitaDetailScreen() {
       setTarefasRenderizadas(tarefasConsolidadas);
     } catch (error) {
       console.error('❌ Erro ao buscar dados:', error);
-      showCustomAlert('Erro', 'Não foi possível carregar os dados da visita.', 'error');
+      showCustomAlert(visitT('visitGenericErrorTitle', 'Erro'), visitT('visitLoadErrorMessage', 'Não foi possível carregar os dados da visita.'), 'error');
     } finally {
       setLoading(false);
     }
@@ -1652,6 +1838,80 @@ export default function VisitaDetailScreen() {
         setUserLocation({ latitude: loc.latitude, longitude: loc.longitude });
       }
     } catch (e) {}
+  };
+
+  // MOBILE_VISIT_PULL_TO_SYNC_V1
+  const handlePullToSync = async () => {
+    if (refreshing || isSyncing) return;
+
+    setRefreshing(true);
+
+    try {
+      await globalSync();
+
+      await Promise.all([
+        carregarDadosCompletos(),
+        obterLocalizacaoInicial(),
+      ]);
+    } catch (error: any) {
+      await addAppLog({
+        level: 'WARNING',
+        module: 'VISITA',
+        action: 'PULL_TO_SYNC_FAILED',
+        message: 'Sincronização manual por gesto falhou na tela da visita.',
+        metadata: {
+          visitId: visita?.id || id,
+          error: error?.message || String(error),
+        },
+      }).catch(() => {});
+
+      showCustomAlert(
+        visitT('visitSyncNotCompletedTitle', 'Sincronização não concluída'),
+        visitT('visitSyncNotCompletedMessage', 'Não foi possível sincronizar agora. Seus dados locais foram preservados e uma nova tentativa poderá ser feita puxando a tela para baixo.'),
+        'warning'
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // MOBILE_VISIT_SYNC_AFTER_ACTION_V1
+  const triggerSyncAfterVisitAction = (
+    action: 'CHECKIN' | 'CHECKOUT' | 'JUSTIFICAR',
+    operationId: string
+  ) => {
+    void (async () => {
+      try {
+        await globalSync();
+
+        await addAppLog({
+          level: 'INFO',
+          module: 'VISITA',
+          action: `AUTO_SYNC_AFTER_${action}`,
+          message: 'Sincronização automática disparada após ação operacional da visita.',
+          metadata: {
+            visitId: visita?.id,
+            clientOperationId: operationId,
+          },
+        }).catch(() => {});
+      } catch (error: any) {
+        /*
+         * Offline-first: a ação já está salva localmente e na Outbox.
+         * Uma falha de rede não desfaz check-in/check-out/justificativa.
+         */
+        await addAppLog({
+          level: 'WARNING',
+          module: 'VISITA',
+          action: `AUTO_SYNC_AFTER_${action}_FAILED`,
+          message: 'A ação foi preservada localmente, mas a tentativa imediata de sincronização falhou.',
+          metadata: {
+            visitId: visita?.id,
+            clientOperationId: operationId,
+            error: error?.message || String(error),
+          },
+        }).catch(() => {});
+      }
+    })();
   };
 
   const ajustarZoomMapa = (lojaLat: number, lojaLng: number) => {
@@ -1755,6 +2015,16 @@ export default function VisitaDetailScreen() {
       promotorId: user?.id,
       promotor_id: user?.id,
       usuario_id: user?.id,
+      usuario_nome:
+        user?.nome ||
+        user?.name ||
+        user?.email ||
+        null,
+      promotor_nome:
+        user?.nome ||
+        user?.name ||
+        user?.email ||
+        null,
       lojaId: visita?.loja_id,
       loja_id: visita?.loja_id,
       dataProgramada: visita?.data_programada,
@@ -1797,15 +2067,15 @@ export default function VisitaDetailScreen() {
 
     return new Promise((resolve) => {
       showCustomAlert(
-        'Foto obrigatória',
-        'Escolha como deseja anexar a foto para continuar.',
+        visitT('visitPhotoRequiredTitle', 'Foto obrigatória'),
+        visitT('visitPhotoChooseSource', 'Escolha como deseja anexar a foto para continuar.'),
         'info',
-        'Câmera',
+        visitT('visitCamera', 'Câmera'),
         () => {
           hideCustomAlert();
           resolve('camera');
         },
-        'Galeria',
+        visitT('visitGallery', 'Galeria'),
         () => {
           hideCustomAlert();
           resolve('gallery');
@@ -1842,8 +2112,12 @@ export default function VisitaDetailScreen() {
       source !== 'camera'
     ) {
       showCustomAlert(
-        'Câmera obrigatória',
-        `A foto de ${getPhotoLabelByAction(acao)} deve ser tirada no momento da visita.`,
+        visitT('visitCameraRequiredTitle', 'Câmera obrigatória'),
+        visitT(
+          'visitCameraRequiredMessage',
+          'A foto de {{action}} deve ser tirada no momento da visita.',
+          { action: getPhotoLabelByAction(acao) }
+        ),
         'warning'
       );
 
@@ -1856,10 +2130,10 @@ export default function VisitaDetailScreen() {
 
     if (!permission.granted) {
       showCustomAlert(
-        'Permissão necessária',
+        visitT('visitPermissionRequiredTitle', 'Permissão necessária'),
         source === 'camera'
-          ? 'A câmera precisa estar liberada para registrar a foto obrigatória.'
-          : 'A galeria precisa estar liberada para selecionar a foto obrigatória.',
+          ? visitT('visitCameraPermissionMessage', 'A câmera precisa estar liberada para registrar a foto obrigatória.')
+          : visitT('visitGalleryPermissionMessage', 'A galeria precisa estar liberada para selecionar a foto obrigatória.'),
         'error'
       );
       return null;
@@ -1881,8 +2155,12 @@ export default function VisitaDetailScreen() {
 
     if (result.canceled || !result.assets?.[0]?.uri) {
       showCustomAlert(
-        'Foto obrigatória',
-        `Para continuar, é necessário anexar a foto de ${getPhotoLabelByAction(acao)}.`,
+        visitT('visitPhotoRequiredTitle', 'Foto obrigatória'),
+        visitT(
+          'visitPhotoAttachRequiredMessage',
+          'Para continuar, é necessário anexar a foto de {{action}}.',
+          { action: getPhotoLabelByAction(acao) }
+        ),
         'warning'
       );
       return null;
@@ -1892,10 +2170,10 @@ export default function VisitaDetailScreen() {
 
     if (!validatePhotoOrientation(asset, photoPolicy.orientation)) {
       showCustomAlert(
-        'Orientação inválida',
+        visitT('visitInvalidOrientationTitle', 'Orientação inválida'),
         photoPolicy.orientation === 'HORIZONTAL'
-          ? 'A configuração exige foto na horizontal. Tire a foto novamente com o celular deitado.'
-          : 'A configuração exige foto na vertical. Tire a foto novamente com o celular em pé.',
+          ? visitT('visitHorizontalPhotoMessage', 'A configuração exige foto na horizontal. Tire a foto novamente com o celular deitado.')
+          : visitT('visitVerticalPhotoMessage', 'A configuração exige foto na vertical. Tire a foto novamente com o celular em pé.'),
         'warning'
       );
       return null;
@@ -1935,9 +2213,27 @@ export default function VisitaDetailScreen() {
 
       if (outraVisitaAberta) {
         setCheckinLoading(false);
+
+        const visitaAbertaPor =
+          getVisitOpenedByName(
+            outraVisitaAberta
+          ) ||
+          visitT('visitNotIdentified', 'Não identificado');
+
+        const statusAberto =
+          getVisitStatusLabel(
+            outraVisitaAberta.status
+          );
+
+        // MOBILE_VISIT_OPEN_ALERT_COMPACT_V2
         showCustomAlert(
-          'Existe uma visita em andamento',
-          `Finalize primeiro a visita aberta em ${outraVisitaAberta.loja_nome || 'outra loja'} antes de iniciar um novo check-in.`,
+          visitT('visitOpenTitle', 'Visita em andamento'),
+          [
+            `${visitT('visitOpenStoreLabel', 'Loja')}: ${outraVisitaAberta.loja_nome || visitT('visitNotInformed', 'Não informada')}`,
+            `${visitT('visitOpenOpenedByLabel', 'Aberta por')}: ${visitaAbertaPor}`,
+            `${visitT('visitOpenCheckinLabel', 'Check-in')}: ${formatDateTimeLabel(outraVisitaAberta.checkin_at)}`,
+            `${visitT('visitOpenStatusLabel', 'Status')}: ${statusAberto}`,
+          ].join('\n'),
           'warning'
         );
         return;
@@ -1975,8 +2271,8 @@ export default function VisitaDetailScreen() {
       ) {
         setCheckinLoading(false);
         showCustomAlert(
-          'Erro de GPS',
-          'Não foi possível obter sua localização com precisão para liberar o check-in.',
+          visitT('visitGpsErrorTitle', 'Erro de GPS'),
+          visitT('visitGpsCheckinMessage', 'Não foi possível obter sua localização com precisão para liberar o check-in.'),
           'error'
         );
         return;
@@ -2017,8 +2313,12 @@ export default function VisitaDetailScreen() {
 
             setCheckinLoading(false);
             showCustomAlert(
-              'Check-in bloqueado',
-              `Você está a ${distanciaMetros}m da loja. O limite configurado para este projeto é ${gpsPolicy.gpsRadius}m.`,
+              visitT('visitCheckinBlockedTitle', 'Check-in bloqueado'),
+              visitT(
+                'visitOutsideRadiusMessage',
+                'Você está a {{distance}}m da loja. O limite configurado para este projeto é {{radius}}m.',
+                { distance: distanciaMetros, radius: gpsPolicy.gpsRadius }
+              ),
               'error'
             );
             return;
@@ -2033,10 +2333,14 @@ export default function VisitaDetailScreen() {
             });
 
             showCustomAlert(
-              'Fora do raio da loja',
-              `Você está a ${distanciaMetros}m da loja. O limite configurado para este projeto é ${gpsPolicy.gpsRadius}m.\n\nDeseja registrar a entrada assim mesmo?`,
+              visitT('visitOutsideRadiusTitle', 'Fora do raio da loja'),
+              visitT(
+                'visitOutsideRadiusConfirmMessage',
+                'Você está a {{distance}}m da loja. O limite configurado para este projeto é {{radius}}m.\n\nDeseja registrar a entrada assim mesmo?',
+                { distance: distanciaMetros, radius: gpsPolicy.gpsRadius }
+              ),
               'warning',
-              'Continuar',
+              visitT('visitContinueButton', 'Continuar'),
               async () => {
                 hideCustomAlert();
                 gpsDebug('decision-warning-confirmed-by-user', {
@@ -2047,7 +2351,7 @@ export default function VisitaDetailScreen() {
 
                 await registrarAcaoComFotoObrigatoria(myLat, myLng, 'CHECKIN');
               },
-              'Cancelar',
+              visitT('visitCancelButton', 'Cancelar'),
               () => {
                 hideCustomAlert();
                 setCheckinLoading(false);
@@ -2068,7 +2372,7 @@ export default function VisitaDetailScreen() {
       await registrarAcaoComFotoObrigatoria(myLat, myLng, 'CHECKIN');
     } catch (error) {
       setCheckinLoading(false);
-      showCustomAlert('Erro', 'Falha ao processar Check-in.', 'error');
+      showCustomAlert(visitT('visitGenericErrorTitle', 'Erro'), visitT('visitCheckinProcessError', 'Falha ao processar Check-in.'), 'error');
     }
   };
 
@@ -2079,16 +2383,16 @@ export default function VisitaDetailScreen() {
     if (tarefasObrigatoriasPendentes.length > 0) {
       const listaPendencias = tarefasObrigatoriasPendentes
         .map((tarefa: any, index: number) => {
-          const titulo = String(tarefa?.titulo || 'Pesquisa/Tarefa sem nome');
+          const titulo = String(tarefa?.titulo || visitT('visitUnnamedTask', 'Pesquisa/Tarefa sem nome'));
 
           if (tarefa?.repetivel === true) {
             const minRequired = Number(tarefa?.repeticaoMin ?? 1);
             const doneCount = Number(tarefa?.coletasCount || 0);
             const label = doneCount === 1
-              ? String(tarefa?.repeticaoLabelSingular || 'registro')
-              : String(tarefa?.repeticaoLabelPlural || 'registros');
+              ? String(tarefa?.repeticaoLabelSingular || visitT('visitRecordSingular', 'registro'))
+              : String(tarefa?.repeticaoLabelPlural || visitT('visitRecordPlural', 'registros'));
 
-            return `${index + 1}. ${titulo} (${doneCount}/${minRequired} ${label} mínimos)`;
+            return `${index + 1}. ${titulo} (${doneCount}/${minRequired} ${label} ${visitT('visitMinimumPlural', 'mínimos')})`;
           }
 
           return `${index + 1}. ${titulo}`;
@@ -2096,8 +2400,12 @@ export default function VisitaDetailScreen() {
         .join('\n');
 
       showCustomAlert(
-        'Saída Bloqueada',
-        `Você ainda precisa finalizar ${tarefasObrigatoriasPendentes.length} formulário(s)/tarefa(s) obrigatório(s) desta visita:\n\n${listaPendencias}`,
+        visitT('visitCheckoutBlockedTitle', 'Saída bloqueada'),
+        visitT(
+          'visitCheckoutBlockedMessage',
+          'Você ainda precisa finalizar {{count}} formulário(s)/tarefa(s) obrigatório(s) desta visita:\n\n{{items}}',
+          { count: tarefasObrigatoriasPendentes.length, items: listaPendencias }
+        ),
         'warning'
       );
       return;
@@ -2115,8 +2423,8 @@ export default function VisitaDetailScreen() {
       ) {
         setCheckoutLoading(false);
         showCustomAlert(
-          'Erro de GPS',
-          'Não foi possível registrar seu check-out pois o sinal de GPS está indisponível.',
+          visitT('visitGpsErrorTitle', 'Erro de GPS'),
+          visitT('visitCheckoutGpsMessage', 'Não foi possível registrar seu check-out pois o sinal de GPS está indisponível.'),
           'error'
         );
         return;
@@ -2125,7 +2433,7 @@ export default function VisitaDetailScreen() {
       await registrarAcaoComFotoObrigatoria(myLocation.latitude, myLocation.longitude, 'CHECKOUT');
     } catch (error) {
       setCheckoutLoading(false);
-      showCustomAlert('Erro', 'Falha inesperada ao processar o Check-out.', 'error');
+      showCustomAlert(visitT('visitGenericErrorTitle', 'Erro'), visitT('visitCheckoutProcessError', 'Falha inesperada ao processar o Check-out.'), 'error');
     }
   };
 
@@ -2140,8 +2448,8 @@ export default function VisitaDetailScreen() {
   const confirmarJustificativa = async () => {
     if (!selectedJustificativaId) {
       showCustomAlert(
-        'Justificativa obrigatória',
-        'Selecione o motivo da ausência antes de continuar.',
+        visitT('visitJustificationRequiredTitle', 'Justificativa obrigatória'),
+        visitT('visitJustificationRequiredMessage', 'Selecione o motivo da ausência antes de continuar.'),
         'warning'
       );
       return;
@@ -2149,11 +2457,12 @@ export default function VisitaDetailScreen() {
 
     const selected = justificativas.find((item) => item.id === selectedJustificativaId) || null;
     const selectedText = String(selected?.descricao || '').toLowerCase();
+    const selectedId = String(selected?.id || '').trim().toLowerCase();
 
-    if ((selectedText.includes('outro') || selectedText.includes('justifique')) && !detalheJustificativa.trim()) {
+    if ((selectedId === 'outro' || selectedText.includes('outro') || selectedText.includes('justifique')) && !detalheJustificativa.trim()) {
       showCustomAlert(
-        'Detalhe obrigatório',
-        'Informe o detalhe da justificativa para o motivo selecionado.',
+        visitT('visitJustificationDetailRequiredTitle', 'Detalhe obrigatório'),
+        visitT('visitJustificationDetailRequiredMessage', 'Informe o detalhe da justificativa para o motivo selecionado.'),
         'warning'
       );
       return;
@@ -2234,6 +2543,17 @@ export default function VisitaDetailScreen() {
         justificativa_id: justificativa?.id || null,
         justificativa: justificativa?.descricao || null,
         detalhe_justificativa: detalhe || '',
+        ...(acao === 'CHECKIN'
+          ? {
+              checkin_user_id:
+                user?.id || null,
+              checkin_user_name:
+                user?.nome ||
+                user?.name ||
+                user?.email ||
+                null,
+            }
+          : {}),
         ...(fotoUri ? { [getPhotoFieldByAction(acao)]: fotoUri } : {}),
       };
 
@@ -2283,6 +2603,27 @@ export default function VisitaDetailScreen() {
             await db.runAsync(
               `UPDATE visits SET ${fotoField} = ?, pending_sync = 1, updated_at = ? WHERE id = ?`,
               [fotoUri, now, visita.id]
+            );
+          }
+
+          // MOBILE_VISIT_OPENED_BY_V1
+          if (acao === 'CHECKIN') {
+            await db.runAsync(
+              `UPDATE visits
+               SET checkin_user_id = ?,
+                   checkin_user_name = ?,
+                   pending_sync = 1,
+                   updated_at = ?
+               WHERE id = ?`,
+              [
+                user?.id || null,
+                user?.nome ||
+                  user?.name ||
+                  user?.email ||
+                  null,
+                now,
+                visita.id,
+              ]
             );
           }
 
@@ -2477,12 +2818,12 @@ export default function VisitaDetailScreen() {
 
         showCustomAlert(
           manifestMissing
-            ? 'Sincronização necessária'
-            : 'Não foi possível salvar a ação',
+            ? visitT('visitSyncRequiredTitle', 'Sincronização necessária')
+            : visitT('visitLocalSaveFailedTitle', 'Não foi possível salvar a ação'),
 
           manifestMissing
-            ? 'Este aparelho ainda não possui um manifesto offline confirmado para esta Carteira Livre. Sincronize o aplicativo enquanto estiver online e tente o check-in novamente. Nenhum estado parcial foi mantido.'
-            : 'A operação não foi confirmada localmente porque não foi possível gravar todo o estado e a fila de sincronização de forma atômica. Tente novamente; nenhum estado parcial foi mantido.',
+            ? visitT('visitSyncRequiredMessage', 'Este aparelho ainda não possui um manifesto offline confirmado para esta Carteira Livre. Sincronize o aplicativo enquanto estiver online e tente o check-in novamente. Nenhum estado parcial foi mantido.')
+            : visitT('visitLocalSaveFailedMessage', 'A operação não foi confirmada localmente porque não foi possível gravar todo o estado e a fila de sincronização de forma atômica. Tente novamente; nenhum estado parcial foi mantido.'),
 
           'error'
         );
@@ -2566,6 +2907,11 @@ export default function VisitaDetailScreen() {
         );
       }
 
+      triggerSyncAfterVisitAction(
+        acao,
+        operationId
+      );
+
       if (acao === 'CHECKIN') {
         /*
          * Recarrega imediatamente:
@@ -2578,17 +2924,17 @@ export default function VisitaDetailScreen() {
         }
         setCheckinLoading(false);
         showCustomAlert(
-          'Entrada Registrada',
-          'O seu check-in na loja foi salvo no celular e será sincronizado automaticamente.',
+          visitT('visitCheckinSavedTitle', 'Entrada registrada'),
+          visitT('visitCheckinSavedMessage', 'O seu check-in na loja foi salvo no celular e será sincronizado automaticamente.'),
           'success'
         );
       } else if (acao === 'CHECKOUT') {
         setCheckoutLoading(false);
         showCustomAlert(
-          'Atendimento Finalizado',
-          'Seu check-out foi salvo com sucesso. Bom trabalho!',
+          visitT('visitCheckoutSavedTitle', 'Atendimento finalizado'),
+          visitT('visitCheckoutSavedMessage', 'Seu check-out foi salvo com sucesso. Bom trabalho!'),
           'success',
-          'Concluir',
+          visitT('visitCompleteButton', 'Concluir'),
           () => {
             hideCustomAlert();
             router.back();
@@ -2597,10 +2943,10 @@ export default function VisitaDetailScreen() {
       } else {
         setJustifyLoading(false);
         showCustomAlert(
-          'Visita Justificada',
-          'A justificativa foi salva no celular e será sincronizada automaticamente.',
+          visitT('visitJustifiedSavedTitle', 'Visita justificada'),
+          visitT('visitJustifiedSavedMessage', 'A justificativa foi salva no celular e será sincronizada automaticamente.'),
           'success',
-          'Concluir',
+          visitT('visitCompleteButton', 'Concluir'),
           () => {
             hideCustomAlert();
             router.back();
@@ -2611,7 +2957,7 @@ export default function VisitaDetailScreen() {
       setCheckinLoading(false);
       setCheckoutLoading(false);
       setJustifyLoading(false);
-      showCustomAlert('Erro no Banco', 'Não foi possível salvar a ação na memória do celular.', 'error');
+      showCustomAlert(visitT('visitDatabaseErrorTitle', 'Erro no banco'), visitT('visitDatabaseErrorMessage', 'Não foi possível salvar a ação na memória do celular.'), 'error');
     }
   };
 
@@ -2626,7 +2972,7 @@ export default function VisitaDetailScreen() {
   if (!visita) {
     return (
       <View style={[styles.center, { backgroundColor: bg }]}>
-        <Text testID="visit-not-found" accessibilityLabel="visit-not-found" style={{ color: textPrimary }}>Visita não encontrada.</Text>
+        <Text testID="visit-not-found" accessibilityLabel="visit-not-found" style={{ color: textPrimary }}>{visitT('visitNotFound', 'Visita não encontrada.')}</Text>
       </View>
     );
   }
@@ -2677,13 +3023,54 @@ export default function VisitaDetailScreen() {
   const checkoutBlockedByRequiredTask =
     isAndamento && tarefasObrigatoriasPendentesCheckout.length > 0;
 
+  // MOBILE_VISIT_SMART_SURVEY_BUTTON_V1
+  const tarefasExecutaveis =
+    tarefasRenderizadas.filter(
+      (tarefa: any) =>
+        tarefa?.concluida !== true &&
+        tarefa?.bloqueadaPorLimite !== true
+    );
+
+  const tarefaEmAndamentoPrioritaria =
+    tarefasExecutaveis.find(
+      (tarefa: any) =>
+        normalizeStatus(tarefa?.status) === 'EM_ANDAMENTO' ||
+        (
+          tarefa?.repetivel === true &&
+          Number(tarefa?.coletasCount || 0) > 0
+        )
+    ) || null;
+
+  const proximaTarefaPendente =
+    tarefasExecutaveis.find(
+      (tarefa: any) =>
+        normalizeStatus(tarefa?.status) === 'PENDENTE'
+    ) || null;
+
+  const tarefaPesquisaPrioritaria =
+    tarefaEmAndamentoPrioritaria ||
+    proximaTarefaPendente;
+
+  const abrirPesquisaDaTarefa = (tarefa: any) => {
+    if (!tarefa || !visita?.id) return;
+
+    router.push(
+      `../pesquisa/${visita.id}?pesquisaId=${encodeURIComponent(String(tarefa.id || ''))}&serverCount=${encodeURIComponent(String(tarefa.coletasCount || 0))}&repeatMax=${encodeURIComponent(String(tarefa.repeticaoMax || ''))}&repeatLabelPlural=${encodeURIComponent(String(tarefa.repeticaoLabelPlural || 'registros'))}&repeatLabelSingular=${encodeURIComponent(String(tarefa.repeticaoLabelSingular || 'registro'))}` as any
+    );
+  };
+
+  const handlePesquisar = () => {
+    if (!tarefaPesquisaPrioritaria) return;
+    abrirPesquisaDaTarefa(tarefaPesquisaPrioritaria);
+  };
+
   let displayTime = '--:--';
-  let timeLabel = 'Previsão:';
+  let timeLabel = visitT('visitForecastLabel', 'Previsão:');
   const hasCheckin = visita.checkin_at != null;
 
   if (hasCheckin) {
     displayTime = formatTime(visita.checkin_at);
-    timeLabel = 'Entrada:';
+    timeLabel = visitT('visitEntryLabel', 'Entrada:');
   } else if (visita.hora_entrada_prevista && visita.hora_entrada_prevista !== 'undefined') {
     displayTime = String(visita.hora_entrada_prevista).substring(0, 5);
   }
@@ -2714,19 +3101,19 @@ export default function VisitaDetailScreen() {
 
         if (diff > tolerance) {
           delayBadge = {
-            text: `Atraso ${diffStr}`,
+            text: visitT('visitDelayLabel', 'Atraso {{time}}', { time: diffStr }),
             color: '#EF4444',
             bg: isDark ? 'rgba(239, 68, 68, 0.2)' : 'rgba(239, 68, 68, 0.1)',
           };
         } else if (diff < -tolerance) {
           delayBadge = {
-            text: `Adiantado ${diffStr}`,
+            text: visitT('visitEarlyLabel', 'Adiantado {{time}}', { time: diffStr }),
             color: '#3B82F6',
             bg: isDark ? 'rgba(59, 130, 246, 0.2)' : 'rgba(59, 130, 246, 0.1)',
           };
         } else {
           delayBadge = {
-            text: 'No Horário',
+            text: visitT('visitOnTimeLabel', 'No horário'),
             color: '#10B981',
             bg: isDark ? 'rgba(16, 185, 129, 0.2)' : 'rgba(16, 185, 129, 0.1)',
           };
@@ -2790,12 +3177,24 @@ export default function VisitaDetailScreen() {
             accessibilityLabel="visit-screen-title"
             style={[styles.headerTitle, { color: textPrimary }]}
           >
-            Detalhes da Visita
+            {visitT('visitDetailsTitle', 'Detalhes da Visita')}
           </Text>
         <View style={{ width: 24 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handlePullToSync}
+            tintColor={colorCheckin}
+            colors={[colorCheckin]}
+            progressBackgroundColor={cardBg}
+          />
+        }
+      >
         <View
           style={[
             styles.cardWrapper,
@@ -2805,7 +3204,7 @@ export default function VisitaDetailScreen() {
           <View style={styles.cardMainRow}>
             <View style={styles.cardHeaderRow}>
               <View style={[styles.badge, { backgroundColor: colors.bg, borderColor: colors.border }]}>
-                <Text style={[styles.badgeText, { color: colors.text }]}>{normalizedStatus}</Text>
+                <Text style={[styles.badgeText, { color: colors.text }]}>{getVisitStatusLabel(normalizedStatus)}</Text>
               </View>
 
               {isFreePortfolioVisit && (
@@ -2889,6 +3288,8 @@ export default function VisitaDetailScreen() {
               <MapView
                 ref={mapRef}
                 style={styles.map}
+                onMapReady={() => setMapReady(true)}
+                onLayout={() => setMapReady(true)}
                 initialRegion={{
                   latitude: lojaLat || -23.55,
                   longitude: lojaLng || -46.63,
@@ -2914,30 +3315,37 @@ export default function VisitaDetailScreen() {
           ) : (
             <View style={[styles.mapFallback, { backgroundColor: isDark ? '#111827' : '#F8FAFC' }]}>
               <MapPin size={24} color={textSecondary} />
-              <Text style={[styles.mapFallbackTitle, { color: textPrimary }]}>Mapa indisponível</Text>
+              <Text style={[styles.mapFallbackTitle, { color: textPrimary }]}>{visitT('visitMapUnavailableTitle', 'Mapa indisponível')}</Text>
               <Text style={[styles.mapFallbackText, { color: textSecondary }]}>
-                A chave do Google Maps não está configurada neste build. A visita pode ser executada normalmente.
+                {visitT('visitMapUnavailableMessage', 'A chave do Google Maps não está configurada neste build. A visita pode ser executada normalmente.')}
               </Text>
             </View>
           )}
         </View>
 
         <View style={styles.tasksSection}>
-          <Text style={[styles.sectionTitle, { color: textPrimary }]}>Tarefas desta visita</Text>
+          <Text style={[styles.sectionTitle, { color: textPrimary }]}>{visitT('visitTasksTitle', 'Tarefas desta visita')}</Text>
 
           {tarefasRenderizadas.length > 0 ? (
             tarefasRenderizadas.map((tarefa: any, index: number) => {
+              const tarefaStatus =
+                normalizeStatus(
+                  tarefa?.status ||
+                  'PENDENTE'
+                );
+
               const tarefaConcluida =
                 tarefa?.concluida ===
-                true;
+                  true ||
+                isDoneStatus(
+                  tarefaStatus
+                );
 
-              // MOBILE_VISIT_TASK_VISUAL_STATE_V1
+              // MOBILE_VISIT_TASK_VISUAL_STATE_V2
               const tarefaEmAndamento =
                 !tarefaConcluida &&
                 (
-                  normalizeStatus(
-                    tarefa?.status
-                  ) ===
+                  tarefaStatus ===
                     'EM_ANDAMENTO' ||
                   (
                     tarefa?.repetivel ===
@@ -2949,12 +3357,61 @@ export default function VisitaDetailScreen() {
                   )
                 );
 
-              const taskStateColor =
+              const tarefaVisualStatus =
+                tarefaConcluida
+                  ? 'REALIZADA'
+                  : tarefaEmAndamento
+                    ? 'EM_ANDAMENTO'
+                    : tarefaStatus;
+
+              const tarefaJustificada =
+                tarefaVisualStatus ===
+                'JUSTIFICADA';
+
+              /*
+               * MOBILE_VISIT_TASK_VISUAL_STATE_V3
+               *
+               * Mantém o layout original do card. Status aparece por semântica
+               * no ícone/subtítulo; não pintamos todo o contorno com a paleta
+               * de status, evitando o visual claro/"caixa" do V2.
+               */
+              const taskAccentColor =
                 tarefaConcluida
                   ? colorCheckin
                   : tarefaEmAndamento
                     ? colorInProgress
-                    : border;
+                    : tarefaJustificada
+                      ? colorJustify
+                      : textSecondary;
+
+              const taskBorderColor =
+                tarefaConcluida
+                  ? colorCheckin
+                  : tarefaEmAndamento
+                    ? colorInProgress
+                    : tarefaJustificada
+                      ? colorJustify
+                      : border;
+
+              const taskIconBackground =
+                tarefaConcluida
+                  ? colorCheckin
+                  : tarefaEmAndamento
+                    ? 'rgba(59, 130, 246, 0.16)'
+                    : tarefaJustificada
+                      ? 'rgba(245, 158, 11, 0.15)'
+                      : isDark
+                        ? 'rgba(148, 163, 184, 0.10)'
+                        : 'rgba(100, 116, 139, 0.10)';
+
+              const taskStatusLabel =
+                tarefaConcluida
+                  ? visitT('visitTaskCompleted', 'Tarefa concluída')
+                  : tarefaEmAndamento
+                    ? visitT('visitTaskInProgress', 'Em andamento')
+                    : tarefaJustificada
+                      ? visitT('visitTaskJustified', 'Justificada')
+                      : visitT('visitTaskPending', 'Pendente');
 
               return (
               <TouchableOpacity
@@ -2967,21 +3424,35 @@ export default function VisitaDetailScreen() {
                     backgroundColor:
                       cardBg,
                     borderColor:
-                      taskStateColor
+                      taskBorderColor
                   },
                 ]}
                 onPress={() =>
                   isAndamento
-                    ? tarefa?.bloqueadaPorLimite
+                    ? tarefaConcluida && tarefa?.repetivel !== true
                       ? showCustomAlert(
-                          'Limite atingido',
-                          `Esta pesquisa já possui ${tarefa.repeatableSubtitle || 'o limite máximo de respostas'}. Não é possível registrar nova resposta.`,
+                          visitT('visitTaskAlreadyCompletedTitle', 'Pesquisa já concluída'),
+                          visitT('visitTaskAlreadyCompletedMessage', 'Esta pesquisa não é repetível e já foi respondida nesta visita. Não é possível registrar uma nova resposta.'),
                           'warning'
                         )
-                      : router.push(`../pesquisa/${visita.id}?pesquisaId=${encodeURIComponent(String(tarefa.id || ''))}&serverCount=${encodeURIComponent(String(tarefa.coletasCount || 0))}&repeatMax=${encodeURIComponent(String(tarefa.repeticaoMax || ''))}&repeatLabelPlural=${encodeURIComponent(String(tarefa.repeticaoLabelPlural || 'registros'))}&repeatLabelSingular=${encodeURIComponent(String(tarefa.repeticaoLabelSingular || 'registro'))}` as any)
+                      : tarefa?.bloqueadaPorLimite
+                        ? showCustomAlert(
+                            visitT('repeatableLimitReachedTitle', 'Limite atingido'),
+                            visitT(
+                              'repeatableLimitReachedMessage',
+                              'Esta pesquisa já possui {{current}}/{{max}} {{label}}. Não é possível registrar nova resposta.',
+                              {
+                                current: Number(tarefa?.coletasCount || 0),
+                                max: Number(tarefa?.repeticaoMax || 0),
+                                label: String(tarefa?.repeticaoLabelPlural || visitT('visitRecordPlural', 'registros'))
+                              }
+                            ),
+                            'warning'
+                          )
+                        : abrirPesquisaDaTarefa(tarefa)
                     : showCustomAlert(
-                        'Aviso',
-                        'Realize o check-in na loja primeiro para liberar a execução das tarefas.',
+                        visitT('visitCheckinFirstTitle', 'Aviso'),
+                        visitT('visitCheckinFirstMessage', 'Realize o check-in na loja primeiro para liberar a execução das tarefas.'),
                         'warning'
                       )
                 }
@@ -2992,26 +3463,34 @@ export default function VisitaDetailScreen() {
                     styles.taskIconBg,
                     {
                       backgroundColor:
-                        tarefaConcluida
-                          ? colorCheckin
-                          : tarefaEmAndamento
-                            ? 'rgba(59, 130, 246, 0.16)'
-                            : 'rgba(16, 185, 129, 0.1)'
+                        taskIconBackground
                     },
                   ]}
                 >
                   {tarefaConcluida ? (
                     <CheckCircle2
                       size={22}
-                      color="#FFF"
+                      color="#FFFFFF"
                     />
-                  ) : (
-                    <ClipboardCheck
+                  ) : tarefaEmAndamento ? (
+                    <Clock
                       size={22}
                       color={
-                        tarefaEmAndamento
-                          ? colorInProgress
-                          : colorCheckin
+                        taskAccentColor
+                      }
+                    />
+                  ) : tarefaJustificada ? (
+                    <AlertCircle
+                      size={22}
+                      color={
+                        taskAccentColor
+                      }
+                    />
+                  ) : (
+                    <ClipboardList
+                      size={22}
+                      color={
+                        taskAccentColor
                       }
                     />
                   )}
@@ -3029,29 +3508,25 @@ export default function VisitaDetailScreen() {
                       styles.taskSubtitle,
                       {
                         color:
-                          tarefaConcluida
-                            ? colorCheckin
-                            : tarefaEmAndamento
-                              ? colorInProgress
-                              : textSecondary
+                          taskAccentColor
                       }
                     ]}
                   >
                     {tarefa.repeatableSubtitle
                       ? tarefa.repeatableSubtitle
                       : tarefaConcluida
-                        ? 'Tarefa Concluída'
-                        : `${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? 'pergunta' : 'perguntas'}`}
+                        ? visitT('visitTaskCompleted', 'Tarefa concluída')
+                        : `${taskStatusLabel} · ${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? visitT('visitQuestionSingular', 'pergunta') : visitT('visitQuestionPlural', 'perguntas')}`}
                   </Text>
                 </View>
                 <ChevronRight
                   size={18}
                   color={
-                    tarefaConcluida
-                      ? colorCheckin
-                      : tarefaEmAndamento
-                        ? colorInProgress
-                        : border
+                    tarefaConcluida ||
+                    tarefaEmAndamento ||
+                    tarefaJustificada
+                      ? taskAccentColor
+                      : border
                   }
                 />
               </TouchableOpacity>
@@ -3059,7 +3534,7 @@ export default function VisitaDetailScreen() {
             })
           ) : (
             <View style={[styles.emptyTaskCard, { backgroundColor: cardBg, borderColor: border }]}>
-              <Text style={{ color: textSecondary }}>Nenhuma pesquisa encontrada para esta visita.</Text>
+              <Text style={{ color: textSecondary }}>{visitT('visitNoSurveys', 'Nenhuma pesquisa encontrada para esta visita.')}</Text>
             </View>
           )}
         </View>
@@ -3080,8 +3555,12 @@ export default function VisitaDetailScreen() {
           <AlertTriangle size={17} color="#F59E0B" />
           <Text style={[styles.checkoutRequirementText, { color: textPrimary }]}>
             {tarefasObrigatoriasPendentesCheckout.length === 1
-              ? 'Conclua a pesquisa obrigatória para liberar o check-out.'
-              : `Conclua as ${tarefasObrigatoriasPendentesCheckout.length} pesquisas obrigatórias para liberar o check-out.`}
+              ? visitT('visitRequiredCheckoutOne', 'Conclua a pesquisa obrigatória para liberar o check-out.')
+              : visitT(
+                  'visitRequiredCheckoutMany',
+                  'Conclua as {{count}} pesquisas obrigatórias para liberar o check-out.',
+                  { count: tarefasObrigatoriasPendentesCheckout.length }
+                )}
           </Text>
         </View>
       )}
@@ -3114,7 +3593,7 @@ export default function VisitaDetailScreen() {
                 ) : (
                   <>
                     <AlertTriangle size={20} color="#FFF" style={styles.btnIcon} />
-                    <Text style={styles.btnActionText}>Justificar</Text>
+                    <Text style={styles.btnActionText}>{visitT('visitJustifyButton', 'Justificar')}</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -3140,11 +3619,22 @@ export default function VisitaDetailScreen() {
         ) : isAndamento ? (
           <>
             <TouchableOpacity
-              style={[styles.btnAction, { backgroundColor: '#3B82F6', marginRight: 12 }]}
-              onPress={() => router.push(`../pesquisa/${visita.id}` as any)}
+              testID="visit-smart-survey-button"
+              accessibilityLabel="visit-smart-survey-button"
+              style={[
+                styles.btnAction,
+                {
+                  backgroundColor: tarefaPesquisaPrioritaria ? '#3B82F6' : '#6B7280',
+                  marginRight: 12,
+                  opacity: tarefaPesquisaPrioritaria ? 1 : 0.45,
+                },
+              ]}
+              onPress={handlePesquisar}
+              disabled={!tarefaPesquisaPrioritaria}
+              accessibilityState={{ disabled: !tarefaPesquisaPrioritaria }}
             >
               <ClipboardCheck size={20} color="#FFF" style={styles.btnIcon} />
-              <Text style={styles.btnActionText}>Pesquisar</Text>
+              <Text style={styles.btnActionText}>{visitT('visitSearchButton', 'Pesquisar')}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -3176,7 +3666,7 @@ export default function VisitaDetailScreen() {
           <View style={[styles.btnAction, { backgroundColor: cardBg, borderWidth: 1, borderColor: border, width: '100%' }]}>
             <CheckCircle2 size={20} color={colorCheckin} style={styles.btnIcon} />
             <Text style={[styles.btnActionText, { color: colorCheckin }]}>
-              {isRealizada ? 'Atendimento Finalizado' : 'Visita Encerrada'}
+              {isRealizada ? visitT('visitServiceFinished', 'Atendimento finalizado') : visitT('visitClosed', 'Visita encerrada')}
             </Text>
           </View>
         )}
@@ -3189,12 +3679,12 @@ export default function VisitaDetailScreen() {
               <AlertTriangle size={32} color={colorJustify} />
             </View>
 
-            <Text style={[styles.modalTitle, { color: textPrimary }]}>Justificar ausência</Text>
+            <Text style={[styles.modalTitle, { color: textPrimary }]}>{visitT('visitJustifyAbsenceTitle', 'Justificar ausência')}</Text>
             <Text style={[styles.modalText, { color: textSecondary }]}>
-              Selecione o motivo cadastrado no sistema e informe um detalhe, se necessário.
+              {visitT('visitJustifyAbsenceMessage', 'Selecione o motivo cadastrado no sistema e informe um detalhe, se necessário.')}
             </Text>
 
-            <Text style={[styles.fieldLabel, { color: textPrimary }]}>Motivo da justificativa</Text>
+            <Text style={[styles.fieldLabel, { color: textPrimary }]}>{visitT('visitJustificationReason', 'Motivo da justificativa')}</Text>
             <View style={styles.justificationList}>
               {justificativas.map((item) => {
                 const selected = selectedJustificativaId === item.id;
@@ -3227,11 +3717,11 @@ export default function VisitaDetailScreen() {
               })}
             </View>
 
-            <Text style={[styles.fieldLabel, { color: textPrimary, marginTop: 14 }]}>Detalhe justificativa</Text>
+            <Text style={[styles.fieldLabel, { color: textPrimary, marginTop: 14 }]}>{visitT('visitJustificationDetail', 'Detalhe da justificativa')}</Text>
             <TextInput
               value={detalheJustificativa}
               onChangeText={setDetalheJustificativa}
-              placeholder="Descreva o motivo ou detalhe da ausência..."
+              placeholder={visitT('visitJustificationPlaceholder', 'Descreva o motivo ou detalhe da ausência...')}
               placeholderTextColor={textSecondary}
               multiline
               textAlignVertical="top"
@@ -3254,7 +3744,7 @@ export default function VisitaDetailScreen() {
                   setDetalheJustificativa('');
                 }}
               >
-                <Text style={[styles.modalBtnSecText, { color: textPrimary }]}>Cancelar</Text>
+                <Text style={[styles.modalBtnSecText, { color: textPrimary }]}>{visitT('visitCancelButton', 'Cancelar')}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -3265,7 +3755,7 @@ export default function VisitaDetailScreen() {
                 {justifyLoading ? (
                   <ActivityIndicator color="#FFF" />
                 ) : (
-                  <Text style={styles.modalBtnPriText}>Salvar</Text>
+                  <Text style={styles.modalBtnPriText}>{visitT('visitSaveButton', 'Salvar')}</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -3350,7 +3840,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
-  insightPriority: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase', marginLeft: 6, letterSpacing: 1 },
+  insightPriority: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '700' : '900', textTransform: 'uppercase', marginLeft: 6, letterSpacing: 1 },
   insightMessage: { fontSize: 12, fontWeight: '600', lineHeight: 16 },
 
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -3361,7 +3851,7 @@ const styles = StyleSheet.create({
   timeRow: { flexDirection: 'row', alignItems: 'center' },
   timeText: { fontSize: 13, fontWeight: '700', marginLeft: 6 },
   delayBadge: { marginLeft: 8, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6 },
-  delayText: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  delayText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '700' : '800', textTransform: 'uppercase' },
 
   storeName: { fontSize: 22, fontWeight: 'bold', marginBottom: 12 },
   addressRow: { flexDirection: 'row', alignItems: 'flex-start' },
@@ -3376,7 +3866,7 @@ const styles = StyleSheet.create({
   },
   mapFallbackTitle: {
     fontSize: 14,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '700' : '900',
   },
   mapFallbackText: {
     fontSize: 12,
@@ -3385,7 +3875,7 @@ const styles = StyleSheet.create({
   },
   map: { width: '100%', height: '100%' },
   distanceBadge: { position: 'absolute', right: 12, bottom: 12, backgroundColor: 'rgba(15, 23, 42, 0.82)', borderRadius: 18, paddingHorizontal: 10, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 5 },
-  distanceBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  distanceBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: Platform.OS === 'ios' ? '700' : '900' },
   tasksSection: { marginTop: 32 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 12, marginLeft: 4 },
   taskCard: { flexDirection: 'row', alignItems: 'center', padding: 16, borderRadius: 12, borderWidth: 1, marginBottom: 12 },
@@ -3416,7 +3906,7 @@ const styles = StyleSheet.create({
   btnIcon: { marginRight: 8 },
   btnActionText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
 
-  fieldLabel: { fontSize: 13, fontWeight: '900', marginBottom: 8 },
+  fieldLabel: { fontSize: 13, fontWeight: Platform.OS === 'ios' ? '700' : '900', marginBottom: 8 },
   justificationList: { gap: 8 },
   justificationOption: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 12 },
   radioCircle: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
@@ -3427,7 +3917,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalCard: { width: '100%', padding: 25, borderRadius: 24, borderWidth: 1, alignItems: 'center' },
   modalIconWrap: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
-  modalTitle: { fontSize: 20, fontWeight: '900', marginBottom: 12, textAlign: 'center' },
+  modalTitle: { fontSize: 20, fontWeight: Platform.OS === 'ios' ? '700' : '900', marginBottom: 12, textAlign: 'center' },
   modalText: { fontSize: 15, textAlign: 'center', lineHeight: 22, marginBottom: 24 },
   modalBtnRow: { flexDirection: 'row', width: '100%', gap: 12 },
   modalBtnPri: { flex: 1.15, height: 50, borderRadius: 14, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 8 },

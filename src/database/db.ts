@@ -533,6 +533,8 @@ const initializeDatabaseInternal = async () => {
         produtos_json TEXT,
         store_insights_json TEXT, 
         pesquisa_realizada INTEGER DEFAULT 0,
+        checkin_user_id TEXT,
+        checkin_user_name TEXT,
         checkin_at TEXT, 
         checkout_at TEXT,
         latitude REAL, 
@@ -740,6 +742,11 @@ const initializeDatabaseInternal = async () => {
     await addColumnIfMissing('visits', 'rede', 'TEXT');
     await addColumnIfMissing('visits', 'loja_custom_data_json', 'TEXT');
     await addColumnIfMissing('visits', 'store_insights_json', 'TEXT');
+
+    // MOBILE_VISIT_OPENED_BY_V1
+    await addColumnIfMissing('visits', 'checkin_user_id', 'TEXT');
+    await addColumnIfMissing('visits', 'checkin_user_name', 'TEXT');
+
     await addColumnIfMissing('visits', 'foto_checkin_url', 'TEXT');
     await addColumnIfMissing('visits', 'foto_checkout_url', 'TEXT');
     await addColumnIfMissing('visits', 'foto_justificativa_url', 'TEXT');
@@ -1273,6 +1280,331 @@ export const getActiveLocalWorkspace = async () => {
 };
 
 
+/*
+ * MOBILE_SUPPORT_SAFE_RECOVERY_V1
+ *
+ * Recuperação destrutiva controlada do workspace ATIVO.
+ *
+ * Regras:
+ * - nunca apaga o arquivo SQLite;
+ * - nunca apaga login/preferências (fora deste banco);
+ * - preserva app_logs;
+ * - preserva workspaces de outros usuários/projetos;
+ * - remove o snapshot do workspace atual para ele não reaparecer depois;
+ * - zera somente o sync_state pertencente ao usuário/projeto atual;
+ * - exige que a sessão esperada corresponda ao workspace ativo.
+ */
+export type LocalRecoveryAudit = {
+  activeWorkspace: LocalWorkspaceIdentity | null;
+  localVisits: number;
+  localTasks: number;
+  localCollections: number;
+  queuePending: number;
+  queueRetry: number;
+  queueConflict: number;
+  queueOther: number;
+  queueTotal: number;
+  collectionsPending: number;
+  collectionsConflict: number;
+  visitsPending: number;
+  unresolvedConflicts: number;
+  snapshotPresent: boolean;
+  hasUnsyncedData: boolean;
+};
+
+const recoveryCount = async (
+  sql: string,
+  params: any[] = []
+): Promise<number> => {
+  const row: any =
+    await db.getFirstAsync(
+      sql,
+      params
+    );
+
+  return Number(
+    row?.total ||
+    0
+  );
+};
+
+export const getLocalRecoveryAudit =
+  async (): Promise<LocalRecoveryAudit> => {
+
+    await initializeDatabase();
+
+    const activeWorkspace =
+      await readActiveLocalWorkspaceIdentity();
+
+    const [
+      localVisits,
+      localTasks,
+      localCollections,
+      collectionsPending,
+      collectionsConflict,
+      visitsPending,
+      unresolvedConflicts
+    ] = await Promise.all([
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM visits`
+      ),
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM other_tasks`
+      ),
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM coletas`
+      ),
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM coletas
+          WHERE COALESCE(pending_sync, 0) = 1
+            AND UPPER(COALESCE(status, '')) <> 'CONFLITO_SYNC'`
+      ),
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM coletas
+          WHERE UPPER(COALESCE(status, '')) = 'CONFLITO_SYNC'`
+      ),
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM visits
+          WHERE COALESCE(pending_sync, 0) = 1`
+      ),
+      recoveryCount(
+        `SELECT COUNT(*) AS total
+           FROM sync_conflicts
+          WHERE resolved_at IS NULL`
+      )
+    ]);
+
+    const queueRows: any[] =
+      await db.getAllAsync(
+        `SELECT
+           UPPER(COALESCE(status, 'PENDING')) AS status,
+           COUNT(*) AS total
+         FROM sync_queue
+         GROUP BY UPPER(COALESCE(status, 'PENDING'))`
+      );
+
+    let queuePending = 0;
+    let queueRetry = 0;
+    let queueConflict = 0;
+    let queueOther = 0;
+
+    for (const row of queueRows) {
+      const status =
+        String(
+          row?.status ||
+          'PENDING'
+        )
+          .trim()
+          .toUpperCase();
+
+      const total =
+        Number(
+          row?.total ||
+          0
+        );
+
+      if (status === 'PENDING') {
+        queuePending += total;
+      } else if (status === 'RETRY') {
+        queueRetry += total;
+      } else if (status === 'CONFLICT') {
+        queueConflict += total;
+      } else {
+        /*
+         * Qualquer estado desconhecido continua sendo tratado como risco.
+         * Sucesso normal remove a operação da Outbox.
+         */
+        queueOther += total;
+      }
+    }
+
+    const queueTotal =
+      queuePending +
+      queueRetry +
+      queueConflict +
+      queueOther;
+
+    let snapshotPresent = false;
+
+    if (activeWorkspace) {
+      const snapshot: any =
+        await db.getFirstAsync(
+          `SELECT 1 AS found
+             FROM mobile_user_workspaces
+            WHERE project_id = ?
+              AND user_id = ?
+            LIMIT 1`,
+          [
+            activeWorkspace.projectId,
+            activeWorkspace.userId
+          ]
+        );
+
+      snapshotPresent =
+        Boolean(
+          snapshot?.found
+        );
+    }
+
+    const hasUnsyncedData =
+      queueTotal > 0 ||
+      collectionsPending > 0 ||
+      collectionsConflict > 0 ||
+      visitsPending > 0 ||
+      unresolvedConflicts > 0;
+
+    return {
+      activeWorkspace,
+      localVisits,
+      localTasks,
+      localCollections,
+      queuePending,
+      queueRetry,
+      queueConflict,
+      queueOther,
+      queueTotal,
+      collectionsPending,
+      collectionsConflict,
+      visitsPending,
+      unresolvedConflicts,
+      snapshotPresent,
+      hasUnsyncedData
+    };
+  };
+
+export type LocalRecoveryExpectedIdentity = {
+  projectId: string;
+  userId: string;
+};
+
+export const clearActiveLocalWorkspaceForRecovery =
+  async (
+    expectedIdentity: LocalRecoveryExpectedIdentity
+  ) => {
+
+    await initializeDatabase();
+
+    const expectedProjectId =
+      String(
+        expectedIdentity?.projectId ||
+        ''
+      ).trim();
+
+    const expectedUserId =
+      String(
+        expectedIdentity?.userId ||
+        ''
+      ).trim();
+
+    if (
+      !expectedProjectId ||
+      !expectedUserId
+    ) {
+      throw new Error(
+        'LOCAL_RECOVERY_EXPECTED_IDENTITY_MISSING'
+      );
+    }
+
+    const activeWorkspace =
+      await readActiveLocalWorkspaceIdentity();
+
+    if (!activeWorkspace) {
+      throw new Error(
+        'LOCAL_RECOVERY_ACTIVE_WORKSPACE_NOT_IDENTIFIED'
+      );
+    }
+
+    if (
+      activeWorkspace.projectId !==
+        expectedProjectId ||
+      activeWorkspace.userId !==
+        expectedUserId
+    ) {
+      throw new Error(
+        'LOCAL_RECOVERY_WORKSPACE_MISMATCH'
+      );
+    }
+
+    const auditBefore =
+      await getLocalRecoveryAudit();
+
+    await db.withTransactionAsync(
+      async () => {
+
+        /*
+         * Limpa as entidades operacionais ativas,
+         * inclusive Outbox e ledger de conflito.
+         */
+        await clearOperationalWorkspaceTables();
+
+        /*
+         * Impede que o mesmo conteúdo apagado seja
+         * restaurado numa futura troca de usuário.
+         */
+        await db.runAsync(
+          `DELETE FROM mobile_user_workspaces
+            WHERE project_id = ?
+              AND user_id = ?`,
+          [
+            activeWorkspace.projectId,
+            activeWorkspace.userId
+          ]
+        );
+
+        /*
+         * Força o próximo globalSync a reconstruir
+         * cursor/changefeed/manifesto deste workspace
+         * desde um estado local limpo.
+         */
+        await db.runAsync(
+          `DELETE FROM sync_state
+            WHERE key LIKE ?`,
+          [
+            `mobile_sync:${activeWorkspace.projectId}:${activeWorkspace.userId}:%`
+          ]
+        );
+
+        /*
+         * Mantemos mobile_workspace_state apontando
+         * para a sessão atual. O workspace fica vazio,
+         * mas continua pertencendo ao usuário correto.
+         */
+        await setActiveLocalWorkspaceIdentity(
+          activeWorkspace
+        );
+      }
+    );
+
+    await addAppLog({
+      level: 'WARNING',
+      module: 'SUPPORT',
+      action: 'SAFE_LOCAL_WORKSPACE_RECOVERY',
+      message:
+        'Workspace local ativo foi limpo manualmente pela recuperação do app. Logs e outros workspaces foram preservados.',
+      metadata: {
+        projectId:
+          activeWorkspace.projectId,
+        userId:
+          activeWorkspace.userId,
+        auditBefore
+      }
+    });
+
+    return {
+      ok: true,
+      workspace:
+        activeWorkspace,
+      auditBefore
+    };
+  };
+
+
 const hasPendingSyncQueueForVisit = async (visitId: string, localData: any) => {
   try {
     const patterns = [
@@ -1588,6 +1920,151 @@ const getServerStoreInsightsJson = (serverVisit: any) => {
   );
 };
 
+// MOBILE_VISIT_OPENED_BY_V1
+const getServerVisitCheckinUserId = (serverVisit: any): string => {
+  const registro =
+    serverVisit?.registroVisita ||
+    serverVisit?.registro_visita ||
+    serverVisit?.registro ||
+    {};
+
+  const nestedUser =
+    registro?.usuario ||
+    registro?.user ||
+    registro?.promotor ||
+    serverVisit?.checkin_user ||
+    serverVisit?.checkinUser ||
+    {};
+
+  return String(
+    pickFirstMeaningfulValue(
+      [
+        registro?.checkin_user_id,
+        registro?.checkinUserId,
+        registro?.usuario_id,
+        registro?.usuarioId,
+        registro?.promotor_id,
+        registro?.promotorId,
+        nestedUser?.id,
+        serverVisit?.checkin_user_id,
+        serverVisit?.checkinUserId,
+        serverVisit?.opened_by_user_id,
+        serverVisit?.openedByUserId,
+        serverVisit?.usuario_id,
+        serverVisit?.usuarioId,
+        serverVisit?.promotor_id,
+        serverVisit?.promotorId,
+      ],
+      ''
+    ) || ''
+  ).trim();
+};
+
+const getServerVisitCheckinUserName = (serverVisit: any): string => {
+  const registro =
+    serverVisit?.registroVisita ||
+    serverVisit?.registro_visita ||
+    serverVisit?.registro ||
+    {};
+
+  const nestedUser =
+    registro?.usuario ||
+    registro?.user ||
+    registro?.promotor ||
+    serverVisit?.checkin_user ||
+    serverVisit?.checkinUser ||
+    serverVisit?.usuario ||
+    serverVisit?.user ||
+    serverVisit?.promotor ||
+    {};
+
+  /*
+   * MOBILE_VISIT_OPENED_BY_PROFILE_FALLBACK_V2
+   *
+   * /meu-roteiro já envia o usuario_id real do RegistroVisita e também o
+   * perfil_mobile.usuario no project_config. Em snapshots nos quais a relação
+   * registroVisita.usuario não veio expandida, cruzamos os IDs antes de usar
+   * o nome do perfil. Assim não atribuímos o usuário logado por aproximação.
+   */
+  const checkinUserId =
+    getServerVisitCheckinUserId(
+      serverVisit
+    );
+
+  const rawProjectConfig =
+    pickFirstMeaningfulValue(
+      [
+        serverVisit?.project_config_json,
+        serverVisit?.projectConfigJson,
+        serverVisit?.project_config,
+        serverVisit?.projectConfig,
+      ],
+      {}
+    );
+
+  const projectConfig =
+    safeParseObject(
+      rawProjectConfig,
+      {}
+    );
+
+  const profileUser =
+    projectConfig?.perfil_mobile?.usuario ||
+    projectConfig?.perfilMobile?.usuario ||
+    projectConfig?.profile?.usuario ||
+    projectConfig?.profile?.user ||
+    null;
+
+  const profileUserId =
+    String(
+      profileUser?.id ||
+      profileUser?.usuario_id ||
+      profileUser?.userId ||
+      ''
+    ).trim();
+
+  const profileUserName =
+    checkinUserId &&
+    profileUserId &&
+    String(checkinUserId) ===
+      String(profileUserId)
+      ? (
+          profileUser?.nome ||
+          profileUser?.name ||
+          profileUser?.displayName ||
+          profileUser?.email ||
+          null
+        )
+      : null;
+
+  return String(
+    pickFirstMeaningfulValue(
+      [
+        registro?.checkin_user_name,
+        registro?.checkinUserName,
+        registro?.usuario_nome,
+        registro?.usuarioNome,
+        registro?.promotor_nome,
+        registro?.promotorNome,
+        nestedUser?.nome,
+        nestedUser?.name,
+        serverVisit?.checkin_user_name,
+        serverVisit?.checkinUserName,
+        serverVisit?.opened_by_name,
+        serverVisit?.openedByName,
+        serverVisit?.usuario_nome,
+        serverVisit?.usuarioNome,
+        serverVisit?.promotor_nome,
+        serverVisit?.promotorNome,
+        serverVisit?.responsavel_nome,
+        serverVisit?.responsavelNome,
+        profileUserName,
+      ],
+      ''
+    ) || ''
+  ).trim();
+};
+
 const mergeServerReadOnlyFieldsIntoLocalVisit = async (
   visitId: string,
   serverVisit: any,
@@ -1615,6 +2092,8 @@ const mergeServerReadOnlyFieldsIntoLocalVisit = async (
           produtos_json = ?,
           store_insights_json = ?,
           pesquisa_realizada = ?,
+          checkin_user_id = COALESCE(NULLIF(?, ''), checkin_user_id),
+          checkin_user_name = COALESCE(NULLIF(?, ''), checkin_user_name),
           updated_at = ?
         WHERE id = ?
       `,
@@ -1639,6 +2118,8 @@ const mergeServerReadOnlyFieldsIntoLocalVisit = async (
         ['REALIZADA', 'COMPLETA', 'CONCLUIDA', 'VISITADA'].includes(normalizeStatus(serverVisit.status))
           ? 1
           : 0,
+        getServerVisitCheckinUserId(serverVisit),
+        getServerVisitCheckinUserName(serverVisit),
         now,
         visitId,
       ]
@@ -1862,6 +2343,8 @@ export const saveRoteiroCompletoOffline = async (
             store_insights_json,
             pesquisa_realizada,
             pending_sync,
+            checkin_user_id,
+            checkin_user_name,
             checkin_at,
             checkout_at,
             latitude,
@@ -1874,7 +2357,7 @@ export const saveRoteiroCompletoOffline = async (
             detalhe_justificativa,
             client_operation_id,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             visitId,
             String(v.roteiro_id || v.roteiroId || ''),
@@ -1894,6 +2377,20 @@ export const saveRoteiroCompletoOffline = async (
             getServerProdutosJson(v),
             nextInsightsJson,
             statusRealizadoServidor,
+            serverIsOperational
+              ? (
+                  getServerVisitCheckinUserId(v) ||
+                  localData?.checkin_user_id ||
+                  null
+                )
+              : null,
+            serverIsOperational
+              ? (
+                  getServerVisitCheckinUserName(v) ||
+                  localData?.checkin_user_name ||
+                  null
+                )
+              : null,
             finalCheckinAt,
             finalCheckoutAt,
             serverIsOperational ? (v.latitude ?? localData?.latitude ?? null) : (v.latitude ?? null),

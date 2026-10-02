@@ -31,10 +31,24 @@ import {
 import { useAuthStore } from '../store/useAuthStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useSyncStore } from '../store/useSyncStore';
-import { globalSync, getDiamondSyncConflicts, type DiamondSyncConflictItem } from '../services/syncService';
+import {
+  globalSync,
+  getDiamondSyncConflicts,
+  pauseGlobalSyncForWorkspaceSwitch,
+  resumeGlobalSyncAfterWorkspaceSwitch,
+  waitForGlobalSyncIdle,
+  type DiamondSyncConflictItem,
+} from '../services/syncService';
 import { getAppGpsStatus } from '../services/locationService';
 import { api } from '../services/api';
-import { addAppLog, getDBConnection, getRecentAppLogs } from '../database/db';
+import {
+  addAppLog,
+  clearActiveLocalWorkspaceForRecovery,
+  getDBConnection,
+  getLocalRecoveryAudit,
+  getRecentAppLogs,
+  type LocalRecoveryAudit,
+} from '../database/db';
 
 import { AppAlert } from '../components/AppAlert';
 const ACCENT_COLOR = '#FF7A00';
@@ -44,19 +58,22 @@ const SUPPORT_TEXTS = {
     userFallback: 'Usuário', emailNotInformed: 'E-mail não informado', neverSynced: 'Nunca sincronizado', checking: 'Verificando', notInformed: 'Não informado', appVersionNotInformed: 'Não informada', profileLoading: 'Carregando', connected: 'Conectado', offline: 'Offline', notChecked: 'Não verificado', active: 'Ativo', inactive: 'Inativo', operational: 'Operacional', profileNotLoaded: 'Não carregado', localRouteSource: 'SQLite / roteiro local', notFoundLocally: 'Não encontrado localmente', sqliteUnavailable: 'SQLite indisponível', apiRouteSource: 'API / meu-roteiro', apiUnavailable: 'API indisponível', syncing: 'Sincronizando', upToDate: 'Em dia', pending: 'Pendente', loadingSupport: 'Carregando suporte...', gpsPermissionDenied: 'Permissão negada', gpsServiceDisabled: 'GPS desligado', gpsReady: 'Permitido e ativo',
     title: 'Ajuda e suporte', subtitle: 'Central operacional do app', needHelp: 'Precisa de ajuda?', needHelpText: 'Use o diagnóstico abaixo para acionar suporte com dados reais do aparelho, usuário e sincronização.', internet: 'Internet', gps: 'GPS', version: 'Versão', sync: 'Sync', supportData: 'Dados do atendimento', user: 'Usuário', email: 'E-mail', phone: 'Telefone', client: 'Cliente', project: 'Projeto', supervisor: 'Supervisor', quickActions: 'Ações rápidas', shareDiagnostic: 'Compartilhar diagnóstico', shareDiagnosticSubtitle: 'Envia os dados técnicos para suporte', whatsapp: 'Falar pelo WhatsApp', whatsappSubtitle: 'Abre uma conversa com o diagnóstico pronto', emailSupport: 'Enviar por e-mail', emailSupportSubtitle: 'Cria um e-mail com o diagnóstico do app', technicalDiagnostic: 'Diagnóstico técnico', syncIntegrityHistory: 'Histórico de integridade', syncIntegrityHint: 'Eventos técnicos preservados para suporte e auditoria. Não são exibidos na Central operacional do usuário.', noSyncIntegrityEvents: 'Nenhum evento técnico de sincronização registrado.', syncResolved: 'Resolvido', syncPending: 'Pendente', lastSync: 'Última sincronização', localDb: 'Banco local', profileSource: 'Origem do perfil', localVisits: 'Visitas locais', pendingQueue: 'Fila pendente', platform: 'Plataforma', appTimeline: 'Linha do tempo do app', appTimelineHint: 'Últimos eventos registrados no aparelho para investigação de suporte.', noLogs: 'Nenhum log local encontrado ainda. Os eventos serão registrados a partir desta atualização.', quickHelp: 'Ajuda rápida',
     faqNoInternetTitle: 'Sem internet', faqNoInternetBody: 'Continue usando o app normalmente. Check-in, checkout, tarefas e fotos ficam locais e sincronizam quando a conexão voltar.', faqGpsInactiveTitle: 'GPS inativo', faqGpsInactiveBody: 'Ative a localização do aparelho antes de iniciar check-in ou checkout. Algumas operações podem exigir GPS ativo.', faqSyncPendingTitle: 'Sincronização pendente', faqSyncPendingBody: 'Puxe a tela para baixo ou toque no ícone de sincronização. Se continuar pendente, compartilhe o diagnóstico.', faqVisitTaskProblemTitle: 'Problema em visita ou tarefa', faqVisitTaskProblemBody: 'Informe loja, data, horário aproximado e compartilhe o diagnóstico para o suporte analisar o caso.', operationalGuidance: 'Orientação operacional', operationalGuidanceText: 'Em caso de falha, não reinstale o app antes de falar com suporte. Dados offline ainda podem estar salvos no aparelho.',
-    diagnosticTitle: 'DIAGNÓSTICO DO APP', appLogsTitle: 'ÚLTIMOS LOGS DO APP', userId: 'Usuário ID', projectId: 'Projeto ID', appVersion: 'Versão do app', sqlite: 'SQLite', shareErrorTitle: 'Não foi possível compartilhar', shareErrorMessage: 'Tente novamente em instantes.', emailSubject: 'Suporte Omni Field - Diagnóstico do app', emailUnavailableTitle: 'E-mail indisponível', emailUnavailableMessage: 'Não foi possível abrir o aplicativo de e-mail neste dispositivo.', whatsappUnavailableTitle: 'WhatsApp indisponível', whatsappUnavailableMessage: 'Não foi possível abrir o WhatsApp neste dispositivo.', logLoaded: 'Diagnóstico de suporte carregado.', logShared: 'Diagnóstico compartilhado pelo usuário.', app: 'APP', event: 'EVENT', info: 'INFO'
+    diagnosticTitle: 'DIAGNÓSTICO DO APP', appLogsTitle: 'ÚLTIMOS LOGS DO APP', userId: 'Usuário ID', projectId: 'Projeto ID', appVersion: 'Versão do app', sqlite: 'SQLite', shareErrorTitle: 'Não foi possível compartilhar', shareErrorMessage: 'Tente novamente em instantes.', emailSubject: 'Suporte Omni Field - Diagnóstico do app', emailUnavailableTitle: 'E-mail indisponível', emailUnavailableMessage: 'Não foi possível abrir o aplicativo de e-mail neste dispositivo.', whatsappUnavailableTitle: 'WhatsApp indisponível', whatsappUnavailableMessage: 'Não foi possível abrir o WhatsApp neste dispositivo.', logLoaded: 'Diagnóstico de suporte carregado.', logShared: 'Diagnóstico compartilhado pelo usuário.', app: 'APP', event: 'EVENT', info: 'INFO',
+    recoveryTitle: 'Recuperação do aplicativo', recoveryHint: 'Use somente quando o app estiver com dados locais inconsistentes. O diagnóstico abaixo é atualizado antes de qualquer limpeza.', recoverySafe: 'Nenhuma pendência crítica detectada', recoveryRisk: 'Existem dados que podem não ter chegado ao servidor', recoveryQueue: 'Outbox pendente / retry', recoveryQueueConflict: 'Outbox em conflito', recoveryCollections: 'Coletas pendentes / conflito', recoveryVisits: 'Visitas pendentes', recoveryConflicts: 'Conflitos não resolvidos', recoveryLocalData: 'Dados locais', recoveryTrySync: 'Tentar sincronizar agora', recoveryClear: 'Limpar dados locais', recoveryFirstTitle: 'Revisar limpeza local', recoveryFirstSafeMessage: 'A limpeza remove os dados operacionais deste usuário no aparelho e depois tenta reconstruí-los pelo servidor.', recoveryFirstRiskMessage: 'ATENÇÃO: existem dados locais ainda não confirmados pelo servidor. Continuar pode causar perda definitiva dessas informações.', recoveryContinue: 'Continuar', recoveryCancel: 'Cancelar', recoveryFinalTitle: 'Última confirmação', recoveryFinalMessage: 'Esta ação apaga o workspace local deste usuário, inclusive Outbox e conflitos locais. Logs, login, preferências e workspaces de outros usuários serão preservados. Esta ação não pode ser desfeita.', recoveryFinalButton: 'Apagar dados locais', recoveryBusy: 'Recuperando...', recoverySuccessTitle: 'Recuperação concluída', recoverySuccessMessage: 'Os dados locais foram limpos e o app tentou reconstruir o workspace com o servidor. Revise o diagnóstico abaixo.', recoverySuccessOffline: 'Os dados locais foram limpos, mas o aparelho está offline. O workspace será reconstruído na próxima sincronização com internet.', recoveryErrorTitle: 'Não foi possível recuperar', recoveryWorkspaceError: 'O usuário/projeto ativo no banco não corresponde à sessão atual. A limpeza foi bloqueada por segurança.', recoverySyncBusy: 'Existe uma sincronização em andamento e ela não terminou dentro do tempo de segurança. Tente novamente em instantes.'
   },
   'en-US': {
     userFallback: 'User', emailNotInformed: 'E-mail not informed', neverSynced: 'Never synced', checking: 'Checking', notInformed: 'Not informed', appVersionNotInformed: 'Not informed', profileLoading: 'Loading', connected: 'Connected', offline: 'Offline', notChecked: 'Not checked', active: 'Active', inactive: 'Inactive', operational: 'Operational', profileNotLoaded: 'Not loaded', localRouteSource: 'SQLite / local route', notFoundLocally: 'Not found locally', sqliteUnavailable: 'SQLite unavailable', apiRouteSource: 'API / my-route', apiUnavailable: 'API unavailable', syncing: 'Syncing', upToDate: 'Up to date', pending: 'Pending', loadingSupport: 'Loading support...', gpsPermissionDenied: 'Permission denied', gpsServiceDisabled: 'GPS disabled', gpsReady: 'Allowed and active',
     title: 'Help & support', subtitle: 'App operations center', needHelp: 'Need help?', needHelpText: 'Use the diagnostic below to contact support with real device, user and sync data.', internet: 'Internet', gps: 'GPS', version: 'Version', sync: 'Sync', supportData: 'Support data', user: 'User', email: 'E-mail', phone: 'Phone', client: 'Client', project: 'Project', supervisor: 'Supervisor', quickActions: 'Quick actions', shareDiagnostic: 'Share diagnostic', shareDiagnosticSubtitle: 'Sends technical data to support', whatsapp: 'Talk via WhatsApp', whatsappSubtitle: 'Opens a conversation with the diagnostic ready', emailSupport: 'Send by e-mail', emailSupportSubtitle: 'Creates an e-mail with the app diagnostic', technicalDiagnostic: 'Technical diagnostic', syncIntegrityHistory: 'Integrity history', syncIntegrityHint: 'Technical events preserved for support and audit. They are not shown in the user operational Sync Center.', noSyncIntegrityEvents: 'No technical synchronization events recorded.', syncResolved: 'Resolved', syncPending: 'Pending', lastSync: 'Last sync', localDb: 'Local database', profileSource: 'Profile source', localVisits: 'Local visits', pendingQueue: 'Pending queue', platform: 'Platform', appTimeline: 'App timeline', appTimelineHint: 'Latest events recorded on the device for support investigation.', noLogs: 'No local logs found yet. Events will be recorded from this update onward.', quickHelp: 'Quick help',
     faqNoInternetTitle: 'No internet', faqNoInternetBody: 'Keep using the app normally. Check-in, checkout, tasks and photos stay local and sync when the connection comes back.', faqGpsInactiveTitle: 'GPS inactive', faqGpsInactiveBody: 'Enable device location before starting check-in or checkout. Some operations may require active GPS.', faqSyncPendingTitle: 'Pending synchronization', faqSyncPendingBody: 'Pull the screen down or tap the sync icon. If it remains pending, share the diagnostic.', faqVisitTaskProblemTitle: 'Problem with a visit or task', faqVisitTaskProblemBody: 'Inform store, date, approximate time and share the diagnostic so support can analyze the case.', operationalGuidance: 'Operational guidance', operationalGuidanceText: 'In case of failure, do not reinstall the app before talking to support. Offline data may still be saved on the device.',
-    diagnosticTitle: 'APP DIAGNOSTIC', appLogsTitle: 'LATEST APP LOGS', userId: 'User ID', projectId: 'Project ID', appVersion: 'App version', sqlite: 'SQLite', shareErrorTitle: 'Unable to share', shareErrorMessage: 'Please try again shortly.', emailSubject: 'Omni Field Support - App diagnostic', emailUnavailableTitle: 'E-mail unavailable', emailUnavailableMessage: 'Unable to open the e-mail app on this device.', whatsappUnavailableTitle: 'WhatsApp unavailable', whatsappUnavailableMessage: 'Unable to open WhatsApp on this device.', logLoaded: 'Support diagnostic loaded.', logShared: 'Diagnostic shared by the user.', app: 'APP', event: 'EVENT', info: 'INFO'
+    diagnosticTitle: 'APP DIAGNOSTIC', appLogsTitle: 'LATEST APP LOGS', userId: 'User ID', projectId: 'Project ID', appVersion: 'App version', sqlite: 'SQLite', shareErrorTitle: 'Unable to share', shareErrorMessage: 'Please try again shortly.', emailSubject: 'Omni Field Support - App diagnostic', emailUnavailableTitle: 'E-mail unavailable', emailUnavailableMessage: 'Unable to open the e-mail app on this device.', whatsappUnavailableTitle: 'WhatsApp unavailable', whatsappUnavailableMessage: 'Unable to open WhatsApp on this device.', logLoaded: 'Support diagnostic loaded.', logShared: 'Diagnostic shared by the user.', app: 'APP', event: 'EVENT', info: 'INFO',
+    recoveryTitle: 'App recovery', recoveryHint: 'Use only when the app has inconsistent local data. The diagnostic below is refreshed before any cleanup.', recoverySafe: 'No critical pending data detected', recoveryRisk: 'Some data may not have reached the server yet', recoveryQueue: 'Pending / retry Outbox', recoveryQueueConflict: 'Outbox conflicts', recoveryCollections: 'Pending / conflicted collections', recoveryVisits: 'Pending visits', recoveryConflicts: 'Unresolved conflicts', recoveryLocalData: 'Local data', recoveryTrySync: 'Try to sync now', recoveryClear: 'Clear local data', recoveryFirstTitle: 'Review local cleanup', recoveryFirstSafeMessage: 'Cleanup removes this user’s operational data from the device and then tries to rebuild it from the server.', recoveryFirstRiskMessage: 'WARNING: there is local data not yet confirmed by the server. Continuing may permanently lose this information.', recoveryContinue: 'Continue', recoveryCancel: 'Cancel', recoveryFinalTitle: 'Final confirmation', recoveryFinalMessage: 'This action deletes this user’s local workspace, including the local Outbox and conflicts. Logs, login, preferences and other users’ workspaces are preserved. This cannot be undone.', recoveryFinalButton: 'Delete local data', recoveryBusy: 'Recovering...', recoverySuccessTitle: 'Recovery completed', recoverySuccessMessage: 'Local data was cleared and the app tried to rebuild the workspace from the server. Review the diagnostic below.', recoverySuccessOffline: 'Local data was cleared, but the device is offline. The workspace will be rebuilt on the next sync with internet access.', recoveryErrorTitle: 'Recovery failed', recoveryWorkspaceError: 'The active user/project in the local database does not match the current session. Cleanup was blocked for safety.', recoverySyncBusy: 'A synchronization is still running and did not finish within the safety timeout. Please try again shortly.'
   },
   'es-ES': {
     userFallback: 'Usuario', emailNotInformed: 'E-mail no informado', neverSynced: 'Nunca sincronizado', checking: 'Verificando', notInformed: 'No informado', appVersionNotInformed: 'No informada', profileLoading: 'Cargando', connected: 'Conectado', offline: 'Sin conexión', notChecked: 'No verificado', active: 'Activo', inactive: 'Inactivo', operational: 'Operacional', profileNotLoaded: 'No cargado', localRouteSource: 'SQLite / ruta local', notFoundLocally: 'No encontrado localmente', sqliteUnavailable: 'SQLite no disponible', apiRouteSource: 'API / mi-ruta', apiUnavailable: 'API no disponible', syncing: 'Sincronizando', upToDate: 'Al día', pending: 'Pendiente', loadingSupport: 'Cargando soporte...', gpsPermissionDenied: 'Permiso denegado', gpsServiceDisabled: 'GPS apagado', gpsReady: 'Permitido y activo',
     title: 'Ayuda y soporte', subtitle: 'Central operacional de la app', needHelp: '¿Necesitas ayuda?', needHelpText: 'Usa el diagnóstico a continuación para contactar soporte con datos reales del dispositivo, usuario y sincronización.', internet: 'Internet', gps: 'GPS', version: 'Versión', sync: 'Sync', supportData: 'Datos de atención', user: 'Usuario', email: 'E-mail', phone: 'Teléfono', client: 'Cliente', project: 'Proyecto', supervisor: 'Supervisor', quickActions: 'Acciones rápidas', shareDiagnostic: 'Compartir diagnóstico', shareDiagnosticSubtitle: 'Envía los datos técnicos a soporte', whatsapp: 'Hablar por WhatsApp', whatsappSubtitle: 'Abre una conversación con el diagnóstico listo', emailSupport: 'Enviar por e-mail', emailSupportSubtitle: 'Crea un e-mail con el diagnóstico de la app', technicalDiagnostic: 'Diagnóstico técnico', syncIntegrityHistory: 'Historial de integridad', syncIntegrityHint: 'Eventos técnicos preservados para soporte y auditoría. No se muestran en el Centro operacional de sincronización del usuario.', noSyncIntegrityEvents: 'No hay eventos técnicos de sincronización registrados.', syncResolved: 'Resuelto', syncPending: 'Pendiente', lastSync: 'Última sincronización', localDb: 'Base local', profileSource: 'Origen del perfil', localVisits: 'Visitas locales', pendingQueue: 'Cola pendiente', platform: 'Plataforma', appTimeline: 'Línea de tiempo de la app', appTimelineHint: 'Últimos eventos registrados en el dispositivo para investigación de soporte.', noLogs: 'Aún no se encontró ningún log local. Los eventos se registrarán a partir de esta actualización.', quickHelp: 'Ayuda rápida',
     faqNoInternetTitle: 'Sin internet', faqNoInternetBody: 'Continúa usando la app normalmente. Check-in, checkout, tareas y fotos quedan locales y sincronizan cuando vuelva la conexión.', faqGpsInactiveTitle: 'GPS inactivo', faqGpsInactiveBody: 'Activa la ubicación del dispositivo antes de iniciar check-in o checkout. Algunas operaciones pueden exigir GPS activo.', faqSyncPendingTitle: 'Sincronización pendiente', faqSyncPendingBody: 'Desliza la pantalla hacia abajo o toca el ícono de sincronización. Si continúa pendiente, comparte el diagnóstico.', faqVisitTaskProblemTitle: 'Problema en visita o tarea', faqVisitTaskProblemBody: 'Informa tienda, fecha, horario aproximado y comparte el diagnóstico para que soporte analice el caso.', operationalGuidance: 'Orientación operacional', operationalGuidanceText: 'En caso de falla, no reinstales la app antes de hablar con soporte. Los datos offline aún pueden estar guardados en el dispositivo.',
-    diagnosticTitle: 'DIAGNÓSTICO DE LA APP', appLogsTitle: 'ÚLTIMOS LOGS DE LA APP', userId: 'Usuario ID', projectId: 'Proyecto ID', appVersion: 'Versión de la app', sqlite: 'SQLite', shareErrorTitle: 'No fue posible compartir', shareErrorMessage: 'Inténtalo nuevamente en unos instantes.', emailSubject: 'Soporte Omni Field - Diagnóstico de la app', emailUnavailableTitle: 'E-mail no disponible', emailUnavailableMessage: 'No fue posible abrir la app de e-mail en este dispositivo.', whatsappUnavailableTitle: 'WhatsApp no disponible', whatsappUnavailableMessage: 'No fue posible abrir WhatsApp en este dispositivo.', logLoaded: 'Diagnóstico de soporte cargado.', logShared: 'Diagnóstico compartido por el usuario.', app: 'APP', event: 'EVENT', info: 'INFO'
+    diagnosticTitle: 'DIAGNÓSTICO DE LA APP', appLogsTitle: 'ÚLTIMOS LOGS DE LA APP', userId: 'Usuario ID', projectId: 'Proyecto ID', appVersion: 'Versión de la app', sqlite: 'SQLite', shareErrorTitle: 'No fue posible compartir', shareErrorMessage: 'Inténtalo nuevamente en unos instantes.', emailSubject: 'Soporte Omni Field - Diagnóstico de la app', emailUnavailableTitle: 'E-mail no disponible', emailUnavailableMessage: 'No fue posible abrir la app de e-mail en este dispositivo.', whatsappUnavailableTitle: 'WhatsApp no disponible', whatsappUnavailableMessage: 'No fue posible abrir WhatsApp en este dispositivo.', logLoaded: 'Diagnóstico de soporte cargado.', logShared: 'Diagnóstico compartido por el usuario.', app: 'APP', event: 'EVENT', info: 'INFO',
+    recoveryTitle: 'Recuperación de la app', recoveryHint: 'Úsalo solo cuando la app tenga datos locales inconsistentes. El diagnóstico se actualiza antes de cualquier limpieza.', recoverySafe: 'No se detectaron pendientes críticos', recoveryRisk: 'Hay datos que pueden no haber llegado al servidor', recoveryQueue: 'Outbox pendiente / reintento', recoveryQueueConflict: 'Outbox en conflicto', recoveryCollections: 'Colectas pendientes / conflicto', recoveryVisits: 'Visitas pendientes', recoveryConflicts: 'Conflictos no resueltos', recoveryLocalData: 'Datos locales', recoveryTrySync: 'Intentar sincronizar ahora', recoveryClear: 'Limpiar datos locales', recoveryFirstTitle: 'Revisar limpieza local', recoveryFirstSafeMessage: 'La limpieza elimina los datos operativos de este usuario del dispositivo y luego intenta reconstruirlos desde el servidor.', recoveryFirstRiskMessage: 'ATENCIÓN: hay datos locales aún no confirmados por el servidor. Continuar puede causar la pérdida definitiva de esa información.', recoveryContinue: 'Continuar', recoveryCancel: 'Cancelar', recoveryFinalTitle: 'Última confirmación', recoveryFinalMessage: 'Esta acción elimina el workspace local de este usuario, incluida la Outbox y los conflictos locales. Se conservan logs, login, preferencias y workspaces de otros usuarios. No se puede deshacer.', recoveryFinalButton: 'Borrar datos locales', recoveryBusy: 'Recuperando...', recoverySuccessTitle: 'Recuperación concluida', recoverySuccessMessage: 'Los datos locales fueron limpiados y la app intentó reconstruir el workspace desde el servidor. Revisa el diagnóstico a continuación.', recoverySuccessOffline: 'Los datos locales fueron limpiados, pero el dispositivo está sin conexión. El workspace se reconstruirá en la próxima sincronización con internet.', recoveryErrorTitle: 'No fue posible recuperar', recoveryWorkspaceError: 'El usuario/proyecto activo en la base local no coincide con la sesión actual. La limpieza fue bloqueada por seguridad.', recoverySyncBusy: 'Hay una sincronización en curso y no terminó dentro del tiempo de seguridad. Inténtalo nuevamente en unos instantes.'
   },
 } as const;
 
@@ -269,6 +286,12 @@ export default function AjudaSuporteScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // MOBILE_SUPPORT_SAFE_RECOVERY_V1
+  const [recoveryAudit, setRecoveryAudit] =
+    useState<LocalRecoveryAudit | null>(null);
+  const [recovering, setRecovering] =
+    useState(false);
+
   const loadLiveChecks = async () => {
     try {
       const net = await Network.getNetworkStateAsync();
@@ -306,18 +329,29 @@ export default function AjudaSuporteScreen() {
 
       const db = await getDBConnection();
       const visitsCount = await safeCount(db, 'visits');
-      const queueCount =
-        (await safeCount(db, 'sync_queue')) ||
-        (await safeCount(db, 'syncQueue')) ||
-        (await safeCount(db, 'pending_sync')) ||
-        0;
 
-      const [recentLogs, recentSyncConflicts] = await Promise.all([
+      const [
+        recentLogs,
+        recentSyncConflicts,
+        recoveryAuditNow
+      ] = await Promise.all([
         getRecentAppLogs(80) as Promise<AppLogRow[]>,
         getDiamondSyncConflicts({ unresolvedOnly: false, limit: 40 }),
+        getLocalRecoveryAudit(),
       ]);
+
+      /*
+       * "Fila pendente" agora representa somente itens que
+       * ainda participam do envio automático.
+       * CONFLICT é exibido separadamente na recuperação/ledger.
+       */
+      const queueCount =
+        recoveryAuditNow.queuePending +
+        recoveryAuditNow.queueRetry;
+
       setLogs(recentLogs);
       setSyncConflicts(recentSyncConflicts);
+      setRecoveryAudit(recoveryAuditNow);
 
       const localProfile = await getPerfilFromVisits(db, language);
 
@@ -479,6 +513,13 @@ export default function AjudaSuporteScreen() {
       `${supportText('userId', language)}: ${getUserId(user) || supportText('notInformed', language)}`,
       `${supportText('projectId', language)}: ${getProjectId(user) || supportText('notInformed', language)}`,
       '',
+      'LOCAL RECOVERY AUDIT',
+      `${supportText('recoveryQueue', language)}: ${(recoveryAudit?.queuePending || 0) + (recoveryAudit?.queueRetry || 0)}`,
+      `${supportText('recoveryQueueConflict', language)}: ${recoveryAudit?.queueConflict || 0}`,
+      `${supportText('recoveryCollections', language)}: ${(recoveryAudit?.collectionsPending || 0) + (recoveryAudit?.collectionsConflict || 0)}`,
+      `${supportText('recoveryVisits', language)}: ${recoveryAudit?.visitsPending || 0}`,
+      `${supportText('recoveryConflicts', language)}: ${recoveryAudit?.unresolvedConflicts || 0}`,
+      '',
       'SYNC CONFLICT LEDGER',
       ...syncConflicts.slice(0, 30).map((item) => {
         const status = item.resolvedAt ? 'RESOLVED' : 'PENDING';
@@ -502,7 +543,268 @@ export default function AjudaSuporteScreen() {
         return `${whenText} [${log.level}] ${log.module}/${log.action}: ${log.message}`;
       }),
     ].join('\n');
-  }, [profile, diagnostic, user, logs, syncConflicts, language]);
+  }, [profile, diagnostic, user, logs, syncConflicts, recoveryAudit, language]);
+
+  const getRecoverySummaryText =
+    (audit: LocalRecoveryAudit) => {
+      return [
+        `${supportText('recoveryQueue', language)}: ${audit.queuePending + audit.queueRetry}`,
+        `${supportText('recoveryQueueConflict', language)}: ${audit.queueConflict}`,
+        `${supportText('recoveryCollections', language)}: ${audit.collectionsPending + audit.collectionsConflict}`,
+        `${supportText('recoveryVisits', language)}: ${audit.visitsPending}`,
+        `${supportText('recoveryConflicts', language)}: ${audit.unresolvedConflicts}`,
+        `${supportText('recoveryLocalData', language)}: ${audit.localVisits} visitas · ${audit.localCollections} coletas · ${audit.localTasks} tarefas`,
+      ].join('\n');
+    };
+
+  const performSafeRecovery =
+    async () => {
+
+      const projectId =
+        String(
+          getProjectId(user) ||
+          ''
+        ).trim();
+
+      const userId =
+        getUserId(user);
+
+      if (
+        !projectId ||
+        !userId
+      ) {
+        AppAlert.alert(
+          supportText(
+            'recoveryErrorTitle',
+            language
+          ),
+          supportText(
+            'recoveryWorkspaceError',
+            language
+          )
+        );
+
+        return;
+      }
+
+      setRecovering(true);
+
+      pauseGlobalSyncForWorkspaceSwitch();
+
+      let syncResult: any = null;
+
+      try {
+        const idle =
+          await waitForGlobalSyncIdle(
+            60000
+          );
+
+        if (!idle) {
+          throw new Error(
+            'LOCAL_RECOVERY_SYNC_BUSY_TIMEOUT'
+          );
+        }
+
+        /*
+         * Reaudita imediatamente antes do DELETE.
+         * O botão nunca confia somente no snapshot visual anterior.
+         */
+        const freshAudit =
+          await getLocalRecoveryAudit();
+
+        setRecoveryAudit(
+          freshAudit
+        );
+
+        await clearActiveLocalWorkspaceForRecovery({
+          projectId,
+          userId
+        });
+
+      } catch (error: any) {
+        const code =
+          String(
+            error?.message ||
+            error ||
+            ''
+          );
+
+        const message =
+          code.includes(
+            'LOCAL_RECOVERY_SYNC_BUSY_TIMEOUT'
+          )
+            ? supportText(
+                'recoverySyncBusy',
+                language
+              )
+            : code.includes(
+                'LOCAL_RECOVERY_WORKSPACE'
+              ) ||
+              code.includes(
+                'LOCAL_RECOVERY_ACTIVE_WORKSPACE'
+              ) ||
+              code.includes(
+                'LOCAL_RECOVERY_EXPECTED_IDENTITY'
+              )
+              ? supportText(
+                  'recoveryWorkspaceError',
+                  language
+                )
+              : code ||
+                supportText(
+                  'recoveryWorkspaceError',
+                  language
+                );
+
+        AppAlert.alert(
+          supportText(
+            'recoveryErrorTitle',
+            language
+          ),
+          message
+        );
+
+        setRecovering(false);
+        resumeGlobalSyncAfterWorkspaceSwitch();
+        return;
+      }
+
+      resumeGlobalSyncAfterWorkspaceSwitch();
+
+      try {
+        syncResult =
+          await globalSync();
+      } catch {}
+
+      await loadSupportData(true);
+
+      setRecovering(false);
+
+      AppAlert.alert(
+        supportText(
+          'recoverySuccessTitle',
+          language
+        ),
+        syncResult?.status ===
+          'OFFLINE'
+          ? supportText(
+              'recoverySuccessOffline',
+              language
+            )
+          : supportText(
+              'recoverySuccessMessage',
+              language
+            )
+      );
+    };
+
+  const requestSafeRecovery =
+    async () => {
+
+      if (
+        recovering ||
+        isSyncing
+      ) {
+        return;
+      }
+
+      try {
+        const audit =
+          await getLocalRecoveryAudit();
+
+        setRecoveryAudit(
+          audit
+        );
+
+        const intro =
+          audit.hasUnsyncedData
+            ? supportText(
+                'recoveryFirstRiskMessage',
+                language
+              )
+            : supportText(
+                'recoveryFirstSafeMessage',
+                language
+              );
+
+        AppAlert.alert(
+          supportText(
+            'recoveryFirstTitle',
+            language
+          ),
+          `${intro}\n\n${getRecoverySummaryText(audit)}`,
+          [
+            {
+              text:
+                supportText(
+                  'recoveryCancel',
+                  language
+                ),
+              style:
+                'cancel'
+            },
+            {
+              text:
+                supportText(
+                  'recoveryContinue',
+                  language
+                ),
+              style:
+                'destructive',
+              onPress:
+                () => {
+                  AppAlert.alert(
+                    supportText(
+                      'recoveryFinalTitle',
+                      language
+                    ),
+                    `${supportText(
+                      'recoveryFinalMessage',
+                      language
+                    )}\n\n${getRecoverySummaryText(audit)}`,
+                    [
+                      {
+                        text:
+                          supportText(
+                            'recoveryCancel',
+                            language
+                          ),
+                        style:
+                          'cancel'
+                      },
+                      {
+                        text:
+                          supportText(
+                            'recoveryFinalButton',
+                            language
+                          ),
+                        style:
+                          'destructive',
+                        onPress:
+                          () => {
+                            void performSafeRecovery();
+                          }
+                      }
+                    ]
+                  );
+                }
+            }
+          ]
+        );
+      } catch (error: any) {
+        AppAlert.alert(
+          supportText(
+            'recoveryErrorTitle',
+            language
+          ),
+          error?.message ||
+            supportText(
+              'recoveryWorkspaceError',
+              language
+            )
+        );
+      }
+    };
 
   const shareDiagnostic = async () => {
     try {
@@ -866,6 +1168,230 @@ export default function AjudaSuporteScreen() {
             </Text>
           </View>
         </View>
+
+        {/* MOBILE_SUPPORT_SAFE_RECOVERY_V1 */}
+        <View
+          style={[
+            styles.recoveryCard,
+            {
+              backgroundColor:
+                recoveryAudit?.hasUnsyncedData
+                  ? (isDark ? '#2A1215' : '#FEF2F2')
+                  : surface,
+              borderColor:
+                recoveryAudit?.hasUnsyncedData
+                  ? '#EF4444'
+                  : border,
+            },
+          ]}
+        >
+          <View style={styles.recoveryHeader}>
+            <View
+              style={[
+                styles.recoveryIcon,
+                {
+                  backgroundColor:
+                    recoveryAudit?.hasUnsyncedData
+                      ? (isDark ? '#450A0A' : '#FEE2E2')
+                      : `${accent}24`,
+                },
+              ]}
+            >
+              <AlertTriangle
+                size={22}
+                color={
+                  recoveryAudit?.hasUnsyncedData
+                    ? '#EF4444'
+                    : accent
+                }
+              />
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.recoveryTitle,
+                  { color: textPrimary },
+                ]}
+              >
+                {supportText('recoveryTitle', language)}
+              </Text>
+
+              <Text
+                style={[
+                  styles.recoveryHint,
+                  { color: textSecondary },
+                ]}
+              >
+                {supportText('recoveryHint', language)}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            style={[
+              styles.recoveryStatus,
+              {
+                backgroundColor:
+                  recoveryAudit?.hasUnsyncedData
+                    ? (isDark ? '#450A0A' : '#FEE2E2')
+                    : (isDark ? '#052E16' : '#DCFCE7'),
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.recoveryStatusText,
+                {
+                  color:
+                    recoveryAudit?.hasUnsyncedData
+                      ? '#EF4444'
+                      : '#16A34A',
+                },
+              ]}
+            >
+              {supportText(
+                recoveryAudit?.hasUnsyncedData
+                  ? 'recoveryRisk'
+                  : 'recoverySafe',
+                language
+              )}
+            </Text>
+          </View>
+
+          <View style={{ height: 8 }} />
+
+          {renderInfoRow(
+            supportText('recoveryQueue', language),
+            String(
+              (recoveryAudit?.queuePending || 0) +
+              (recoveryAudit?.queueRetry || 0)
+            ),
+            RefreshCw,
+            '#F59E0B'
+          )}
+
+          {renderInfoRow(
+            supportText('recoveryQueueConflict', language),
+            String(recoveryAudit?.queueConflict || 0),
+            AlertTriangle,
+            '#EF4444'
+          )}
+
+          {renderInfoRow(
+            supportText('recoveryCollections', language),
+            String(
+              (recoveryAudit?.collectionsPending || 0) +
+              (recoveryAudit?.collectionsConflict || 0)
+            ),
+            Database,
+            '#F59E0B'
+          )}
+
+          {renderInfoRow(
+            supportText('recoveryVisits', language),
+            String(recoveryAudit?.visitsPending || 0),
+            MapPin,
+            '#F59E0B'
+          )}
+
+          {renderInfoRow(
+            supportText('recoveryConflicts', language),
+            String(recoveryAudit?.unresolvedConflicts || 0),
+            CircleAlert,
+            '#EF4444'
+          )}
+
+          <TouchableOpacity
+            style={[
+              styles.recoverySyncButton,
+              {
+                borderColor: accent,
+                opacity:
+                  recovering ||
+                  isSyncing ||
+                  refreshing
+                    ? 0.55
+                    : 1,
+              },
+            ]}
+            disabled={
+              recovering ||
+              isSyncing ||
+              refreshing
+            }
+            onPress={refresh}
+            activeOpacity={0.86}
+          >
+            {isSyncing || refreshing ? (
+              <ActivityIndicator
+                size="small"
+                color={accent}
+              />
+            ) : (
+              <RefreshCw
+                size={18}
+                color={accent}
+              />
+            )}
+
+            <Text
+              style={[
+                styles.recoverySyncButtonText,
+                { color: accent },
+              ]}
+            >
+              {supportText(
+                'recoveryTrySync',
+                language
+              )}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.recoveryDangerButton,
+              {
+                opacity:
+                  recovering ||
+                  isSyncing
+                    ? 0.55
+                    : 1,
+              },
+            ]}
+            disabled={
+              recovering ||
+              isSyncing
+            }
+            onPress={
+              requestSafeRecovery
+            }
+            activeOpacity={0.86}
+          >
+            {recovering ? (
+              <ActivityIndicator
+                size="small"
+                color="#FFFFFF"
+              />
+            ) : (
+              <Database
+                size={18}
+                color="#FFFFFF"
+              />
+            )}
+
+            <Text
+              style={styles.recoveryDangerButtonText}
+            >
+              {supportText(
+                recovering
+                  ? 'recoveryBusy'
+                  : 'recoveryClear',
+                language
+              )}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </View>
   );
@@ -1054,4 +1580,78 @@ const styles = StyleSheet.create({
   },
   policyTitle: { fontSize: 15, fontWeight: '900' },
   policyText: { fontSize: 12, fontWeight: '700', lineHeight: 18, marginTop: 4 },
+
+  recoveryCard: {
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 16,
+    marginTop: 4,
+    marginBottom: 18,
+  },
+  recoveryHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  recoveryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recoveryTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  recoveryHint: {
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  recoveryStatus: {
+    marginTop: 14,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  recoveryStatusText: {
+    fontSize: 12,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  recoverySyncButton: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 14,
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  recoverySyncButtonText: {
+    fontSize: 14,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  recoveryDangerButton: {
+    minHeight: 50,
+    borderRadius: 14,
+    marginTop: 10,
+    backgroundColor: '#DC2626',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  recoveryDangerButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
 });

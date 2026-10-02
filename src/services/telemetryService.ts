@@ -1,8 +1,10 @@
 import * as Battery from 'expo-battery';
 import * as Device from 'expo-device';
 import * as Network from 'expo-network';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Application from 'expo-application';
 import * as Location from 'expo-location';
+import { NativeModules } from 'react-native';
 
 import { api } from './api';
 
@@ -66,6 +68,164 @@ export const collectAndSendTelemetry = async (userId: string) => {
     }
 
     // 4. Monta pacote
+
+    // MOBILE_DEVICE_STORAGE_TELEMETRY_V1
+    let freeStorageMb: number | undefined;
+    let totalStorageMb: number | undefined;
+
+    try {
+      const [freeStorageBytes, totalStorageBytes] =
+        await Promise.all([
+          FileSystem.getFreeDiskStorageAsync(),
+          FileSystem.getTotalDiskCapacityAsync(),
+        ]);
+
+      if (
+        Number.isFinite(freeStorageBytes) &&
+        freeStorageBytes >= 0
+      ) {
+        freeStorageMb =
+          Math.round(
+            (freeStorageBytes / 1024 / 1024) * 100
+          ) / 100;
+      }
+
+      if (
+        Number.isFinite(totalStorageBytes) &&
+        totalStorageBytes > 0
+      ) {
+        totalStorageMb =
+          Math.round(
+            (totalStorageBytes / 1024 / 1024) * 100
+          ) / 100;
+      }
+
+      telemetryDebug(
+        '[Telemetria] Armazenamento:',
+        {
+          free_storage_mb: freeStorageMb,
+          total_storage_mb: totalStorageMb,
+        }
+      );
+    } catch (error) {
+      telemetryDebug(
+        '[Telemetria] Falha ao ler armazenamento:',
+        error
+      );
+    }
+
+
+    // MOBILE_DEVICE_MEMORY_TELEMETRY_V1
+    let totalMemoryMb: number | undefined;
+    let availableMemoryMb: number | undefined;
+    let lowMemory: boolean | undefined;
+    let appMemoryMb: number | undefined;
+    let appJavaHeapUsedMb: number | undefined;
+    let appJavaHeapMaxMb: number | undefined;
+
+    const normalizeMemoryMb = (
+      value: any
+    ): number | undefined => {
+      const parsed = Number(value);
+
+      if (
+        !Number.isFinite(parsed) ||
+        parsed < 0
+      ) {
+        return undefined;
+      }
+
+      return (
+        Math.round(parsed * 100) /
+        100
+      );
+    };
+
+    try {
+      const totalMemoryBytes =
+        Number(Device.totalMemory);
+
+      if (
+        Number.isFinite(totalMemoryBytes) &&
+        totalMemoryBytes > 0
+      ) {
+        totalMemoryMb =
+          normalizeMemoryMb(
+            totalMemoryBytes /
+            1024 /
+            1024
+          );
+      }
+
+      const memoryModule =
+        NativeModules?.DeviceMemory;
+
+      if (
+        memoryModule &&
+        typeof memoryModule.getMemoryInfo ===
+          'function'
+      ) {
+        const memoryInfo =
+          await memoryModule.getMemoryInfo();
+
+        totalMemoryMb =
+          normalizeMemoryMb(
+            memoryInfo?.totalMemoryMb
+          ) ??
+          totalMemoryMb;
+
+        availableMemoryMb =
+          normalizeMemoryMb(
+            memoryInfo?.availableMemoryMb
+          );
+
+        lowMemory =
+          typeof memoryInfo?.lowMemory ===
+            'boolean'
+            ? memoryInfo.lowMemory
+            : undefined;
+
+        appMemoryMb =
+          normalizeMemoryMb(
+            memoryInfo?.appMemoryMb
+          );
+
+        appJavaHeapUsedMb =
+          normalizeMemoryMb(
+            memoryInfo?.appJavaHeapUsedMb
+          );
+
+        appJavaHeapMaxMb =
+          normalizeMemoryMb(
+            memoryInfo?.appJavaHeapMaxMb
+          );
+      }
+
+      telemetryDebug(
+        '[Telemetria] Memoria:',
+        {
+          total_memory_mb:
+            totalMemoryMb,
+          available_memory_mb:
+            availableMemoryMb,
+          low_memory:
+            lowMemory,
+          app_memory_mb:
+            appMemoryMb,
+          app_java_heap_used_mb:
+            appJavaHeapUsedMb,
+          app_java_heap_max_mb:
+            appJavaHeapMaxMb,
+        }
+      );
+
+    } catch (error) {
+      telemetryDebug(
+        '[Telemetria] Falha ao ler memoria:',
+        error
+      );
+    }
+
     const payload: any = {
       usuario_id: userId,
       device_model: Device.modelName || 'Dispositivo Desconhecido',
@@ -78,6 +238,46 @@ export const collectAndSendTelemetry = async (userId: string) => {
     };
 
     if (batteryLevel !== undefined) payload.battery_level = batteryLevel;
+
+    if (freeStorageMb !== undefined) {
+      payload.free_storage_mb = freeStorageMb;
+    }
+
+    if (totalStorageMb !== undefined) {
+      payload.total_storage_mb = totalStorageMb;
+    }
+
+
+    if (totalMemoryMb !== undefined) {
+      payload.total_memory_mb =
+        totalMemoryMb;
+    }
+
+    if (availableMemoryMb !== undefined) {
+      payload.available_memory_mb =
+        availableMemoryMb;
+    }
+
+    if (lowMemory !== undefined) {
+      payload.low_memory =
+        lowMemory;
+    }
+
+    if (appMemoryMb !== undefined) {
+      payload.app_memory_mb =
+        appMemoryMb;
+    }
+
+    if (appJavaHeapUsedMb !== undefined) {
+      payload.app_java_heap_used_mb =
+        appJavaHeapUsedMb;
+    }
+
+    if (appJavaHeapMaxMb !== undefined) {
+      payload.app_java_heap_max_mb =
+        appJavaHeapMaxMb;
+    }
+
     if (lat !== undefined) payload.lat = lat;
     if (lon !== undefined) payload.lon = lon;
 

@@ -5750,11 +5750,66 @@ export const globalSync = async () => {
       if (resHist && resHist.ok) {
         const histData = await resHist.json();
 
+        // MOBILE_OPERATIONAL_EFFICIENCY_SYNC_V1
+        //
+        // Online:
+        // usa o percentual calculado pela API.
+        //
+        // Compatibilidade:
+        // se um backend antigo não enviar o percentual,
+        // reproduz exatamente a mesma fórmula localmente.
+        const historyVisitsTotal =
+          Number(histData.visitsTotal || 0);
+
+        const historyVisitsDone =
+          Number(histData.visitsDone || 0);
+
+        const historyTasksTotal =
+          Number(histData.tasksTotal || 0);
+
+        const historyTasksDone =
+          Number(histData.tasksDone || 0);
+
+        const historyOperationalTotal =
+          historyVisitsTotal +
+          historyTasksTotal;
+
+        const apiOperationalPercent =
+          Number(
+            histData.operationalEfficiencyPercent
+          );
+
+        const operationalEfficiencyPercent =
+          Number.isFinite(
+            apiOperationalPercent
+          )
+            ? apiOperationalPercent
+            : historyOperationalTotal > 0
+              ? Math.round(
+                  (
+                    (
+                      historyVisitsDone +
+                      historyTasksDone
+                    ) /
+                    historyOperationalTotal
+                  ) * 100
+                )
+              : 0;
+
         custom.history_7d = {
-          visitsTotal: histData.visitsTotal || 0,
-          visitsDone: histData.visitsDone || 0,
-          tasksTotal: histData.tasksTotal || 0,
-          tasksDone: histData.tasksDone || 0,
+          visitsTotal:
+            historyVisitsTotal,
+
+          visitsDone:
+            historyVisitsDone,
+
+          tasksTotal:
+            historyTasksTotal,
+
+          tasksDone:
+            historyTasksDone,
+
+          operationalEfficiencyPercent,
         };
       }
 
