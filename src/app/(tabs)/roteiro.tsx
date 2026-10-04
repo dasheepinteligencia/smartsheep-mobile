@@ -28,7 +28,10 @@ import {
 import { getDBConnection, initializeDatabase } from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { getStatusColors } from '../../utils/statusUtils';
-import { globalSync } from '../../services/syncService';
+import {
+  globalSync,
+  waitForGlobalSyncIdle,
+} from '../../services/syncService';
 import { useSyncStore } from '../../store/useSyncStore';
 import { i18n } from '../../utils/i18n';
 import { api } from '../../services/api';
@@ -99,6 +102,9 @@ const ROUTE_TEXTS = {
     // MOBILE_FIELD_PORTFOLIO_V1
     portfolioTab: 'Minha Carteira',
     portfolioBadge: 'CARTEIRA LIVRE',
+    // MOBILE_PORTFOLIO_ASSIGNED_TAG_V2
+    portfolioAssignedBadge: 'CARTEIRA',
+    portfolioOutsideBadge: 'FORA DA CARTEIRA',
     portfolioAvailable: 'Disponível para visita',
     portfolioVisitedToday: 'Visitada hoje',
     portfolioInProgress: 'Visita em andamento',
@@ -156,6 +162,8 @@ const ROUTE_TEXTS = {
     // MOBILE_FIELD_PORTFOLIO_V1
     portfolioTab: 'My Portfolio',
     portfolioBadge: 'FREE PORTFOLIO',
+    portfolioAssignedBadge: 'PORTFOLIO',
+    portfolioOutsideBadge: 'OUTSIDE PORTFOLIO',
     portfolioAvailable: 'Available for visit',
     portfolioVisitedToday: 'Visited today',
     portfolioInProgress: 'Visit in progress',
@@ -213,6 +221,8 @@ const ROUTE_TEXTS = {
     // MOBILE_FIELD_PORTFOLIO_V1
     portfolioTab: 'Mi Cartera',
     portfolioBadge: 'CARTERA LIBRE',
+    portfolioAssignedBadge: 'CARTERA',
+    portfolioOutsideBadge: 'FUERA DE CARTERA',
     portfolioAvailable: 'Disponible para visita',
     portfolioVisitedToday: 'Visitada hoy',
     portfolioInProgress: 'Visita en curso',
@@ -1237,6 +1247,7 @@ export default function RoteiroScreen() {
       mode: 'ROTEIRIZADO',
       hasPortfolio: false,
       allowOutsidePortfolio: false,
+      allowSameDayRevisit: false,
       stores: [],
     });
 
@@ -1288,6 +1299,15 @@ export default function RoteiroScreen() {
   };
 
   const getTodayStr = () => getLocalDateKey(new Date());
+
+  /*
+   * MOBILE_FIELD_PORTFOLIO_SAME_DAY_REVISIT_V2
+   *
+   * A tela não interpreta payload nem inventa regra.
+   * Apenas consome o contrato já normalizado pelo fieldPortfolioService.
+   */
+  const allowSameDayRevisit =
+    fieldPortfolio?.allowSameDayRevisit === true;
 
   useEffect(() => {
     const requestedTab = normalizeRouteTabParam(params?.tab);
@@ -1398,6 +1418,7 @@ export default function RoteiroScreen() {
         mode: 'ROTEIRIZADO',
         hasPortfolio: false,
         allowOutsidePortfolio: false,
+        allowSameDayRevisit: false,
         stores: [],
       };
 
@@ -2233,15 +2254,64 @@ qtdPerguntas:
     setRefreshing(true);
 
     try {
-      await globalSync();
+      /*
+       * MOBILE_ROUTE_FORCE_GLOBAL_REFRESH_V1
+       *
+       * Pull-to-refresh é uma ação explícita do usuário.
+       * Não pode aceitar SKIPPED_ALREADY_RUNNING e depois
+       * simplesmente reler um snapshot antigo do SQLite.
+       *
+       * Esperamos qualquer sync atual terminar e garantimos
+       * uma passagem real do GlobalSync antes do loadData().
+       */
+      let syncResult: any = null;
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const idle =
+          await waitForGlobalSyncIdle(
+            60000
+          );
+
+        if (!idle) {
+          throw new Error(
+            'GLOBAL_SYNC_BUSY_TIMEOUT'
+          );
+        }
+
+        syncResult =
+          await globalSync();
+
+        if (
+          syncResult?.status !==
+          'SKIPPED_ALREADY_RUNNING'
+        ) {
+          break;
+        }
+      }
+
+      if (
+        syncResult?.status ===
+        'SKIPPED_ALREADY_RUNNING'
+      ) {
+        throw new Error(
+          'GLOBAL_SYNC_REFRESH_NOT_EXECUTED'
+        );
+      }
+
       await loadData();
+
     } catch (error) {
-      console.error('Erro na atualização:', error);
+      console.error(
+        'Erro na atualização:',
+        error
+      );
+
       showCustomAlert(
         i18n.t('error') || 'Erro',
         rt('refreshRouteError', language),
         'warning'
       );
+
     } finally {
       setRefreshing(false);
     }
@@ -2577,6 +2647,15 @@ qtdPerguntas:
 
   const handlePortfolioRevisitPress =
     async (store: any) => {
+      /*
+       * Defesa local adicional:
+       * mesmo que o handler seja chamado por engano,
+       * nunca cria revisita quando a configuração está desligada.
+       */
+      if (!allowSameDayRevisit) {
+        return;
+      }
+
       try {
         await createAndOpenPortfolioVisit(store, true);
       } catch (error: any) {
@@ -2647,6 +2726,15 @@ qtdPerguntas:
           : done
             ? '#10B981'
             : accent;
+
+      // MOBILE_PORTFOLIO_BADGE_COLOR_V1
+      // CARTEIRA mantém a identidade laranja do app.
+      // FORA DA CARTEIRA usa tom neutro para diferenciar
+      // sem transmitir erro, alerta ou prioridade.
+      const portfolioBadgeColor =
+        item.assigned === false
+          ? '#64748B'
+          : accent;
 
       const targetVisits =
         Number(
@@ -2724,7 +2812,7 @@ qtdPerguntas:
                     styles.badge,
                     {
                       backgroundColor:
-                        `${accent}18`,
+                        `${portfolioBadgeColor}18`,
                     },
                   ]}
                 >
@@ -2733,14 +2821,21 @@ qtdPerguntas:
                       styles.badgeText,
                       {
                         color:
-                          accent,
+                          portfolioBadgeColor,
                       },
                     ]}
                   >
-                    {rt(
-                      'portfolioBadge',
-                      language
-                    )}
+                    {
+                      item.assigned === false
+                        ? rt(
+                            'portfolioOutsideBadge',
+                            language
+                          )
+                        : rt(
+                            'portfolioAssignedBadge',
+                            language
+                          )
+                    }
                   </Text>
                 </View>
 
@@ -2948,21 +3043,23 @@ qtdPerguntas:
                     </Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity
-                    activeOpacity={0.82}
-                    style={[
-                      styles.portfolioVisitAction,
-                      { backgroundColor: `${accent}12`, borderColor: `${accent}45` },
-                    ]}
-                    onPress={(event) => {
-                      event.stopPropagation?.();
-                      handlePortfolioRevisitPress(item);
-                    }}
-                  >
-                    <Text style={[styles.portfolioVisitActionText, { color: accent }]}>
-                      {rt('portfolioNewVisit', language)}
-                    </Text>
-                  </TouchableOpacity>
+                  {allowSameDayRevisit ? (
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      style={[
+                        styles.portfolioVisitAction,
+                        { backgroundColor: `${accent}12`, borderColor: `${accent}45` },
+                      ]}
+                      onPress={(event) => {
+                        event.stopPropagation?.();
+                        handlePortfolioRevisitPress(item);
+                      }}
+                    >
+                      <Text style={[styles.portfolioVisitActionText, { color: accent }]}>
+                        {rt('portfolioNewVisit', language)}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
               ) : null}
             </View>

@@ -611,6 +611,8 @@ export const ptBR = {
   visitJustifiedSavedMessage: 'A justificativa foi salva no celular e será sincronizada automaticamente.',
   visitDatabaseErrorTitle: 'Erro no banco',
   visitDatabaseErrorMessage: 'Não foi possível salvar a ação na memória do celular.',
+  visitConcurrentCheckinTitle: 'Loja em atendimento',
+  visitConcurrentCheckinMessage: 'Esta loja já possui um atendimento em andamento por outro promotor. Aguarde o check-out atual antes de iniciar uma nova visita.',
   visitTaskAlreadyCompletedTitle: 'Pesquisa já concluída',
   visitTaskAlreadyCompletedMessage: 'Esta pesquisa não é repetível e já foi respondida nesta visita. Não é possível registrar uma nova resposta.',
   visitCheckinFirstTitle: 'Aviso',

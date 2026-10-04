@@ -12,8 +12,12 @@ import {
 
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
-import { addAppLog, getDBConnection } from '../../database/db';
-import { enqueueSyncOperationInDb, globalSync } from '../../services/syncService';
+import {
+  addAppLog,
+  getDBConnection,
+  withSerializedDbTransaction,
+} from '../../database/db';
+import { enqueueSyncOperationInDb, fastSync } from '../../services/syncService';
 import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
@@ -2593,7 +2597,7 @@ const finalizadoAt = new Date().toISOString();
                * na mesma transação SQLite. Se qualquer etapa falha, nada é
                * confirmado localmente e o formulário continua recuperável.
                */
-              await db.withTransactionAsync(async () => {
+              await withSerializedDbTransaction(async () => {
                   const currentVisit: any = await db.getFirstAsync(
                       `SELECT id FROM visits WHERE id = ? LIMIT 1`,
                       [String(id)]
@@ -2669,29 +2673,64 @@ const finalizadoAt = new Date().toISOString();
           await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 
           /*
-           * MOBILE_VISIT_REPEATABLE_SYNC_PARITY_V1
+           * MOBILE_SURVEY_FAST_SYNC_AFTER_SAVE_V1
            *
-           * Mesma regra já usada pela pesquisa avulsa:
+           * A coleta já está confirmada no SQLite + Outbox.
+           * FastSync faz somente PUSH, sem baixar snapshots.
+           * Vale para pesquisas repetíveis e não repetíveis.
+           */
+          void fastSync()
+              .then((result: any) => {
+                  if (result?.status === 'FAILED') {
+                      void addAppLog({
+                          level: 'WARNING',
+                          module: 'PESQUISA',
+                          action: 'FAST_SYNC_AFTER_COLLECTION_SAVE_FAILED',
+                          message: 'Coleta preservada localmente; FastSync será retomado posteriormente.',
+                          metadata: {
+                              visitId: id,
+                              pesquisaId: idDaPesquisa,
+                              clientOperationId: operationId,
+                              repeatable: isVisitRepeatable,
+                              fastSyncStatus: result?.status || null,
+                              error: result?.error || null,
+                          },
+                      }).catch(() => {});
+                  }
+              })
+              .catch((syncError: any) => {
+                  void addAppLog({
+                      level: 'WARNING',
+                      module: 'PESQUISA',
+                      action: 'FAST_SYNC_AFTER_COLLECTION_SAVE_EXCEPTION',
+                      message: 'Coleta preservada localmente; ocorreu uma falha inesperada no FastSync.',
+                      metadata: {
+                          visitId: id,
+                          pesquisaId: idDaPesquisa,
+                          clientOperationId: operationId,
+                          repeatable: isVisitRepeatable,
+                          error:
+                              syncError?.message ||
+                              String(syncError),
+                      },
+                  }).catch(() => {});
+              });
+
+          /*
+           * MOBILE_VISIT_REPEATABLE_FAST_SYNC_PARITY_V1
            *
-           * - NÃO repetível: tenta sincronizar imediatamente.
-           * - Repetível: preserva SQLite + Outbox, atualiza a tela pela coleta
-           *   local e NÃO força sync neste exato instante.
+           * A pesquisa repetível continua usando imediatamente o SQLite local
+           * para atualizar contador e navegação.
            *
-           * O motivo é evitar que um snapshot ainda atrasado do backend volte
-           * como PENDENTE e sobrescreva visualmente o progresso recém-criado.
-           * A Outbox permanece intacta e entra no próximo ciclo normal de sync
-           * (pull-to-sync, sync de outra etapa, background etc.).
-           *
-           * Na visita, o contador local lê TODAS as coletas SQLite da visita,
-           * inclusive depois de sincronizadas, e o checkout é o fechamento
-           * natural das pesquisas repetíveis daquele atendimento.
+           * Agora também pode executar FastSync porque ele somente envia a
+           * Outbox e não faz pull de snapshot atrasado do backend.
            */
           if (isVisitRepeatable) {
               await addAppLog({
                   level: 'INFO',
                   module: 'PESQUISA',
                   action: 'REPEATABLE_COLLECTION_SAVED_LOCAL',
-                  message: 'Resposta repetível preservada localmente; sync imediato adiado para manter o estado operacional da visita.',
+                  message: 'Resposta repetível preservada localmente; FastSync da Outbox disparado sem pull de snapshot.',
                   metadata: {
                       visitId: id,
                       pesquisaId: idDaPesquisa,
@@ -2719,32 +2758,6 @@ const finalizadoAt = new Date().toISOString();
 
               return;
           }
-
-          /*
-           * MOBILE_SURVEY_SYNC_AFTER_SAVE_V1
-           *
-           * Coleta não repetível: tentativa imediata de sync, sem tornar
-           * internet requisito para concluir o formulário.
-           */
-          globalSync().catch(async (syncError: any) => {
-              console.log(
-                  '[Pesquisa] sync imediato após finalizar falhou:',
-                  syncError?.message || syncError
-              );
-
-              await addAppLog({
-                  level: 'WARNING',
-                  module: 'PESQUISA',
-                  action: 'SYNC_AFTER_COLLECTION_SAVE',
-                  message: 'Coleta preservada localmente; sync imediato será retomado posteriormente.',
-                  metadata: {
-                      visitId: id,
-                      pesquisaId: idDaPesquisa,
-                      clientOperationId: operationId,
-                      error: syncError?.message || String(syncError),
-                  },
-              }).catch(() => {});
-          });
 
           showCustomAlert(
               'success',

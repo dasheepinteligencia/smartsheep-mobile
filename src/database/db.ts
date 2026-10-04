@@ -9,6 +9,49 @@ const db = SQLite.openDatabaseSync(DB_NAME);
 export const getDBConnection = () => db;
 
 /*
+ * MOBILE_SQLITE_TRANSACTION_SERIALIZER_V1
+ *
+ * O Omni Field usa uma única instância SQLite compartilhada por toda a
+ * aplicação. Transações independentes não podem disputar essa conexão.
+ *
+ * Este gate serializa somente o período transacional. Ele não bloqueia
+ * chamadas de rede, processamento de UI ou o GlobalSync inteiro.
+ */
+let sqliteTransactionTail: Promise<void> =
+  Promise.resolve();
+
+export const withSerializedDbTransaction =
+  async <T>(
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previousTransaction =
+      sqliteTransactionTail;
+
+    let releaseTransaction!: () => void;
+
+    sqliteTransactionTail =
+      new Promise<void>((resolve) => {
+        releaseTransaction = resolve;
+      });
+
+    await previousTransaction;
+
+    try {
+      let result!: T;
+
+      await db.withTransactionAsync(
+        async () => {
+          result = await operation();
+        }
+      );
+
+      return result;
+    } finally {
+      releaseTransaction();
+    }
+  };
+
+/*
  * MOBILE_MULTIUSER_WORKSPACE_V1
  *
  * As tabelas operacionais legadas do Omni Field foram desenhadas como um
@@ -1188,7 +1231,7 @@ export const ensureActiveLocalWorkspaceForUser = async (user: any) => {
 
   let result: any = null;
 
-  await db.withTransactionAsync(async () => {
+  await withSerializedDbTransaction(async () => {
     const active = await readActiveLocalWorkspaceIdentity();
 
     if (!active) {
@@ -1237,7 +1280,7 @@ export const activateLocalWorkspaceForUser = async (user: any) => {
 
   let result: any = null;
 
-  await db.withTransactionAsync(async () => {
+  await withSerializedDbTransaction(async () => {
     const active = await readActiveLocalWorkspaceIdentity();
 
     if (active && active.projectId === identity.projectId && active.userId === identity.userId) {
@@ -1534,7 +1577,7 @@ export const clearActiveLocalWorkspaceForRecovery =
     const auditBefore =
       await getLocalRecoveryAudit();
 
-    await db.withTransactionAsync(
+    await withSerializedDbTransaction(
       async () => {
 
         /*
@@ -2154,7 +2197,7 @@ export const saveRoteiroCompletoOffline = async (
     const campanhas = safeParseArray(thirdList);
     const scorecards = safeParseArray(fourthList);
 
-    await db.withTransactionAsync(async () => {
+    await withSerializedDbTransaction(async () => {
       const visitIdsFromServer: string[] = [];
 
       for (const v of safeParseArray(visits)) {
@@ -2640,7 +2683,7 @@ export const saveJustificativasOffline = async (justificativas: any[] = []) => {
 
     const now = new Date().toISOString();
 
-    await db.withTransactionAsync(async () => {
+    await withSerializedDbTransaction(async () => {
       if (normalized.length > 0) {
         await db.runAsync(`DELETE FROM justificativas`);
 
@@ -2738,7 +2781,7 @@ export const saveAlertsOffline = async (alerts: any[] = []) => {
 
     const now = new Date().toISOString();
 
-    await db.withTransactionAsync(async () => {
+    await withSerializedDbTransaction(async () => {
       for (const item of normalized) {
         const current: any = await db.getFirstAsync(
           `SELECT lida, lida_em, aceita_em FROM alerts WHERE id = ?`,

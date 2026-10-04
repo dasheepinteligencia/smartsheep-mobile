@@ -606,6 +606,8 @@ export const esES = {
   visitJustifiedSavedMessage: 'La justificación fue guardada en el dispositivo y se sincronizará automáticamente.',
   visitDatabaseErrorTitle: 'Error en la base de datos',
   visitDatabaseErrorMessage: 'No fue posible guardar la acción en el almacenamiento del dispositivo.',
+  visitConcurrentCheckinTitle: 'Tienda en atención',
+  visitConcurrentCheckinMessage: 'Esta tienda ya tiene una visita en curso de otro promotor. Espere el check-out actual antes de iniciar una nueva visita.',
   visitTaskAlreadyCompletedTitle: 'Encuesta ya completada',
   visitTaskAlreadyCompletedMessage: 'Esta encuesta no es repetible y ya fue respondida en esta visita. No es posible registrar una nueva respuesta.',
   visitCheckinFirstTitle: 'Aviso',

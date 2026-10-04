@@ -607,6 +607,8 @@ export const enUS = {
   visitJustifiedSavedMessage: 'The justification was saved on the device and will be synchronized automatically.',
   visitDatabaseErrorTitle: 'Database error',
   visitDatabaseErrorMessage: 'The action could not be saved to the device storage.',
+  visitConcurrentCheckinTitle: 'Store currently being served',
+  visitConcurrentCheckinMessage: 'This store already has an active visit by another field user. Wait for the current check-out before starting a new visit.',
   visitTaskAlreadyCompletedTitle: 'Survey already completed',
   visitTaskAlreadyCompletedMessage: 'This survey is not repeatable and has already been answered during this visit. A new response cannot be registered.',
   visitCheckinFirstTitle: 'Notice',

@@ -30,15 +30,21 @@ import {
   Navigation,
 } from 'lucide-react-native';
 import MapView, { Marker } from 'react-native-maps';
-import { addAppLog, getDBConnection } from '../../database/db';
+import {
+  addAppLog,
+  getDBConnection,
+  withSerializedDbTransaction,
+} from '../../database/db';
 import { getSmartLocation, getDistanceInMeters } from '../../services/locationService';
 import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
-import { enqueueSyncOperationInDb, globalSync } from '../../services/syncService';
+import { enqueueSyncOperationInDb, fastSync, globalSync } from '../../services/syncService';
+import { api } from '../../services/api';
 import { materializeFreeVisitExecutionFromManifestInDb } from '../../services/fieldPortfolioService';
 import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveyStatus';
 import { useAuthStore } from '../../store/useAuthStore';
+import * as Network from 'expo-network';
 import { useSyncStore } from '../../store/useSyncStore';
 
 // ============================================================================
@@ -1875,35 +1881,55 @@ export default function VisitaDetailScreen() {
     }
   };
 
-  // MOBILE_VISIT_SYNC_AFTER_ACTION_V1
+  // MOBILE_VISIT_FAST_SYNC_AFTER_ACTION_V1
   const triggerSyncAfterVisitAction = (
     action: 'CHECKIN' | 'CHECKOUT' | 'JUSTIFICAR',
     operationId: string
   ) => {
     void (async () => {
       try {
-        await globalSync();
+        const result: any = await fastSync();
+
+        const fastSyncStatus =
+          String(result?.status || 'UNKNOWN');
+
+        const delivered =
+          fastSyncStatus === 'SUCCESS' ||
+          fastSyncStatus === 'NO_PENDING';
+
+        const safelyDeferred =
+          fastSyncStatus === 'OFFLINE' ||
+          fastSyncStatus === 'PARTIAL' ||
+          fastSyncStatus === 'SKIPPED_ALREADY_RUNNING' ||
+          fastSyncStatus === 'SKIPPED_WORKSPACE_SWITCH';
 
         await addAppLog({
-          level: 'INFO',
+          level:
+            delivered || safelyDeferred
+              ? 'INFO'
+              : 'WARNING',
           module: 'VISITA',
-          action: `AUTO_SYNC_AFTER_${action}`,
-          message: 'Sincronização automática disparada após ação operacional da visita.',
+          action: `FAST_SYNC_AFTER_${action}`,
+          message:
+            delivered
+              ? 'FastSync operacional executado após ação da visita.'
+              : safelyDeferred
+                ? 'A ação foi preservada na Outbox e será reenviada automaticamente.'
+                : 'FastSync operacional não confirmou a entrega imediata da ação.',
           metadata: {
             visitId: visita?.id,
             clientOperationId: operationId,
+            fastSyncStatus,
+            attempted: result?.attempted === true,
+            error: result?.error || null,
           },
         }).catch(() => {});
       } catch (error: any) {
-        /*
-         * Offline-first: a ação já está salva localmente e na Outbox.
-         * Uma falha de rede não desfaz check-in/check-out/justificativa.
-         */
         await addAppLog({
           level: 'WARNING',
           module: 'VISITA',
-          action: `AUTO_SYNC_AFTER_${action}_FAILED`,
-          message: 'A ação foi preservada localmente, mas a tentativa imediata de sincronização falhou.',
+          action: `FAST_SYNC_AFTER_${action}_FAILED`,
+          message: 'A ação foi preservada localmente, mas o FastSync encontrou uma falha inesperada.',
           metadata: {
             visitId: visita?.id,
             clientOperationId: operationId,
@@ -2488,6 +2514,216 @@ export default function VisitaDetailScreen() {
     }
   };
 
+  /*
+   * MOBILE_CHECKIN_CONCURRENCY_PREFLIGHT_V1
+   *
+   * O servidor é a autoridade para saber se outro usuário
+   * já possui atendimento ativo na mesma loja.
+   *
+   * Nesta fase:
+   * - conflito confirmado pelo servidor -> bloqueia;
+   * - offline / timeout / erro técnico -> preserva offline-first.
+   */
+  const validateConcurrentCheckinBeforeLocalSave =
+    async (
+      payload: any
+    ): Promise<boolean> => {
+      try {
+        const network =
+          await Network.getNetworkStateAsync();
+
+        const online =
+          network?.isConnected === true &&
+          network?.isInternetReachable !== false;
+
+        if (!online) {
+          await addAppLog({
+            level: 'INFO',
+            module: 'VISITA',
+            action:
+              'CHECKIN_CONCURRENCY_PREFLIGHT_OFFLINE',
+            message:
+              'Preflight de simultaneidade não executado porque o aparelho está offline.',
+            metadata: {
+              visitId:
+                visita?.id || null,
+
+              lojaId:
+                payload?.lojaId ||
+                payload?.loja_id ||
+                null,
+
+              projectId:
+                payload?.projectId ||
+                payload?.project_id ||
+                null,
+            },
+          }).catch(() => {});
+
+          return true;
+        }
+
+        const response =
+          await api(
+            '/visitas/checkin-availability',
+            {
+              method: 'POST',
+
+              body:
+                JSON.stringify(
+                  payload
+                ),
+            }
+          );
+
+        let result: any = null;
+
+        try {
+          result =
+            await response.json();
+        } catch {
+          result = null;
+        }
+
+        const code =
+          String(
+            result?.code || ''
+          )
+            .trim()
+            .toUpperCase();
+
+        /*
+         * O endpoint responde HTTP 200 tanto para
+         * allowed=true quanto para conflito operacional.
+         */
+        if (
+          response.ok &&
+          result?.allowed === false &&
+          code ===
+            'STORE_CONCURRENT_CHECKIN_BLOCKED'
+        ) {
+          await addAppLog({
+            level: 'WARNING',
+            module: 'VISITA',
+            action:
+              'CHECKIN_CONCURRENCY_BLOCKED',
+            message:
+              'Check-in bloqueado porque outro usuário já possui atendimento ativo na loja.',
+            metadata: {
+              visitId:
+                visita?.id || null,
+
+              lojaId:
+                payload?.lojaId ||
+                payload?.loja_id ||
+                null,
+
+              projectId:
+                payload?.projectId ||
+                payload?.project_id ||
+                null,
+
+              activeVisitId:
+                result?.activeVisitId ||
+                null,
+
+              activeUserId:
+                result?.activeUserId ||
+                null,
+
+              activeUserName:
+                result?.activeUserName ||
+                null,
+
+              assignmentPolicy:
+                result?.assignmentPolicy ||
+                null,
+            },
+          }).catch(() => {});
+
+          showCustomAlert(
+            visitT(
+              'visitConcurrentCheckinTitle',
+              'Loja em atendimento'
+            ),
+
+            visitT(
+              'visitConcurrentCheckinMessage',
+              'Esta loja já possui um atendimento em andamento por outro promotor. Aguarde o check-out atual antes de iniciar uma nova visita.'
+            ),
+
+            'error'
+          );
+
+          return false;
+        }
+
+        if (!response.ok) {
+          await addAppLog({
+            level: 'WARNING',
+            module: 'VISITA',
+            action:
+              'CHECKIN_CONCURRENCY_PREFLIGHT_HTTP_ERROR',
+            message:
+              'Servidor não confirmou o preflight de simultaneidade; operação offline-first foi preservada.',
+            metadata: {
+              visitId:
+                visita?.id || null,
+
+              status:
+                response.status,
+
+              code:
+                result?.code ||
+                null,
+
+              lojaId:
+                payload?.lojaId ||
+                payload?.loja_id ||
+                null,
+
+              projectId:
+                payload?.projectId ||
+                payload?.project_id ||
+                null,
+            },
+          }).catch(() => {});
+        }
+
+        return true;
+
+      } catch (error: any) {
+        await addAppLog({
+          level: 'WARNING',
+          module: 'VISITA',
+          action:
+            'CHECKIN_CONCURRENCY_PREFLIGHT_FAILED',
+          message:
+            'Falha técnica no preflight de simultaneidade; operação offline-first foi preservada.',
+          metadata: {
+            visitId:
+              visita?.id || null,
+
+            lojaId:
+              payload?.lojaId ||
+              payload?.loja_id ||
+              null,
+
+            projectId:
+              payload?.projectId ||
+              payload?.project_id ||
+              null,
+
+            error:
+              error?.message ||
+              String(error),
+          },
+        }).catch(() => {});
+
+        return true;
+      }
+    };
+
   const registrarAcaoBanco = async (
     lat: number,
     lng: number,
@@ -2532,6 +2768,28 @@ export default function VisitaDetailScreen() {
         fotoUri
       );
 
+      /*
+       * Antes de qualquer escrita no SQLite/Outbox,
+       * o CHECK-IN online pergunta ao servidor se
+       * já existe OUTRO usuário atendendo esta loja.
+       *
+       * A atribuição múltipla da loja não é conflito.
+       * Apenas visita simultânea em andamento.
+       */
+      if (acao === 'CHECKIN') {
+        const concurrencyAllowed =
+          await validateConcurrentCheckinBeforeLocalSave(
+            payload
+          );
+
+        if (!concurrencyAllowed) {
+          setCheckinLoading(false);
+
+          return;
+        }
+      }
+
+
       const updatedVisit = {
         ...visita,
         status: novoStatus,
@@ -2574,7 +2832,7 @@ export default function VisitaDetailScreen() {
        * Não existe mais visita alterada sem operação durável correspondente.
        */
       try {
-        await db.withTransactionAsync(async () => {
+        await withSerializedDbTransaction(async () => {
           const currentVisit: any = await db.getFirstAsync(
             `SELECT id FROM visits WHERE id = ? LIMIT 1`,
             [visita.id]
