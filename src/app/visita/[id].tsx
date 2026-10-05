@@ -1116,10 +1116,18 @@ const getCompletedSurveyIdsForVisit = async (db: any, visit: any) => {
 
     const placeholders = visitIds.map(() => '?').join(',');
 
-    // Só consideramos coletas locais ainda pendentes de sync.
-    // Se o servidor já mandou um estado pendente mais recente, ele vence e a coleta local antiga é ignorada.
+    /*
+     * MOBILE_SYNCED_COLLECTION_UI_PARITY_V1
+     *
+     * A coleta local continua sendo evidência válida mesmo depois que o FastSync
+     * entrega a Outbox e muda pending_sync para 0.
+     *
+     * O desempate continua sendo temporal:
+     * se o servidor trouxer depois um estado PENDENTE mais novo que a coleta
+     * local, o estado do servidor vence.
+     */
     const rows = await db.getAllAsync(
-      `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim, updated_at FROM coletas WHERE visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
+      `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim, updated_at FROM coletas WHERE visita_id IN (${placeholders})`,
       visitIds
     );
 

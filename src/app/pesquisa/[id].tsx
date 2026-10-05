@@ -724,8 +724,16 @@ const checkPendingLocalCollectionIsNewer = async (db: any, visit: any, surveyId:
         if (visitIds.length === 0 || !surveyId) return false;
 
         const placeholders = visitIds.map(() => '?').join(',');
+        /*
+         * MOBILE_SYNCED_COLLECTION_UI_PARITY_V1
+         *
+         * Não podemos limitar a proteção apenas a pending_sync = 1.
+         * Assim que o FastSync confirma a coleta, pending_sync vira 0,
+         * mas essa coleta continua sendo a resposta válida desta visita
+         * enquanto não existir um estado de servidor mais novo.
+         */
         const rows = await db.getAllAsync(
-            `SELECT pesquisa_id, visita_id, data_inicio, data_fim, raw_json, pending_sync FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
+            `SELECT pesquisa_id, visita_id, data_inicio, data_fim, raw_json, pending_sync, updated_at FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders})`,
             [String(surveyId), ...visitIds]
         );
 
@@ -750,16 +758,28 @@ const clearStaleLocalSurveyData = async (db: any, visit: any, surveyId: any, ser
 
         const placeholders = visitIds.map(() => '?').join(',');
         const rows = await db.getAllAsync(
-            `SELECT id, data_inicio, data_fim, raw_json, pending_sync FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders})`,
+            `SELECT id, data_inicio, data_fim, raw_json, pending_sync, updated_at FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders})`,
             [String(surveyId), ...visitIds]
         );
 
         const serverTs = toTimestamp(serverStateUpdatedAt);
+
+        /*
+         * Uma coleta sincronizada NÃO é obsoleta apenas porque pending_sync = 0.
+         *
+         * Ela só pode ser removida quando existe um estado explícito do servidor
+         * com timestamp igual ou posterior ao da própria coleta. Isso preserva
+         * imediatamente a conclusão local e continua permitindo reabertura/reset
+         * quando o servidor realmente possuir um estado mais novo.
+         */
         const staleIds = (rows || [])
             .filter((row: any) => {
-                if (Number(row?.pending_sync || 0) !== 1) return true;
                 const localTs = getLocalCollectionTimestamp(row);
-                return serverTs > 0 && localTs <= serverTs;
+
+                return (
+                    serverTs > 0 &&
+                    localTs <= serverTs
+                );
             })
             .map((row: any) => row.id)
             .filter(Boolean);
