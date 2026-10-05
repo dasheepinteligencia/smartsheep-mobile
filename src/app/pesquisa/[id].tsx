@@ -1468,15 +1468,18 @@ export default function SurveyExecutionScreen() {
                         )
                         : false;
 
+                /*
+                 * MOBILE_LOCAL_COLLECTION_AUTHORITATIVE_V1
+                 *
+                 * Pesquisa não repetível:
+                 * se existe coleta local, não permitimos responder novamente,
+                 * independentemente de um snapshot PENDENTE ainda atrasado.
+                 */
                 const shouldLockCompletedNonRepeatable =
                     !selectedSurveyIsRepeatable &&
                     (
                         selectedPayload.selectedSurveyCompleted ||
-                        hasNewerLocalPending ||
-                        (
-                            !serverSaysPending &&
-                            selectedSurveyHasLocalCollection
-                        )
+                        selectedSurveyHasLocalCollection
                     );
 
                 setCompletedNonRepeatableLock(shouldLockCompletedNonRepeatable);

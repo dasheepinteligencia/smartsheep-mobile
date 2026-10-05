@@ -1136,14 +1136,20 @@ const getCompletedSurveyIdsForVisit = async (db: any, visit: any) => {
       const surveyId = String(getSurveyIdFromAnyPayload(row) || getSurveyIdFromAnyPayload(raw) || '');
       if (!surveyId) return;
 
-      const serverState = serverStates.get(surveyId);
-      const localUpdatedAt = getLocalCollectionTimestamp(row);
-
-      if (serverState?.explicit && !serverState.completed && serverState.updatedAt >= localUpdatedAt) {
-        completed.delete(surveyId);
-        return;
-      }
-
+      /*
+       * MOBILE_LOCAL_COLLECTION_AUTHORITATIVE_V1
+       *
+       * Se a coleta continua presente no SQLite, ela é a evidência operacional
+       * autoritativa de que esta pesquisa foi respondida nesta visita.
+       *
+       * pending_sync pode ser 0 ou 1:
+       * - 1 = ainda aguardando envio;
+       * - 0 = já entregue pelo FastSync.
+       *
+       * Um snapshot PENDENTE antigo do servidor não pode apagar visualmente
+       * uma coleta local válida. Reabertura/reset real é tratada pela camada
+       * central de reconciliação, que remove a coleta local quando necessário.
+       */
       completed.add(surveyId);
     });
   } catch {}
