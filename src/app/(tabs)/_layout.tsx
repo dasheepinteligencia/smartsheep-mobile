@@ -401,10 +401,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     overflow: 'visible',
   },
+  // MOBILE_IOS_COMPACT_TABBAR_V1
   tabBarWrapper: {
     flexDirection: 'row',
-    height: 68,
-    borderRadius: 28,
+    height: Platform.OS === 'ios' ? 58 : 68,
+    borderRadius: Platform.OS === 'ios' ? 22 : 28,
     borderWidth: StyleSheet.hairlineWidth,
     elevation: Platform.OS === 'android' ? 8 : 0,
     shadowColor: '#000',
@@ -423,17 +424,17 @@ const styles = StyleSheet.create({
   iconWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
-    width: 54,
-    height: 54,
+    width: Platform.OS === 'ios' ? 46 : 54,
+    height: Platform.OS === 'ios' ? 46 : 54,
     zIndex: 2,
     overflow: 'visible',
   },
   activeBubble: {
     position: 'absolute',
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    borderWidth: 5,
+    width: Platform.OS === 'ios' ? 50 : 54,
+    height: Platform.OS === 'ios' ? 50 : 54,
+    borderRadius: Platform.OS === 'ios' ? 25 : 27,
+    borderWidth: Platform.OS === 'ios' ? 4 : 5,
   },
   numberBadge: {
     position: 'absolute',
@@ -453,7 +454,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 10,
     lineHeight: 12,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '600' : '900',
     textAlign: 'center',
   },
   dotBadge: {
@@ -475,7 +476,7 @@ const styles = StyleSheet.create({
   },
   labelText: {
     fontSize: 10,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '600' : '900',
     textAlign: 'center',
     letterSpacing: 0.1,
   },

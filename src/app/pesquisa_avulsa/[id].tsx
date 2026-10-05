@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Image, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, AlertTriangle, ClipboardCheck, X, ChevronDown, Check, FolderOpen } from 'lucide-react-native';
+import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, AlertTriangle, ClipboardCheck, X, ChevronDown, Check, FolderOpen , MapPin} from 'lucide-react-native';
 import { addAppLog, getDBConnection } from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -892,6 +892,7 @@ const repeatableContext = (
 };
 
 
+// MOBILE_STANDALONE_VISIBLE_I18N_V1
 export default function PesquisaAvulsaScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
@@ -910,6 +911,9 @@ export default function PesquisaAvulsaScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [closing, setClosing] = useState(false);
+
+  // MOBILE_STANDALONE_GPS_SEARCHING_FEEDBACK_V1
+  const [gpsLoadingKey, setGpsLoadingKey] = useState<string | null>(null);
   const [
     generalRepeatableStatus,
     setGeneralRepeatableStatus
@@ -3063,6 +3067,7 @@ const renderPhotoList = (targetKey: string, mini = false) => {
   const renderPergunta = (pergunta: any, index: number) => {
     const pId = String(pergunta.id || index);
     const tipo = String(pergunta.tipo || 'TEXTO').toUpperCase();
+    const isGpsLocation = ['CHECKIN', 'GPS', 'GPS_LOCATION'].includes(tipo);
     const valorAtual = respostas[pId];
 
     const productOptions =
@@ -3129,6 +3134,227 @@ const renderPhotoList = (targetKey: string, mini = false) => {
     const isChoice = ['RADIO', 'SINGLE_CHOICE', 'SELECAO', 'DROPDOWN', 'UNICA_ESCOLHA', 'PRODUTO', 'PRODUCT'].includes(tipo) || (!['TEXTO', 'TEXT', 'NUMERO', 'NUMBER', 'INTEIRO', 'INTEGER', 'DECIMAL', 'MOEDA', 'FOTO'].includes(tipo) && optionObjects.length > 0);
     const isMulti = ['CHECKBOX', 'MULTIPLE_CHOICE', 'MULTIPLA_ESCOLHA', 'MULTIPLA'].includes(tipo);
     const hasPhotoByOption = pergunta.validacao?.foto_por_opcao === true || pergunta.validacao?.fotoPorOpcao === true;
+
+    // MOBILE_GPS_LOCATION_QUESTION_V1
+    // MOBILE_STANDALONE_GPS_SEARCHING_FEEDBACK_V1
+    const captureGpsLocation =
+        async () => {
+            if (
+                gpsLoadingKey ===
+                pId
+            ) {
+                return;
+            }
+
+            setGpsLoadingKey(
+                pId
+            );
+
+            try {
+                const gpsResult =
+                    await getSmartLocation();
+
+                const latitude =
+                    Number(
+                        gpsResult?.latitude
+                    );
+
+                const longitude =
+                    Number(
+                        gpsResult?.longitude
+                    );
+
+                if (
+                    !Number.isFinite(latitude) ||
+                    !Number.isFinite(longitude)
+                ) {
+                    AppAlert.alert(
+                        t(
+                            'surveyGpsUnavailableTitle'
+                        ),
+                        gpsResult?.error ===
+                            'FAKE_GPS'
+                            ? t(
+                                'photoGpsFakeDetected'
+                              )
+                            : t(
+                                'surveyGpsUnavailableMessage'
+                              )
+                    );
+
+                    return;
+                }
+
+                setRespostas(
+                    previous => ({
+                        ...previous,
+                        [pId]:
+                            `${latitude}, ${longitude}`
+                    })
+                );
+            } finally {
+                setGpsLoadingKey(
+                    current =>
+                        current === pId
+                            ? null
+                            : current
+                );
+            }
+        };
+
+    if (isGpsLocation) {
+        const gpsValue =
+            String(
+                valorAtual ??
+                ''
+            ).trim();
+
+        const captured =
+            gpsValue.length > 0;
+
+        const gpsSearching =
+            gpsLoadingKey ===
+            pId;
+
+        const gpsButtonLabel =
+            gpsSearching
+                ? repeatableMobileText(
+                    language,
+                    'Buscando localização...',
+                    'Searching location...',
+                    'Buscando ubicación...'
+                  )
+                : captured
+                    ? t(
+                        'surveyGpsCaptured'
+                      )
+                    : t(
+                        'surveyGpsCapture'
+                      );
+
+        return (
+            <View
+                key={pId}
+                style={[
+                    styles.questionCard,
+                    {
+                        backgroundColor: cardBg,
+                        borderColor: border
+                    }
+                ]}
+            >
+                <Text
+                    style={[
+                        styles.questionText,
+                        {
+                            color: textPrimary
+                        }
+                    ]}
+                >
+                    {index + 1}. {
+                        pergunta.texto ||
+                        pergunta.titulo ||
+                        pergunta.pergunta ||
+                        ''
+                    }
+                    {
+                        checkQuestionIsMandatory(
+                            pergunta
+                        )
+                            ? ' *'
+                            : ''
+                    }
+                </Text>
+
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={
+                        captureGpsLocation
+                    }
+                    disabled={
+                        gpsSearching
+                    }
+                    accessibilityState={{
+                        disabled:
+                            gpsSearching,
+                        busy:
+                            gpsSearching
+                    }}
+                    style={{
+                        minHeight: 50,
+                        borderWidth: 1,
+                        borderColor:
+                            captured
+                                ? '#10B981'
+                                : accent,
+                        borderRadius: 12,
+                        paddingHorizontal: 16,
+                        paddingVertical: 13,
+                        backgroundColor: bg,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
+                        opacity:
+                            gpsSearching
+                                ? 0.75
+                                : 1
+                    }}
+                >
+                    {
+                        gpsSearching
+                            ? (
+                                <ActivityIndicator
+                                    size="small"
+                                    color={accent}
+                                />
+                              )
+                            : (
+                                <MapPin
+                                    size={20}
+                                    color={
+                                        captured
+                                            ? '#10B981'
+                                            : accent
+                                    }
+                                />
+                              )
+                    }
+
+                    <Text
+                        style={{
+                            color:
+                                gpsSearching
+                                    ? accent
+                                    : captured
+                                        ? '#10B981'
+                                        : accent,
+                            fontWeight: '800'
+                        }}
+                    >
+                        {gpsButtonLabel}
+                    </Text>
+                </TouchableOpacity>
+
+                {
+                    captured && (
+                        <Text
+                            style={{
+                                marginTop: 8,
+                                color: textSecondary,
+                                fontSize: 12,
+                                textAlign: 'center'
+                            }}
+                        >
+                            {gpsValue}
+                        </Text>
+                    )
+                }
+            </View>
+        );
+    }
+
+
 
     const dynamicSelectedValues =
       usesDynamicCatalog
@@ -3454,11 +3680,11 @@ const renderPhotoList = (targetKey: string, mini = false) => {
 
                   {isSelected && hasPhotoByOption && (
                     <View style={[styles.optionPhotoArea, { backgroundColor: bg, borderColor: border }]}>
-                      <Text style={[styles.optionPhotoLabel, { color: textSecondary }]}>Foto para "{label}"</Text>
+                      <Text style={[styles.optionPhotoLabel, { color: textSecondary }]}>{t('surveyOptionPhotoLabel', { option: label })}</Text>
                       {renderPhotoList(photoKey, true)}
                       <TouchableOpacity style={[styles.photoBtnMini, { borderColor: accent }]} onPress={() => handlePhotoRequest(pergunta, pId, opcao)}>
                         <Camera size={18} color={accent} />
-                        <Text style={[styles.photoBtnTextMini, { color: accent }]}>Anexar foto</Text>
+                        <Text style={[styles.photoBtnTextMini, { color: accent }]}>{t('surveyAttachPhoto')}</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -3490,11 +3716,11 @@ const renderPhotoList = (targetKey: string, mini = false) => {
 
                   {isSelected && hasPhotoByOption && (
                     <View style={[styles.optionPhotoArea, { backgroundColor: bg, borderColor: border }]}>
-                      <Text style={[styles.optionPhotoLabel, { color: textSecondary }]}>Foto para "{label}"</Text>
+                      <Text style={[styles.optionPhotoLabel, { color: textSecondary }]}>{t('surveyOptionPhotoLabel', { option: label })}</Text>
                       {renderPhotoList(photoKey, true)}
                       <TouchableOpacity style={[styles.photoBtnMini, { borderColor: accent }]} onPress={() => handlePhotoRequest(pergunta, pId, opcao)}>
                         <Camera size={18} color={accent} />
-                        <Text style={[styles.photoBtnTextMini, { color: accent }]}>Foto da opção</Text>
+                        <Text style={[styles.photoBtnTextMini, { color: accent }]}>{t('surveyOptionPhotoButton')}</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -3509,7 +3735,7 @@ const renderPhotoList = (targetKey: string, mini = false) => {
             {renderPhotoList(pId)}
             <TouchableOpacity style={[styles.photoBtn, { backgroundColor: bg, borderColor: border, borderStyle: 'dashed' }]} onPress={() => handlePhotoRequest(pergunta, pId)}>
               <Camera size={32} color={accent} />
-              <Text style={[styles.photoBtnText, { color: textSecondary }]}>Tirar Foto</Text>
+              <Text style={[styles.photoBtnText, { color: textSecondary }]}>{t('surveyTakePhoto')}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -3598,7 +3824,7 @@ const renderPhotoList = (targetKey: string, mini = false) => {
                         </Text>
                     </View>
                 ) : perguntas.length === 0 ? (
-                    <View style={styles.emptyContainer}><AlertCircle size={40} color={textSecondary} /><Text style={{ color: textSecondary, marginTop: 10 }}>Nenhuma pergunta encontrada.</Text></View>
+                    <View style={styles.emptyContainer}><AlertCircle size={40} color={textSecondary} /><Text style={{ color: textSecondary, marginTop: 10 }}>{t('surveyNoQuestionsAvailable')}</Text></View>
                 ) : surveySections.map((section, sectionIndex) => (
                     <View key={`section-${section.group?.id || sectionIndex}`} style={{ marginBottom: 22 }}>
                       {section.group && (

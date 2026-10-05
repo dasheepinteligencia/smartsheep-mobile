@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
   View, Text, TextInput, TouchableOpacity, Pressable, StyleSheet,
   KeyboardAvoidingView, Platform, ActivityIndicator, Image, StatusBar
@@ -233,6 +233,13 @@ export default function LoginScreen() {
     }
   };
 
+  // IOS_LOGIN_DIRECT_FOCUS_V1
+  const identifierInputRef =
+    useRef<TextInput>(null);
+
+  const passwordInputRef =
+    useRef<TextInput>(null);
+
   const handleLogin = async () => {
     setErrorMessage(null);
 
@@ -423,12 +430,32 @@ export default function LoginScreen() {
           )}
 
           <View style={styles.inputGroup}>
-            <View style={[styles.inputContainer, { backgroundColor: inputBgColor, borderColor: focusedInput === 'identifier' ? accent : borderColor }]}>
+            <View
+              onTouchStart={() =>
+                identifierInputRef.current?.focus()
+              }
+              style={[
+                styles.inputContainer,
+                {
+                  backgroundColor: inputBgColor,
+                  borderColor:
+                    focusedInput === 'identifier'
+                      ? accent
+                      : borderColor
+                }
+              ]}
+            >
               <UserRound color={focusedInput === 'identifier' ? accent : placeholderColor} size={20} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: inputTextColor }]}
+                ref={identifierInputRef}
                 testID="login-identifier-input"
                 accessibilityLabel="login-identifier-input"
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onSubmitEditing={() =>
+                  passwordInputRef.current?.focus()
+                }
                 placeholder={i18n.t('loginIdentifierPlaceholder')}
                 placeholderTextColor={placeholderColor}
                 autoCapitalize="none"
@@ -443,12 +470,33 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.inputGroup}>
-            <View style={[styles.inputContainer, { backgroundColor: inputBgColor, borderColor: focusedInput === 'password' ? accent : borderColor }]}>
+            <View
+              onTouchStart={() =>
+                passwordInputRef.current?.focus()
+              }
+              style={[
+                styles.inputContainer,
+                {
+                  backgroundColor: inputBgColor,
+                  borderColor:
+                    focusedInput === 'password'
+                      ? accent
+                      : borderColor
+                }
+              ]}
+            >
               <Lock color={focusedInput === 'password' ? accent : placeholderColor} size={20} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: inputTextColor }]}
+                ref={passwordInputRef}
                 testID="login-password-input"
                 accessibilityLabel="login-password-input"
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (!isLoading) {
+                    handleLogin();
+                  }
+                }}
                 placeholder={i18n.t('passwordLabel')}
                 placeholderTextColor={placeholderColor}
                 secureTextEntry={!showPassword}

@@ -8,12 +8,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
 import {
     ArrowLeft, Camera, Save, X, Package, FolderOpen, ChevronDown, ChevronRight, Asterisk, Check, AlertTriangle, CheckCircle2, XCircle
-} from 'lucide-react-native';
+, MapPin} from 'lucide-react-native';
 
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { addAppLog, getDBConnection } from '../../database/db';
-import { enqueueSyncOperationInDb } from '../../services/syncService';
+import { enqueueSyncOperationInDb, globalSync } from '../../services/syncService';
 import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
@@ -766,6 +766,64 @@ const clearStaleLocalSurveyData = async (db: any, visit: any, surveyId: any, ser
     } catch {}
 };
 
+
+
+// MOBILE_VISIT_NON_REPEATABLE_COMPLETED_LOCK_V1
+const hasRepeatableQuestionConfig = (questions: any[]) =>
+    (Array.isArray(questions) ? questions : []).some((question: any) => {
+        const validation = safeParseObject(
+            question?.validacao ||
+            question?.validation ||
+            {}
+        );
+
+        if (
+            isTruthy(question?.repetivel) ||
+            isTruthy(question?.repeatable) ||
+            isTruthy(validation?.repetivel) ||
+            isTruthy(validation?.repeatable)
+        ) {
+            return true;
+        }
+
+        const children =
+            question?.perguntas ||
+            question?.questoes ||
+            question?.questions ||
+            question?.children ||
+            question?.items ||
+            [];
+
+        return hasRepeatableQuestionConfig(children);
+    });
+
+const hasAnyLocalCollectionForSurvey = async (
+    db: any,
+    visit: any,
+    surveyId: any
+) => {
+    try {
+        const exists = await db.getAllAsync(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name='coletas'`
+        );
+
+        if (!exists?.length || !surveyId) return false;
+
+        const visitIds = getVisitIdentifierCandidatesForSurvey(visit);
+        if (visitIds.length === 0) return false;
+
+        const placeholders = visitIds.map(() => '?').join(',');
+        const rows = await db.getAllAsync(
+            `SELECT id FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders}) LIMIT 1`,
+            [String(surveyId), ...visitIds]
+        );
+
+        return Array.isArray(rows) && rows.length > 0;
+    } catch {
+        return false;
+    }
+};
+
 const normalizeVisitSurveyPayload = (visita: any, rawPayload: any[], requestedSurveyId?: any) => {
     const requested = String(requestedSurveyId || '').trim();
 
@@ -1111,6 +1169,9 @@ export default function SurveyExecutionScreen() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [completedNonRepeatableLock, setCompletedNonRepeatableLock] = useState(false);
+  // MOBILE_SURVEY_GPS_SEARCHING_FEEDBACK_V1
+  const [gpsLoadingKey, setGpsLoadingKey] = useState<string | null>(null);
   const [visita, setVisita] = useState<any>(null);
 
   const [produtosDoMix, setProdutosDoMix] = useState<any[]>([]);
@@ -1370,6 +1431,64 @@ export default function SurveyExecutionScreen() {
                     ? await checkPendingLocalCollectionIsNewer(db, v, selectedPayload.selectedSurveyId, selectedPayload.selectedSurveyServerStateUpdatedAt)
                     : false;
 
+                const selectedSurveyIsRepeatable =
+                    String(repeatMax || '').trim().length > 0 ||
+                    hasRepeatableQuestionConfig(selectedPayload.questions);
+
+                const selectedSurveyHasLocalCollection =
+                    !selectedSurveyIsRepeatable
+                        ? await hasAnyLocalCollectionForSurvey(
+                            db,
+                            v,
+                            selectedPayload.selectedSurveyId
+                        )
+                        : false;
+
+                const shouldLockCompletedNonRepeatable =
+                    !selectedSurveyIsRepeatable &&
+                    (
+                        selectedPayload.selectedSurveyCompleted ||
+                        hasNewerLocalPending ||
+                        (
+                            !serverSaysPending &&
+                            selectedSurveyHasLocalCollection
+                        )
+                    );
+
+                setCompletedNonRepeatableLock(shouldLockCompletedNonRepeatable);
+
+                if (shouldLockCompletedNonRepeatable) {
+                    setVisita({
+                        ...v,
+                        loja_custom_data: safeParseArray(v.loja_custom_data_json || '{}'),
+                        pesquisa_id_real: selectedPayload.selectedSurveyId,
+                        pesquisa_titulo_real: selectedPayload.selectedSurveyTitle,
+                        registro_visita_id: getRegistroVisitaId(v),
+                        visita_id_json: getVisitaAgendadaId(v)
+                    });
+                    setPesquisasRaw(selectedPayload.questions);
+                    setAnswers({});
+
+                    showCustomAlert(
+                        'warning',
+                        translate(
+                            'surveyAlreadyCompletedTitle',
+                            'Pesquisa já concluída'
+                        ),
+                        translate(
+                            'surveyAlreadyCompletedMessage',
+                            'Esta pesquisa não é repetível e já foi respondida nesta visita. Não é possível registrar uma nova resposta.'
+                        ),
+                        () => {
+                            closeCustomAlert();
+                            router.back();
+                        },
+                        undefined,
+                        translate('commonOkUnderstood', 'OK, entendi')
+                    );
+                    return;
+                }
+
                 if (serverSaysPending && !hasNewerLocalPending) {
                     await SecureStore.deleteItemAsync(draftKey).catch(() => {});
                     await clearStaleLocalSurveyData(db, v, selectedPayload.selectedSurveyId, selectedPayload.selectedSurveyServerStateUpdatedAt);
@@ -1422,7 +1541,7 @@ export default function SurveyExecutionScreen() {
         }
     };
     if (id) carregarTudo();
-  }, [id, pesquisaId]);
+  }, [id, pesquisaId, repeatMax]);
 
   const perguntas = useMemo(() => {
       const listaPlana = flattenSurveyQuestionsPreservingGroups(pesquisasRaw);
@@ -2211,6 +2330,24 @@ const handleWatermarkImageLoaded = async () => {
   };
 
   const processSaveAction = async () => {
+      if (completedNonRepeatableLock) {
+          showCustomAlert(
+              'warning',
+              translate('surveyAlreadyCompletedTitle', 'Pesquisa já concluída'),
+              translate(
+                  'surveyAlreadyCompletedMessage',
+                  'Esta pesquisa não é repetível e já foi respondida nesta visita. Não é possível registrar uma nova resposta.'
+              ),
+              () => {
+                  closeCustomAlert();
+                  router.back();
+              },
+              undefined,
+              translate('commonOkUnderstood', 'OK, entendi')
+          );
+          return;
+      }
+
       closeCustomAlert();
       setSaving(true);
       try {
@@ -2334,6 +2471,27 @@ const handleWatermarkImageLoaded = async () => {
 
            const effectiveMax = serverStatus?.max || fallbackMax;
            const effectiveCount = Math.max(Number(serverStatus?.currentCount || 0), fallbackCount || 0);
+
+           /*
+            * MOBILE_VISIT_REPEATABLE_PARITY_V1
+            *
+            * A identificação de repetível não pode depender só da resposta
+            * online. Em operação offline, usamos também a configuração das
+            * perguntas e os parâmetros já trazidos pela tela da visita.
+            *
+            * Isso mantém a mesma regra operacional da pesquisa avulsa:
+            * resposta repetível fica aberta/EM_ANDAMENTO até o fechamento
+            * natural da visita (checkout), respeitando mínimo/máximo.
+            */
+           const isVisitRepeatable =
+               serverStatus?.repetivel === true ||
+               String(repeatMax || '').trim().length > 0 ||
+               perguntas.some((pergunta: any) =>
+                   isTruthy(pergunta?.repetivel) ||
+                   isTruthy(pergunta?.repeatable) ||
+                   isTruthy(pergunta?.validacao?.repetivel) ||
+                   isTruthy(pergunta?.validacao?.repeatable)
+               );
 
            if (
                (serverStatus && isRepeatableStatusBlocked(serverStatus)) ||
@@ -2510,6 +2668,84 @@ const finalizadoAt = new Date().toISOString();
 
           await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 
+          /*
+           * MOBILE_VISIT_REPEATABLE_SYNC_PARITY_V1
+           *
+           * Mesma regra já usada pela pesquisa avulsa:
+           *
+           * - NÃO repetível: tenta sincronizar imediatamente.
+           * - Repetível: preserva SQLite + Outbox, atualiza a tela pela coleta
+           *   local e NÃO força sync neste exato instante.
+           *
+           * O motivo é evitar que um snapshot ainda atrasado do backend volte
+           * como PENDENTE e sobrescreva visualmente o progresso recém-criado.
+           * A Outbox permanece intacta e entra no próximo ciclo normal de sync
+           * (pull-to-sync, sync de outra etapa, background etc.).
+           *
+           * Na visita, o contador local lê TODAS as coletas SQLite da visita,
+           * inclusive depois de sincronizadas, e o checkout é o fechamento
+           * natural das pesquisas repetíveis daquele atendimento.
+           */
+          if (isVisitRepeatable) {
+              await addAppLog({
+                  level: 'INFO',
+                  module: 'PESQUISA',
+                  action: 'REPEATABLE_COLLECTION_SAVED_LOCAL',
+                  message: 'Resposta repetível preservada localmente; sync imediato adiado para manter o estado operacional da visita.',
+                  metadata: {
+                      visitId: id,
+                      pesquisaId: idDaPesquisa,
+                      clientOperationId: operationId,
+                      currentCountBeforeSave: effectiveCount,
+                      currentCountAfterSave: effectiveCount + 1,
+                      max: effectiveMax,
+                  },
+              }).catch(() => {});
+
+              setAnswers({});
+              photosRef.current = {};
+
+              if (router.canGoBack()) {
+                  router.back();
+              } else {
+                  router.replace({
+                      pathname: '/visita/[id]',
+                      params: {
+                          id: String(id),
+                          refresh: String(Date.now()),
+                      },
+                  } as any);
+              }
+
+              return;
+          }
+
+          /*
+           * MOBILE_SURVEY_SYNC_AFTER_SAVE_V1
+           *
+           * Coleta não repetível: tentativa imediata de sync, sem tornar
+           * internet requisito para concluir o formulário.
+           */
+          globalSync().catch(async (syncError: any) => {
+              console.log(
+                  '[Pesquisa] sync imediato após finalizar falhou:',
+                  syncError?.message || syncError
+              );
+
+              await addAppLog({
+                  level: 'WARNING',
+                  module: 'PESQUISA',
+                  action: 'SYNC_AFTER_COLLECTION_SAVE',
+                  message: 'Coleta preservada localmente; sync imediato será retomado posteriormente.',
+                  metadata: {
+                      visitId: id,
+                      pesquisaId: idDaPesquisa,
+                      clientOperationId: operationId,
+                      error: syncError?.message || String(syncError),
+                  },
+              }).catch(() => {});
+          });
+
           showCustomAlert(
               'success',
               translate('surveySavedTitle', 'Formulário salvo!'),
@@ -2539,6 +2775,24 @@ const finalizadoAt = new Date().toISOString();
   };
 
   const handleRequestSave = async () => {
+      if (completedNonRepeatableLock) {
+          showCustomAlert(
+              'warning',
+              translate('surveyAlreadyCompletedTitle', 'Pesquisa já concluída'),
+              translate(
+                  'surveyAlreadyCompletedMessage',
+                  'Esta pesquisa não é repetível e já foi respondida nesta visita. Não é possível registrar uma nova resposta.'
+              ),
+              () => {
+                  closeCustomAlert();
+                  router.back();
+              },
+              undefined,
+              translate('commonOkUnderstood', 'OK, entendi')
+          );
+          return;
+      }
+
       let hardError: string | null = null;
       let focusTargetKey: string | null = null;
       let softWarningsList: string[] = [];
@@ -2793,6 +3047,7 @@ const finalizadoAt = new Date().toISOString();
   const renderInputUI = (pergunta: any, answerKey: string) => {
       const tipo = String(pergunta.tipo || 'TEXTO').toUpperCase();
       const isPhoto = tipo === 'FOTO';
+      const isGpsLocation = ['CHECKIN', 'GPS', 'GPS_LOCATION'].includes(tipo);
       const isDecimal = ['DECIMAL', 'MOEDA'].includes(tipo) || pergunta.titulo?.toLowerCase().includes('preço') || pergunta.texto?.toLowerCase().includes('preço');
       const isNumber = ['NUMERO', 'NUMBER', 'INTEIRO', 'INTEGER'].includes(tipo) || isDecimal;
       const isText = ['TEXTO', 'TEXT', 'SHORT_TEXT', 'LONG_TEXT'].includes(tipo);
@@ -2880,6 +3135,216 @@ const finalizadoAt = new Date().toISOString();
       const currentPhotos = Array.isArray(answers[answerKey]) ? answers[answerKey] : (answers[answerKey] ? [answers[answerKey]] : []);
       const hasError = errorKey === answerKey;
 
+      // MOBILE_GPS_LOCATION_QUESTION_V1
+      // MOBILE_SURVEY_GPS_SEARCHING_FEEDBACK_V1
+      if (isGpsLocation) {
+          const currentGpsValue =
+              String(
+                  answers[answerKey] ??
+                  ''
+              ).trim();
+
+          const gpsCaptured =
+              currentGpsValue.length > 0;
+
+          const gpsSearching =
+              gpsLoadingKey ===
+              answerKey;
+
+          const gpsSearchingFallback =
+              language === 'en-US'
+                  ? 'Searching location...'
+                  : language === 'es-ES'
+                    ? 'Buscando ubicación...'
+                    : 'Buscando localização...';
+
+          const captureGpsLocation =
+              async () => {
+                  if (gpsSearching) {
+                      return;
+                  }
+
+                  setGpsLoadingKey(
+                      answerKey
+                  );
+
+                  try {
+                      const gpsResult =
+                          await getSmartLocation();
+
+                      const latitude =
+                          Number(
+                              gpsResult?.latitude
+                          );
+
+                      const longitude =
+                          Number(
+                              gpsResult?.longitude
+                          );
+
+                      if (
+                          !Number.isFinite(latitude) ||
+                          !Number.isFinite(longitude)
+                      ) {
+                          showCustomAlert(
+                              'error',
+                              translate(
+                                  'surveyGpsUnavailableTitle',
+                                  'Localização indisponível'
+                              ),
+                              gpsResult?.error ===
+                                  'FAKE_GPS'
+                                  ? translate(
+                                      'photoGpsFakeDetected',
+                                      'Foi detectada uma localização simulada.'
+                                    )
+                                  : translate(
+                                      'surveyGpsUnavailableMessage',
+                                      'Não foi possível obter sua localização. Verifique a permissão e o sinal do GPS e tente novamente.'
+                                    )
+                          );
+
+                          return;
+                      }
+
+                      if (
+                          errorKey === answerKey
+                      ) {
+                          setErrorKey(null);
+                      }
+
+                      setAnswers(
+                          previous => ({
+                              ...previous,
+                              [answerKey]:
+                                  `${latitude}, ${longitude}`
+                          })
+                      );
+                  } finally {
+                      setGpsLoadingKey(
+                          current =>
+                              current === answerKey
+                                  ? null
+                                  : current
+                      );
+                  }
+              };
+
+          return (
+              <View
+                  onLayout={
+                      event => {
+                          layoutRefs.current[
+                              answerKey
+                          ] =
+                              event.nativeEvent
+                                  .layout.y;
+                      }
+                  }
+              >
+                  <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={
+                          captureGpsLocation
+                      }
+                      disabled={
+                          gpsSearching
+                      }
+                      accessibilityState={{
+                          disabled:
+                              gpsSearching,
+                          busy:
+                              gpsSearching
+                      }}
+                      style={{
+                          minHeight: 50,
+                          borderWidth: 1,
+                          borderColor:
+                              gpsCaptured
+                                  ? '#10B981'
+                                  : accent,
+                          borderRadius: 12,
+                          paddingHorizontal: 16,
+                          paddingVertical: 13,
+                          backgroundColor: bg,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 8,
+                          opacity:
+                              gpsSearching
+                                  ? 0.75
+                                  : 1
+                      }}
+                  >
+                      {
+                          gpsSearching
+                              ? (
+                                  <ActivityIndicator
+                                      size="small"
+                                      color={accent}
+                                  />
+                                )
+                              : (
+                                  <MapPin
+                                      size={20}
+                                      color={
+                                          gpsCaptured
+                                              ? '#10B981'
+                                              : accent
+                                      }
+                                  />
+                                )
+                      }
+
+                      <Text
+                          style={{
+                              color:
+                                  gpsSearching
+                                      ? accent
+                                      : gpsCaptured
+                                        ? '#10B981'
+                                        : accent,
+                              fontWeight: '800'
+                          }}
+                      >
+                          {
+                              gpsSearching
+                                  ? translate(
+                                      'surveyGpsSearching',
+                                      gpsSearchingFallback
+                                    )
+                                  : gpsCaptured
+                                    ? translate(
+                                        'surveyGpsCaptured',
+                                        'Localização capturada'
+                                      )
+                                    : translate(
+                                        'surveyGpsCapture',
+                                        'Capturar localização'
+                                      )
+                          }
+                      </Text>
+                  </TouchableOpacity>
+
+                  {
+                      gpsCaptured && (
+                          <Text
+                              style={{
+                                  marginTop: 8,
+                                  color: textSecondary,
+                                  fontSize: 12,
+                                  textAlign: 'center'
+                              }}
+                          >
+                              {currentGpsValue}
+                          </Text>
+                      )
+                  }
+              </View>
+          );
+      }
+
       if (isPhoto) {
           return (
               <View style={styles.photoContainer} onLayout={(e) => { layoutRefs.current[answerKey] = e.nativeEvent.layout.y; }}>
@@ -2892,7 +3357,7 @@ const finalizadoAt = new Date().toISOString();
                   )}
                   <TouchableOpacity style={[styles.photoBtn, { borderColor: border, backgroundColor: bg }]} onPress={() => handlePhotoRequest(pergunta, answerKey)}>
                       <View style={[styles.cameraIconBg, { backgroundColor: cardBg }]}><Camera size={24} color={accent} /></View>
-                      <Text style={{ color: textSecondary, fontWeight: 'bold' }}>Tirar Foto</Text>
+                      <Text style={{ color: textSecondary, fontWeight: 'bold' }}>{translate('surveyTakePhoto', 'Tirar foto')}</Text>
                   </TouchableOpacity>
               </View>
           );
@@ -3355,7 +3820,7 @@ const finalizadoAt = new Date().toISOString();
                                           ))}
                                           <TouchableOpacity style={[styles.photoBtnMini, { borderColor: accent }]} onPress={() => handlePhotoRequest(pergunta, answerKey, opcao)}>
                                               <Camera size={18} color={accent} />
-                                              <Text style={[styles.photoBtnTextMini, { color: accent }]}>Foto da opção</Text>
+                                              <Text style={[styles.photoBtnTextMini, { color: accent }]}>{translate('surveyOptionPhotoButton', 'Foto da opção')}</Text>
                                           </TouchableOpacity>
                                       </ScrollView>
                                   </View>

@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Image,
   StatusBar,
+  Platform,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1152,62 +1153,105 @@ export default function DashboardScreen() {
       });
 
       // 3. Histórico 7 dias e Perfect Store
-      let h7d = custom?.history_7d;
-      let livePSScore = currentPSScore;
+      // MOBILE_HOME_HISTORY_SYNC_SOURCE_V2
+      //
+      // history_7d é atualizado pelo globalSync:
+      // snapshot sincronizado -> /resumo-mobile-7d -> updatedUser.custom_data.
+      // A Home NÃO deve sobrescrever esse valor com project_config_json
+      // de visitas/tarefas, que pode carregar snapshot anterior.
+      const h7d =
+        custom?.history_7d ||
+        null;
 
+      let livePSScore =
+        currentPSScore;
+
+      /*
+       * Perfect Store continua podendo aproveitar o config
+       * persistido no snapshot. Isto é independente de history_7d.
+       */
       try {
-        let achouHistory = false;
-
-        const visitWithConfig = todasVisitas.find(
-          (v) => v.project_config_json && String(v.project_config_json).includes('history_7d')
-        );
-
-        if (visitWithConfig) {
-          const cfg = safeParseJson(visitWithConfig.project_config_json, {});
-
-          if (cfg?.history_7d) {
-            h7d = cfg.history_7d;
-            achouHistory = true;
-          }
-
-          if (cfg?.perfect_store_score !== undefined) {
-            livePSScore = Number(cfg.perfect_store_score);
-          }
-        }
-
-        if (!achouHistory) {
-          const taskWithConfig = allTasks.find(
-            (t) => t.task_raw_json && String(t.task_raw_json).includes('history_7d')
+        const visitWithConfig =
+          todasVisitas.find(
+            (v) =>
+              v.project_config_json &&
+              String(
+                v.project_config_json
+              ).includes(
+                'perfect_store_score'
+              )
           );
 
+        if (visitWithConfig) {
+          const cfg =
+            safeParseJson(
+              visitWithConfig.project_config_json,
+              {}
+            );
+
+          if (
+            cfg?.perfect_store_score !==
+            undefined
+          ) {
+            livePSScore =
+              Number(
+                cfg.perfect_store_score
+              );
+          }
+        } else {
+          const taskWithConfig =
+            allTasks.find(
+              (t) =>
+                t.task_raw_json &&
+                String(
+                  t.task_raw_json
+                ).includes(
+                  'perfect_store_score'
+                )
+            );
+
           if (taskWithConfig) {
-            const raw = safeParseJson(taskWithConfig.task_raw_json, {});
+            const raw =
+              safeParseJson(
+                taskWithConfig.task_raw_json,
+                {}
+              );
 
-            if (raw?.project_config?.history_7d) {
-              h7d = raw.project_config.history_7d;
-            }
-
-            if (raw?.project_config?.perfect_store_score !== undefined) {
-              livePSScore = Number(raw.project_config.perfect_store_score);
+            if (
+              raw?.project_config
+                ?.perfect_store_score !==
+              undefined
+            ) {
+              livePSScore =
+                Number(
+                  raw.project_config
+                    .perfect_store_score
+                );
             }
           }
         }
-      } catch (e) {}
+      } catch {}
 
       if (h7d) {
-        const hVisitsTotal = Number(h7d.visitsTotal || 0);
-        const hVisitsDone = Number(h7d.visitsDone || 0);
-        const hBackendTasksTotal = Number(h7d.tasksTotal || 0);
-        const hBackendTasksDone = Number(h7d.tasksDone || 0);
+        const hVisitsTotal =
+          Number(
+            h7d.visitsTotal || 0
+          );
 
-        // MOBILE_HISTORY_BACKEND_SOURCE_V1
-        // history_7d já vem calculado pela API com
-        // as obrigações reais. Não multiplicar novamente.
+        const hVisitsDone =
+          Number(
+            h7d.visitsDone || 0
+          );
+
         const hTasksTotal =
-          hBackendTasksTotal;
+          Number(
+            h7d.tasksTotal || 0
+          );
 
         const hTasksDone =
-          hBackendTasksDone;
+          Number(
+            h7d.tasksDone || 0
+          );
 
         setHistory({
           visitsTotal:
@@ -1218,15 +1262,46 @@ export default function DashboardScreen() {
             hTasksTotal,
           tasksDone:
             hTasksDone,
+          // MOBILE_HOME_OPERATIONAL_EFFICIENCY_V3
+          //
+          // Fonte preferencial:
+          // operationalEfficiencyPercent recebido da API.
+          //
+          // Offline/fallback:
+          // reproduz exatamente a regra autoritativa:
+          //
+          // (visitsDone + tasksDone)
+          // ------------------------
+          // (visitsTotal + tasksTotal)
+          //
           percent:
-            hTasksTotal > 0
-              ? Math.round(
-                  (
-                    hTasksDone /
-                    hTasksTotal
-                  ) * 100
+            Number.isFinite(
+              Number(
+                h7d
+                  ?.operationalEfficiencyPercent
+              )
+            )
+              ? Number(
+                  h7d
+                    ?.operationalEfficiencyPercent
                 )
-              : 0,
+              : (
+                  hVisitsTotal +
+                  hTasksTotal
+                ) > 0
+                ? Math.round(
+                    (
+                      (
+                        hVisitsDone +
+                        hTasksDone
+                      ) /
+                      (
+                        hVisitsTotal +
+                        hTasksTotal
+                      )
+                    ) * 100
+                  )
+                : 0,
         });
       } else {
         setHistory({
@@ -1237,7 +1312,6 @@ export default function DashboardScreen() {
           percent: 0,
         });
       }
-
       // 4. Próxima parada
       try {
         const visitasElegiveisProximaParada = todasVisitas.filter((v) => {
@@ -1563,7 +1637,7 @@ export default function DashboardScreen() {
                 <>
                   <View style={styles.nextStopFooter}>
                     <Clock size={12} color={nsColors.text} />
-                    <Text style={[styles.nextStopSubtitle, { color: nsColors.text, fontWeight: 'bold' }]}>
+                    <Text style={[styles.nextStopSubtitle, { color: nsColors.text, fontWeight: Platform.OS === 'ios' ? '600' : 'bold' }]}>
                       {isInProgressStatus(nextStop.status)
                         ? i18n.t('statusInProgress')
                         : i18n.t('statusPending')}
@@ -1618,7 +1692,7 @@ export default function DashboardScreen() {
           <Text style={[styles.cardTitle, { color: textSecondary }]}>{i18n.t('routeProgress')}</Text>
           <Text style={[styles.cardPercent, { color: accent }]}>{visitsData.percent}%</Text>
 
-          <Text style={[styles.cardInfoText, { color: textPrimary, fontWeight: '700' }]}>
+          <Text style={[styles.cardInfoText, { color: textPrimary, fontWeight: Platform.OS === 'ios' ? '600' : '700' }]}>
             {visitsData.done}{' '}
             <Text style={{ fontWeight: '400', color: textSecondary }}>
               {i18n.t('realizedOf')} {visitsData.total}
@@ -1645,7 +1719,7 @@ export default function DashboardScreen() {
           <Text style={[styles.cardTitle, { color: textSecondary }]}>{i18n.t('taskProgress')}</Text>
           <Text style={[styles.cardPercent, { color: '#3B82F6' }]}>{tasksData.percent}%</Text>
 
-          <Text style={[styles.cardInfoText, { color: textPrimary, fontWeight: '700' }]}>
+          <Text style={[styles.cardInfoText, { color: textPrimary, fontWeight: Platform.OS === 'ios' ? '600' : '700' }]}>
             {tasksData.done}{' '}
             <Text style={{ fontWeight: '400', color: textSecondary }}>
               {i18n.t('realizedOf')} {tasksData.total}
@@ -1757,17 +1831,17 @@ const styles = StyleSheet.create({
   loadingContent: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   content: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 0 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
-  greeting: { fontSize: 25, fontWeight: '900', letterSpacing: -0.5 },
+  greeting: { fontSize: 25, fontWeight: Platform.OS === 'ios' ? '600' : '900', letterSpacing: -0.5 },
   statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, flexWrap: 'wrap' },
   statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, marginRight: 10 },
   statusDot: { width: 6, height: 6, borderRadius: 3, marginRight: 6 },
-  statusText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.3 },
+  statusText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900', letterSpacing: 0.3 },
   syncInline: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   syncText: { fontSize: 10, fontWeight: '600' },
   avatarContainer: { padding: 3, borderRadius: 31, borderWidth: 1 },
   avatar: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontSize: 20, fontWeight: 'bold' },
-  sectionTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 15, textTransform: 'uppercase' },
+  avatarText: { fontSize: 20, fontWeight: Platform.OS === 'ios' ? '600' : 'bold' },
+  sectionTitle: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '800', letterSpacing: 1, marginBottom: 15, textTransform: 'uppercase' },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
 
   nextStopCardWrapper: {
@@ -1798,10 +1872,10 @@ const styles = StyleSheet.create({
 
   nextStopLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   iconBoxSmall: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  nextStopTitle: { fontSize: 14, fontWeight: 'bold', marginBottom: 4 },
+  nextStopTitle: { fontSize: 14, fontWeight: Platform.OS === 'ios' ? '600' : 'bold', marginBottom: 4 },
   nextStopFooter: { flexDirection: 'row', alignItems: 'center' },
   nextStopSubtitle: { fontSize: 11, marginLeft: 4 },
-  insightPriority: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase', marginLeft: 6, letterSpacing: 1 },
+  insightPriority: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900', textTransform: 'uppercase', marginLeft: 6, letterSpacing: 1 },
   insightMessage: { fontSize: 12, fontWeight: '600', lineHeight: 16 },
   cardSquare: {
     width: '48%',
@@ -1811,24 +1885,24 @@ const styles = StyleSheet.create({
     elevation: 1,
     minHeight: 144,
   },
-  cardTitle: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', marginBottom: 8 },
-  cardPercent: { fontSize: 38, fontWeight: '900', marginBottom: 8 },
+  cardTitle: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '700', textTransform: 'uppercase', marginBottom: 8 },
+  cardPercent: { fontSize: 38, fontWeight: Platform.OS === 'ios' ? '600' : '900', marginBottom: 8 },
   cardInfoText: { fontSize: 12, marginBottom: 6 },
   cardStatusRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start' },
-  cardStatusText: { fontSize: 10, fontWeight: '700', marginLeft: 4 },
+  cardStatusText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '700', marginLeft: 4 },
   iconBox: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  cardBigNumber: { fontSize: 26, fontWeight: 'bold' },
+  cardBigNumber: { fontSize: 26, fontWeight: Platform.OS === 'ios' ? '600' : 'bold' },
   cardLabel: { fontSize: 12, fontWeight: '500' },
   historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   badge30d: { backgroundColor: 'rgba(59, 130, 246, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
-  badge30dText: { fontSize: 10, fontWeight: 'bold', color: '#3B82F6' },
+  badge30dText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : 'bold', color: '#3B82F6' },
   cardHistory: { flexDirection: 'row', padding: 20, borderRadius: 20, borderWidth: 1, elevation: 1, alignItems: 'center' },
   historyContent: { flex: 1, paddingRight: 20, borderRightWidth: 1, borderRightColor: 'rgba(150,150,150,0.2)' },
   historyRow: { flexDirection: 'row', alignItems: 'center' },
   historyLabel: { fontSize: 13, fontWeight: '600', marginLeft: 8 },
   historyLine: { flex: 1, height: 1, backgroundColor: 'rgba(150,150,150,0.2)', marginHorizontal: 10, borderStyle: 'dashed' },
-  historyValue: { fontSize: 14, fontWeight: 'bold' },
+  historyValue: { fontSize: 14, fontWeight: Platform.OS === 'ios' ? '600' : 'bold' },
   historyRight: { paddingLeft: 20, alignItems: 'center', justifyContent: 'center' },
-  historyPercentGiant: { fontSize: 32, fontWeight: '900' },
-  historyEficText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+  historyPercentGiant: { fontSize: 32, fontWeight: Platform.OS === 'ios' ? '600' : '900' },
+  historyEficText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '700', textTransform: 'uppercase' },
 });

@@ -10,6 +10,7 @@ import {
   Modal,
   StatusBar,
   InteractionManager,
+  Platform,
 } from 'react-native';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -50,9 +51,11 @@ const priorityMapping: Record<string, any> = {
   BAIXA: { color: '#3B82F6', icon: AlertCircle, label: i18n.t('priorityLow') },
 };
 
+// MOBILE_ROUTE_SURVEY_PREFIX_I18N_V1
 const ROUTE_TEXTS = {
   'pt-BR': {
     taskSurveyDefault: 'Pesquisa da visita',
+    taskSurveyPrefix: 'Pesquisa',
     taskStoreNotInformed: 'Loja não informada',
     taskAvailableOnlyInVisit: 'Disponível somente dentro da visita',
     taskQuestions: 'perguntas',
@@ -60,8 +63,9 @@ const ROUTE_TEXTS = {
     taskAnswerInVisit: 'Responder na visita',
     taskLinkedVisitTitle: 'Pesquisa vinculada à visita',
     taskLinkedVisitMessage:
-      'Este survey deve ser respondido dentro da visita da loja {{store}}.\n\nEntre na loja pela aba Visitas para realizar o check-in e responder.',
+      'Este survey deve ser respondido dentro da visita da loja {{store}}.\n\nToque em “Ir para Visita” para abrir a visita correta, realizar o check-in e responder.',
     understood: 'Entendi',
+    goToVisit: 'Ir para Visita',
     loadRouteError: 'Não foi possível carregar o roteiro local.',
     refreshRouteError: 'Não foi possível atualizar os dados agora. Tente novamente em instantes.',
     scheduled: 'Agendado',
@@ -108,6 +112,7 @@ const ROUTE_TEXTS = {
   },
   'en-US': {
     taskSurveyDefault: 'Visit survey',
+    taskSurveyPrefix: 'Survey',
     taskStoreNotInformed: 'Store not informed',
     taskAvailableOnlyInVisit: 'Available only inside the visit',
     taskQuestions: 'questions',
@@ -115,8 +120,9 @@ const ROUTE_TEXTS = {
     taskAnswerInVisit: 'Answer in visit',
     taskLinkedVisitTitle: 'Survey linked to visit',
     taskLinkedVisitMessage:
-      'This survey must be answered inside the visit for store {{store}}.\n\nOpen the store from the Visits tab, check in, and answer it there.',
+      'This survey must be answered inside the visit for store {{store}}.\n\nTap “Go to Visit” to open the correct visit, check in, and answer it there.',
     understood: 'Got it',
+    goToVisit: 'Go to Visit',
     loadRouteError: 'Unable to load the local route.',
     refreshRouteError: 'Unable to refresh data now. Please try again shortly.',
     scheduled: 'Scheduled',
@@ -163,6 +169,7 @@ const ROUTE_TEXTS = {
   },
   'es-ES': {
     taskSurveyDefault: 'Encuesta de la visita',
+    taskSurveyPrefix: 'Encuesta',
     taskStoreNotInformed: 'Tienda no informada',
     taskAvailableOnlyInVisit: 'Disponible solo dentro de la visita',
     taskQuestions: 'preguntas',
@@ -170,8 +177,9 @@ const ROUTE_TEXTS = {
     taskAnswerInVisit: 'Responder en la visita',
     taskLinkedVisitTitle: 'Encuesta vinculada a la visita',
     taskLinkedVisitMessage:
-      'Esta encuesta debe responderse dentro de la visita de la tienda {{store}}.\n\nAbre la tienda desde la pestaña Visitas, haz check-in y responde allí.',
+      'Esta encuesta debe responderse dentro de la visita de la tienda {{store}}.\n\nToca “Ir a la Visita” para abrir la visita correcta, hacer check-in y responder allí.',
     understood: 'Entendido',
+    goToVisit: 'Ir a la Visita',
     loadRouteError: 'No fue posible cargar la ruta local.',
     refreshRouteError: 'No fue posible actualizar los datos ahora. Inténtalo nuevamente en unos instantes.',
     scheduled: 'Programado',
@@ -1238,6 +1246,7 @@ export default function RoteiroScreen() {
   // =========================================================================
   // 🎯 SISTEMA DE MODAL CUSTOMIZADO (PADRÃO DO APP)
   // =========================================================================
+  // MOBILE_ROUTE_VISIT_TASK_GO_TO_VISIT_V1
   const [customAlert, setCustomAlert] = useState({
     visible: false,
     title: '',
@@ -1245,6 +1254,8 @@ export default function RoteiroScreen() {
     type: 'info' as 'success' | 'warning' | 'error' | 'info',
     primaryText: 'OK',
     primaryAction: null as any,
+    secondaryText: '',
+    secondaryAction: null as any,
   });
 
   const showCustomAlert = (
@@ -1252,9 +1263,20 @@ export default function RoteiroScreen() {
     message: string,
     type: 'success' | 'warning' | 'error' | 'info' = 'info',
     primaryText = 'OK',
-    primaryAction: any = null
+    primaryAction: any = null,
+    secondaryText = '',
+    secondaryAction: any = null
   ) => {
-    setCustomAlert({ visible: true, title, message, type, primaryText, primaryAction });
+    setCustomAlert({
+      visible: true,
+      title,
+      message,
+      type,
+      primaryText,
+      primaryAction,
+      secondaryText,
+      secondaryAction,
+    });
   };
 
   const hideCustomAlert = () => setCustomAlert((prev) => ({ ...prev, visible: false }));
@@ -3226,14 +3248,83 @@ qtdPerguntas:
         disabled={false}
         onPress={() => {
           if (isVisitSurvey) {
-            const lojaNome = item.loja_nome || '';
+            const lojaNome =
+              item.loja_nome ||
+              rt(
+                'taskStoreNotInformed',
+                language
+              );
+
+            const visitaId =
+              String(
+                item.visitaId ||
+                item.visita_id ||
+                ''
+              ).trim();
+
+            if (!visitaId) {
+              showCustomAlert(
+                rt(
+                  'taskLinkedVisitTitle',
+                  language
+                ),
+                rt(
+                  'taskLinkedVisitMessage',
+                  language,
+                  {
+                    store:
+                      lojaNome
+                  }
+                ),
+                'warning',
+                rt(
+                  'understood',
+                  language
+                )
+              );
+
+              return;
+            }
 
             showCustomAlert(
-              rt('taskLinkedVisitTitle', language),
-              rt('taskLinkedVisitMessage', language, { store: lojaNome }),
+              rt(
+                'taskLinkedVisitTitle',
+                language
+              ),
+              rt(
+                'taskLinkedVisitMessage',
+                language,
+                {
+                  store:
+                    lojaNome
+                }
+              ),
               'warning',
-              rt('understood', language)
+              rt(
+                'goToVisit',
+                language
+              ),
+              () => {
+                hideCustomAlert();
+
+                router.push({
+                  pathname:
+                    '/visita/[id]',
+                  params: {
+                    id:
+                      visitaId
+                  }
+                } as any);
+              },
+              rt(
+                'understood',
+                language
+              ),
+              () => {
+                hideCustomAlert();
+              }
             );
+
             return;
           }
 
@@ -3316,7 +3407,7 @@ qtdPerguntas:
 
         {isVisitSurvey ? (
           <View>
-            <Text style={[styles.taskSurveyPrefix, { color: textSecondary }]}>Survey</Text>
+            <Text style={[styles.taskSurveyPrefix, { color: textSecondary }]}>{rt('taskSurveyPrefix', language)}</Text>
             <Text style={[styles.cardTitle, { color: textPrimary, marginBottom: 4 }]}>
               {item.surveyTitle || item.titulo || rt('taskSurveyDefault', language)}
             </Text>
@@ -3539,10 +3630,11 @@ qtdPerguntas:
                     activeTab === 'CARTEIRA'
                       ? accent
                       : textSecondary,
-                  fontSize: 11,
-                },
+},
               ]}
               numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.72}
             >
               {rt(
                 'portfolioTab',
@@ -3589,7 +3681,7 @@ qtdPerguntas:
 
       <FlatList
         data={filteredData}
-        keyExtractor={(item) => String(item.__type ? item.id : item.id)}
+        keyExtractor={(item, index) => `${String(item?.__type || activeTab)}_${String(item?.id ?? item?.loja_id ?? item?.task_id ?? item?.visitaId ?? item?.pesquisaId ?? index)}`}
         renderItem={
           activeTab === 'VISITAS'
             ? renderVisitCard
@@ -3632,15 +3724,89 @@ qtdPerguntas:
             <Text style={[styles.modalTitle, { color: textPrimary }]}>{customAlert.title}</Text>
             <Text style={[styles.modalText, { color: textSecondary }]}>{customAlert.message}</Text>
 
-            <TouchableOpacity
-              style={[styles.modalBtnPri, { backgroundColor: modalUI.color }]}
-              onPress={() => {
-                if (customAlert.primaryAction) customAlert.primaryAction();
-                else hideCustomAlert();
-              }}
-            >
-              <Text style={styles.modalBtnPriText}>{customAlert.primaryText}</Text>
-            </TouchableOpacity>
+            {customAlert.secondaryText ? (
+              <View style={styles.modalActionsRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.modalBtnSec,
+                    {
+                      borderColor:
+                        border,
+                      backgroundColor:
+                        surfaceAlt
+                    }
+                  ]}
+                  onPress={() => {
+                    if (
+                      customAlert.secondaryAction
+                    ) {
+                      customAlert.secondaryAction();
+                    } else {
+                      hideCustomAlert();
+                    }
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.modalBtnSecText,
+                      {
+                        color:
+                          textPrimary
+                      }
+                    ]}
+                  >
+                    {customAlert.secondaryText}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.modalBtnPri,
+                    styles.modalBtnFlexible,
+                    {
+                      backgroundColor:
+                        modalUI.color
+                    }
+                  ]}
+                  onPress={() => {
+                    if (
+                      customAlert.primaryAction
+                    ) {
+                      customAlert.primaryAction();
+                    } else {
+                      hideCustomAlert();
+                    }
+                  }}
+                >
+                  <Text style={styles.modalBtnPriText}>
+                    {customAlert.primaryText}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  styles.modalBtnPri,
+                  {
+                    backgroundColor:
+                      modalUI.color
+                  }
+                ]}
+                onPress={() => {
+                  if (
+                    customAlert.primaryAction
+                  ) {
+                    customAlert.primaryAction();
+                  } else {
+                    hideCustomAlert();
+                  }
+                }}
+              >
+                <Text style={styles.modalBtnPriText}>
+                  {customAlert.primaryText}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
@@ -3662,16 +3828,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: { fontSize: 22, fontWeight: '900', letterSpacing: -0.6 },
+  headerTitle: { fontSize: 22, fontWeight: Platform.OS === 'ios' ? '600' : '900', letterSpacing: -0.6 },
   summaryRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
   summaryPill: { flex: 1, borderWidth: 1, borderRadius: 18, paddingVertical: 11, paddingHorizontal: 13 },
-  summaryValue: { fontSize: 19, fontWeight: '900', marginBottom: 2 },
-  summaryLabel: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 },
+  summaryValue: { fontSize: 19, fontWeight: Platform.OS === 'ios' ? '600' : '900', marginBottom: 2 },
+  summaryLabel: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900', textTransform: 'uppercase', letterSpacing: 1 },
   searchBox: { flexDirection: 'row', alignItems: 'center', borderRadius: 18, paddingHorizontal: 15, height: 50, borderWidth: 1, gap: 10 },
   searchInput: { flex: 1, fontSize: 15, fontWeight: '600' },
-  tabContainer: { flexDirection: 'row', borderBottomWidth: 1, paddingHorizontal: 20, paddingVertical: 10, gap: 10 },
-  tabBtn: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 16, borderWidth: 1 },
-  tabText: { fontSize: 13, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 },
+  // MOBILE_IOS_ROUTE_TABS_PARITY_V2
+  tabContainer: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    paddingHorizontal: Platform.OS === 'ios' ? 10 : 20,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 10,
+    gap: Platform.OS === 'ios' ? 5 : 10,
+  },
+  tabBtn: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Platform.OS === 'ios' ? 3 : 0,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 12,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  tabText: {
+    fontSize: Platform.OS === 'ios' ? 11 : 13,
+    fontWeight: Platform.OS === 'ios' ? '600' : '900',
+    textTransform: 'uppercase',
+    letterSpacing: Platform.OS === 'ios' ? 0.25 : 1,
+    textAlign: 'center',
+  },
   listContent: { padding: 20, paddingBottom: 120 },
   taskGroupHeader: {
     flexDirection: 'row',
@@ -3682,13 +3870,13 @@ const styles = StyleSheet.create({
   },
   taskGroupTitle: {
     fontSize: 13,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '600' : '900',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
   taskGroupSubtitle: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: Platform.OS === 'ios' ? '600' : '700',
     marginTop: 2,
   },
   taskGroupCount: {
@@ -3703,7 +3891,7 @@ const styles = StyleSheet.create({
   },
   taskGroupCountText: {
     fontSize: 12,
-    fontWeight: '900',
+    fontWeight: Platform.OS === 'ios' ? '600' : '900',
   },
 
   cardWrapper: {
@@ -3734,44 +3922,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
-  insightPriority: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase', marginLeft: 6, letterSpacing: 1 },
+  insightPriority: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900', textTransform: 'uppercase', marginLeft: 6, letterSpacing: 1 },
   insightMessage: { fontSize: 12, fontWeight: '600', lineHeight: 16 },
 
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   badge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  badgeText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
+  badgeText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900', letterSpacing: 0.5 },
   timePill: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  timePillText: { fontSize: 11, fontWeight: '800' },
-  cardTitle: { fontSize: 18, fontWeight: '800', marginBottom: 6, letterSpacing: -0.3 },
+  timePillText: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '800' },
+  cardTitle: { fontSize: 18, fontWeight: Platform.OS === 'ios' ? '600' : '800', marginBottom: 6, letterSpacing: -0.3 },
   cardSubtitle: { fontSize: 14, fontWeight: '500', lineHeight: 20 },
   compactTimingArea: { marginTop: 10 },
   compactTimingRow: { gap: 3 },
-  compactTimingText: { fontSize: 11, fontWeight: '700' },
-  compactTimingStrong: { fontSize: 11, fontWeight: '900' },
+  compactTimingText: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '700' },
+  compactTimingStrong: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '900' },
   compactBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 7 },
   compactTimingBadge: { paddingHorizontal: 7, paddingVertical: 4, borderRadius: 999 },
-  compactTimingBadgeText: { fontSize: 10, fontWeight: '900' },
+  compactTimingBadgeText: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900' },
   taskFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 15, paddingTop: 15, borderTopWidth: 1, borderTopColor: 'rgba(150,150,150,0.1)' },
   deadlineRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
-  deadlineText: { fontSize: 12, fontWeight: '800', flexShrink: 1 },
-  freqLabel: { fontSize: 11, fontWeight: '800' },
-  taskSurveyPrefix: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 },
-  taskStoreName: { fontSize: 13, fontWeight: '800', marginBottom: 10 },
+  deadlineText: { fontSize: 12, fontWeight: Platform.OS === 'ios' ? '600' : '800', flexShrink: 1 },
+  freqLabel: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '800' },
+  taskSurveyPrefix: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 },
+  taskStoreName: { fontSize: 13, fontWeight: Platform.OS === 'ios' ? '600' : '800', marginBottom: 10 },
   visitTaskInfoBox: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, gap: 6, marginTop: 4 },
-  visitTaskInfoText: { fontSize: 11, fontWeight: '800', flex: 1 },
-  visitTaskQuestionCount: { fontSize: 10, fontWeight: '900' },
+  visitTaskInfoText: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '800', flex: 1 },
+  visitTaskQuestionCount: { fontSize: 10, fontWeight: Platform.OS === 'ios' ? '600' : '900' },
   lockRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  lockText: { fontSize: 11, fontWeight: '800' },
+  lockText: { fontSize: 11, fontWeight: Platform.OS === 'ios' ? '600' : '800' },
   emptyContainer: { alignItems: 'center', marginTop: 80, gap: 15 },
-  emptyText: { fontSize: 15, fontWeight: '700' },
+  emptyText: { fontSize: 15, fontWeight: Platform.OS === 'ios' ? '600' : '700' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalCard: { width: '100%', padding: 25, borderRadius: 24, borderWidth: 1, alignItems: 'center' },
   modalIconWrap: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
-  modalTitle: { fontSize: 20, fontWeight: '900', marginBottom: 12, textAlign: 'center' },
+  modalTitle: { fontSize: 20, fontWeight: Platform.OS === 'ios' ? '600' : '900', marginBottom: 12, textAlign: 'center' },
   modalText: { fontSize: 15, textAlign: 'center', lineHeight: 22, marginBottom: 24 },
-  modalBtnPri: { width: '100%', height: 50, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-  modalBtnPriText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+  modalActionsRow: { width: '100%', flexDirection: 'row', gap: 10 },
+  modalBtnSec: { flex: 1, height: 50, borderRadius: 14, borderWidth: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 10 },
+  modalBtnSecText: { fontSize: 14, fontWeight: Platform.OS === 'ios' ? '600' : '800', textAlign: 'center' },
+  modalBtnPri: { width: '100%', height: 50, borderRadius: 14, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 10 },
+  modalBtnFlexible: { flex: 1, width: 'auto' },
+  modalBtnPriText: { color: '#FFF', fontSize: 15, fontWeight: Platform.OS === 'ios' ? '600' : 'bold', textAlign: 'center' },
 
   portfolioVisitActions: {
     flexDirection: 'row',
@@ -3787,6 +3979,6 @@ const styles = StyleSheet.create({
   },
   portfolioVisitActionText: {
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: Platform.OS === 'ios' ? '600' : '800',
   },
 });
