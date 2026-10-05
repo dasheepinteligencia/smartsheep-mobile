@@ -11,8 +11,9 @@ import {
 } from '../database/db';
 import { useAuthStore } from '../store/useAuthStore';
 import { useSyncStore } from '../store/useSyncStore';
-import { globalSync } from '../services/syncService';
+import { fastSync, globalSync } from '../services/syncService';
 import { DevicePreflightGate } from '../components/DevicePreflightGate';
+import { MandatoryUpdateGate } from '../components/MandatoryUpdateGate';
 import { isSupervisorMobileUser } from '../utils/mobileRole';
 
 import { AppAlertProvider } from '../components/AppAlert';
@@ -155,6 +156,46 @@ export default function RootLayout() {
      * sync pesado no mesmo frame da navegação. Sessão restaurada continua
      * sincronizando automaticamente após uma curta janela para a UI aparecer.
      */
+    /*
+     * MOBILE_FAST_SYNC_COORDINATOR_V1
+     *
+     * FastSync:
+     * - consulta primeiro a Outbox SQLite;
+     * - sem pendencia pronta, nao toca a rede;
+     * - pode ser chamado frequentemente enquanto o app esta ativo.
+     */
+    const attemptFastSync = async (reason: string) => {
+      try {
+        const result: any =
+          await fastSync();
+
+        if (
+          result?.status &&
+          result.status !== 'NO_PENDING'
+        ) {
+          console.log(
+            `[FAST SYNC] ${reason}`,
+            result.status
+          );
+        }
+
+        return result;
+      } catch (error) {
+        console.log(
+          `[FAST SYNC] ${reason} falhou:`,
+          error
+        );
+
+        return null;
+      }
+    };
+
+    /*
+     * GlobalSync continua sendo o ciclo estrutural completo.
+     *
+     * Evitamos refazer o ciclo pesado quando houve um GlobalSync
+     * confirmado recentemente.
+     */
     const attemptAutoSync = async (reason: string, force = false) => {
       const now = Date.now();
       const lastSyncValue = useSyncStore.getState().lastSync;
@@ -162,27 +203,54 @@ export default function RootLayout() {
         lastSyncValue instanceof Date
           ? lastSyncValue.getTime()
           : Date.parse(String(lastSyncValue || ''));
+
       const recentlyConfirmed =
         Number.isFinite(lastConfirmedSync) &&
-        now - lastConfirmedSync < 30000;
+        now - lastConfirmedSync < 4 * 60 * 1000;
 
-      if (!force && (recentlyConfirmed || now - lastAutoSyncAttemptRef.current < 30000)) {
+      if (
+        !force &&
+        (
+          recentlyConfirmed ||
+          now - lastAutoSyncAttemptRef.current < 60 * 1000
+        )
+      ) {
         return;
       }
 
       lastAutoSyncAttemptRef.current = now;
 
       try {
-        const result = await globalSync();
-        console.log(`[AUTO SYNC] ${reason}`, result?.status || result?.ok);
+        const result: any =
+          await globalSync();
+
+        console.log(
+          `[AUTO SYNC] ${reason}`,
+          result?.status || result?.ok
+        );
       } catch (error) {
-        console.log(`[AUTO SYNC] ${reason} falhou:`, error);
+        console.log(
+          `[AUTO SYNC] ${reason} falhou:`,
+          error
+        );
       }
     };
 
     const sessionReadyTimer = setTimeout(() => {
       void attemptAutoSync('SESSION_READY');
     }, 1200);
+
+    /*
+     * MOBILE_FAST_OUTBOX_WATCHDOG_V1
+     *
+     * Enquanto o app estiver ativo, verifica a Outbox a cada 10 segundos.
+     * O próprio fastSync consulta SQLite antes de qualquer acesso de rede.
+     */
+    const fastSyncWatchdog = setInterval(() => {
+      if (AppState.currentState === 'active') {
+        void attemptFastSync('OUTBOX_WATCHDOG');
+      }
+    }, 10 * 1000);
 
     const foregroundHeartbeat = setInterval(() => {
       if (AppState.currentState === 'active') {
@@ -204,7 +272,23 @@ export default function RootLayout() {
         networkWasOnlineRef.current = online;
 
         if (online && wasOnline === false) {
-          void attemptAutoSync('NETWORK_RESTORED', true);
+          /*
+           * Entrega primeiro qualquer operacao local.
+           * Depois o GlobalSync roda somente se o snapshot completo estiver antigo.
+           */
+          void (
+            async () => {
+              await attemptFastSync(
+                'NETWORK_RESTORED'
+              );
+
+              if (!disposed) {
+                await attemptAutoSync(
+                  'NETWORK_RESTORED'
+                );
+              }
+            }
+          )();
         }
       } catch {}
     }, 15000);
@@ -215,20 +299,41 @@ export default function RootLayout() {
 
       if (nextState === 'active' && /inactive|background/.test(previousState)) {
         setTimeout(() => {
-          if (!disposed) void attemptAutoSync('FOREGROUND_RESUME');
+          if (disposed) return;
+
+          void (
+            async () => {
+              await attemptFastSync(
+                'FOREGROUND_RESUME'
+              );
+
+              if (!disposed) {
+                await attemptAutoSync(
+                  'FOREGROUND_RESUME'
+                );
+              }
+            }
+          )();
         }, 250);
+
         return;
       }
 
       if (previousState === 'active' && /inactive|background/.test(nextState)) {
-        // Best effort: Android/iOS podem suspender o JS logo depois da transição.
-        void attemptAutoSync('APP_BACKGROUNDING', true);
+        /*
+         * Best effort antes de o SO suspender o JS.
+         * Nao iniciamos aqui o GlobalSync pesado.
+         */
+        void attemptFastSync(
+          'APP_BACKGROUNDING'
+        );
       }
     });
 
     return () => {
       disposed = true;
       clearTimeout(sessionReadyTimer);
+      clearInterval(fastSyncWatchdog);
       clearInterval(foregroundHeartbeat);
       clearInterval(networkPoll);
       appStateSubscription.remove();
@@ -296,7 +401,8 @@ export default function RootLayout() {
   }
 
   return (
-    <DevicePreflightGate>
+    <MandatoryUpdateGate>
+      <DevicePreflightGate>
       {/* MOBILE_GLOBAL_APP_ALERT_PROVIDER_V2 */}
 <AppAlertProvider>
 <Stack
@@ -351,5 +457,6 @@ export default function RootLayout() {
       </Stack>
 </AppAlertProvider>
     </DevicePreflightGate>
+    </MandatoryUpdateGate>
   );
 }

@@ -3,6 +3,7 @@ import {
   getDBConnection,
   initializeDatabase,
   addAppLog,
+  withSerializedDbTransaction,
 } from '../database/db';
 
 // ============================================================================
@@ -52,6 +53,7 @@ export type LocalFieldPortfolio = {
   hasPortfolio: boolean;
   mode: FieldVisitMode;
   allowOutsidePortfolio: boolean;
+  allowSameDayRevisit: boolean;
   stores: LocalFieldPortfolioStore[];
   raw?: any;
 };
@@ -504,6 +506,36 @@ export const saveFieldPortfolioOffline =
             ?.allowOutsidePortfolio
       );
 
+    const allowSameDayRevisit =
+      normalizeBoolean(
+        payload?.allowSameDayRevisit ??
+          payload?.allow_same_day_revisit ??
+          payload?.portfolio
+            ?.allowSameDayRevisit ??
+          payload?.portfolio
+            ?.allow_same_day_revisit
+      );
+
+    /*
+     * MOBILE_FIELD_PORTFOLIO_AVAILABLE_STORES_V1
+     *
+     * O backend da Carteira de Atendimento é a autoridade.
+     * Quando availableStores vier no payload, ele substitui
+     * somente o catálogo auxiliar usado para materializar
+     * lojas fora da carteira.
+     *
+     * `stores` do payload continua representando somente
+     * as lojas explicitamente atribuídas.
+     *
+     * Fallback mantém compatibilidade com backend antigo.
+     */
+    const portfolioCatalog =
+      Array.isArray(
+        payload?.availableStores
+      )
+        ? payload.availableStores
+        : allStores;
+
     const assigned =
       getAllPortfolioAssignments(
         payload
@@ -511,7 +543,7 @@ export const saveFieldPortfolioOffline =
         .map((item) =>
           normalizeAssignment(
             item,
-            allStores
+            portfolioCatalog
           )
         )
         .filter(Boolean) as LocalFieldPortfolioStore[];
@@ -526,7 +558,7 @@ export const saveFieldPortfolioOffline =
 
     const outside =
       allowOutsidePortfolio
-        ? safeArray(allStores)
+        ? safeArray(portfolioCatalog)
             .map(
               normalizeOutsideStore
             )
@@ -549,7 +581,7 @@ export const saveFieldPortfolioOffline =
     const now =
       new Date().toISOString();
 
-    await db.withTransactionAsync(
+    await withSerializedDbTransaction(
       async () => {
         await db.runAsync(
           `
@@ -701,6 +733,7 @@ export const saveFieldPortfolioOffline =
         userId,
         mode,
         allowOutsidePortfolio,
+        allowSameDayRevisit,
         stores: stores.length,
         assigned:
           assigned.length,
@@ -711,6 +744,7 @@ export const saveFieldPortfolioOffline =
       mode,
       hasPortfolio,
       allowOutsidePortfolio,
+      allowSameDayRevisit,
       stores,
     };
   };
@@ -822,6 +856,8 @@ export const getFieldPortfolioOffline =
         mode: 'ROTEIRIZADO',
         allowOutsidePortfolio:
           false,
+        allowSameDayRevisit:
+          false,
         stores: [],
       };
     }
@@ -864,6 +900,25 @@ export const getFieldPortfolioOffline =
           state.allow_outside_portfolio ||
             0
         ) === 1,
+      allowSameDayRevisit:
+        normalizeBoolean(
+          safeParse(
+            state.raw_json,
+            {}
+          )?.allowSameDayRevisit ??
+          safeParse(
+            state.raw_json,
+            {}
+          )?.allow_same_day_revisit ??
+          safeParse(
+            state.raw_json,
+            {}
+          )?.portfolio?.allowSameDayRevisit ??
+          safeParse(
+            state.raw_json,
+            {}
+          )?.portfolio?.allow_same_day_revisit
+        ),
       raw:
         safeParse(
           state.raw_json,

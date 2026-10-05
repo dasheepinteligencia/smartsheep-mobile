@@ -2,10 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Image, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, CheckCircle2, Circle, Camera, CheckSquare, Square, Save, AlertCircle, AlertTriangle, ClipboardCheck, X, ChevronDown, Check, FolderOpen , MapPin} from 'lucide-react-native';
-import { addAppLog, getDBConnection } from '../../database/db';
+import {
+  addAppLog,
+  getDBConnection,
+  withSerializedDbTransaction,
+} from '../../database/db';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
-import { globalSync, addToSyncQueue, enqueueSyncOperationInDb } from '../../services/syncService';
+import { fastSync, addToSyncQueue, enqueueSyncOperationInDb } from '../../services/syncService';
 import { api } from '../../services/api';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -2372,7 +2376,7 @@ const handleWatermarkImageLoaded = async () => {
          * Nunca apagamos a evidência depois de uma falha de enqueue; se a
          * Outbox não puder ser criada, a transação inteira é revertida.
          */
-        await db.withTransactionAsync(async () => {
+        await withSerializedDbTransaction(async () => {
           await db.runAsync(
             `INSERT OR REPLACE INTO coletas (
               id,
@@ -2536,9 +2540,13 @@ const handleWatermarkImageLoaded = async () => {
           setRespostas({});
           photosRef.current = {};
 
-                  // OMNI_REPEATABLE_SKIP_IMMEDIATE_SYNC_V1
-                  // Nao sincronizar imediatamente apos finalizar uma resposta repetivel.
-                  // O sync instantaneo sobrescrevia o card com snapshot PENDENTE do backend.
+          // OMNI_REPEATABLE_FAST_SYNC_AFTER_SAVE_V1
+          // FastSync envia somente a Outbox e não executa pull de snapshot.
+          // A navegação continua usando imediatamente o estado local.
+          void fastSync()
+            .catch(
+              () => {}
+            );
 
           router.replace({
             pathname:
@@ -2551,7 +2559,7 @@ const handleWatermarkImageLoaded = async () => {
             }
           } as any);
         } else {
-          void globalSync()
+          void fastSync()
             .catch(
               () => {}
             );
@@ -2639,7 +2647,7 @@ const handleWatermarkImageLoaded = async () => {
                 setClosing(true);
 
                 try {
-                  await globalSync();
+                  await fastSync();
 
                   const authUser =
                     useAuthStore
@@ -2742,7 +2750,7 @@ const handleWatermarkImageLoaded = async () => {
                    * Depois consultamos o estado persistido
                    * da própria Outbox.
                    */
-                  await globalSync();
+                  await fastSync();
 
                   const db =
                     await getDBConnection();

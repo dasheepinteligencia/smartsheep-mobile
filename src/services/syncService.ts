@@ -1,5 +1,11 @@
 import { api } from './api';
-import { saveRoteiroCompletoOffline, getDBConnection, saveAlertsOffline, addAppLog } from '../database/db';
+import {
+  saveRoteiroCompletoOffline,
+  getDBConnection,
+  saveAlertsOffline,
+  addAppLog,
+  withSerializedDbTransaction,
+} from '../database/db';
 import { useAuthStore } from '../store/useAuthStore';
 import { useSyncStore } from '../store/useSyncStore';
 import * as Network from 'expo-network';
@@ -11,6 +17,17 @@ import { syncFieldPortfolioOffline } from './fieldPortfolioService';
 
 let syncInProgress = false;
 let globalSyncPauseDepth = 0;
+
+/*
+ * MOBILE_FAST_SYNC_COALESCE_V1
+ *
+ * Se uma operação entrar enquanto outro FastSync/GlobalSync estiver rodando,
+ * não dependemos mais do watchdog de 10 segundos.
+ *
+ * Registramos que existe trabalho novo e, assim que a trava for liberada,
+ * fazemos outra passagem imediata pela Outbox.
+ */
+let fastSyncRerunRequested = false;
 
 /*
  * MOBILE_MULTIUSER_SYNC_SWITCH_BARRIER_V1
@@ -635,7 +652,7 @@ const recoverCheckoutRejectedByRequiredSurvey = async (
   const operationKey = String(item?.operation_key || payload?.client_operation_id || '').trim();
   const visitId = String(localVisit.id);
 
-  await db.withTransactionAsync(async () => {
+  await withSerializedDbTransaction(async () => {
     // A tentativa é inequivocamente inválida no estado atual. Ela não pode
     // continuar em RETRY nem finalizar automaticamente depois que o formulário
     // for respondido; o usuário deverá efetuar um novo checkout consciente.
@@ -825,7 +842,7 @@ const resolveObsoleteServerTombstoneQueueItemV1 = async (
     String(item?.conflict_message || 'Entidade removida no servidor.')
   );
 
-  await db.withTransactionAsync(async () => {
+  await withSerializedDbTransaction(async () => {
     await db.runAsync(
       `INSERT INTO sync_conflicts (
          id, queue_id, operation_key, endpoint, method, payload,
@@ -1448,7 +1465,7 @@ const pullAndApplyMobileSyncChanges = async (
     const changes = safeArray(payload?.changes);
     const nextCursor = payload?.nextCursor ? String(payload.nextCursor) : cursor;
 
-    await db.withTransactionAsync(async () => {
+    await withSerializedDbTransaction(async () => {
       for (const change of changes) {
         await applyMobileSyncServerChange(db, projectId, userId, change);
         applied += 1;
@@ -3193,7 +3210,7 @@ const mirrorServerRouteSnapshot = async (
    * Tarefas deixam de usar DELETE cego: ausência no servidor só apaga quando
    * não existe Outbox/coleta/conflito/visita pendente relacionada.
    */
-  await db.withTransactionAsync(async () => {
+  await withSerializedDbTransaction(async () => {
     if (visitIds.length > 0) {
       await db.runAsync(
         `
@@ -4802,6 +4819,170 @@ export const getDiamondSyncDiagnostics =
     };
   };
 
+
+/*
+ * MOBILE_FAST_OUTBOX_SYNC_V1
+ *
+ * Sincronização operacional leve:
+ *
+ * - consulta primeiro a Outbox local;
+ * - não toca a rede quando não existe nada pronto para envio;
+ * - envia somente PENDING/RETRY cujo next_retry_at já venceu;
+ * - reutiliza exatamente o mesmo uploadSyncQueue do GlobalSync;
+ * - não baixa roteiro, pesquisas, campanhas, estoque ou snapshots;
+ * - não executa telemetria;
+ * - compartilha a trava syncInProgress com o GlobalSync para impedir
+ *   duas rotinas de sincronização escrevendo no SQLite ao mesmo tempo.
+ *
+ * A regra de negócio continua no backend através dos mesmos endpoints.
+ */
+export const fastSync = async () => {
+  const { user, token } = useAuthStore.getState();
+
+  if (!user || !token) {
+    return {
+      ok: false,
+      status: 'SKIPPED_NO_SESSION' as const,
+      attempted: false,
+    };
+  }
+
+  if (globalSyncPauseDepth > 0) {
+    return {
+      ok: false,
+      status: 'SKIPPED_WORKSPACE_SWITCH' as const,
+      attempted: false,
+    };
+  }
+
+  if (syncInProgress) {
+    /*
+     * Já existe um sync trabalhando.
+     *
+     * A operação continua durável na Outbox e agora deixamos registrada
+     * uma nova passagem para imediatamente após a liberação da trava.
+     */
+    fastSyncRerunRequested = true;
+
+    return {
+      ok: false,
+      status: 'SKIPPED_ALREADY_RUNNING' as const,
+      attempted: false,
+    };
+  }
+
+  syncInProgress = true;
+
+  try {
+    const db = await getDBConnection();
+    const nowIso = new Date().toISOString();
+
+    const readyItem: any =
+      await db.getFirstAsync(
+        `
+          SELECT id
+          FROM sync_queue
+          WHERE
+            (
+              next_retry_at IS NULL
+              OR next_retry_at = ''
+              OR next_retry_at <= ?
+            )
+            AND COALESCE(
+              status,
+              'PENDING'
+            ) IN (
+              'PENDING',
+              'RETRY'
+            )
+          ORDER BY created_at ASC
+          LIMIT 1
+        `,
+        [nowIso]
+      );
+
+    if (!readyItem?.id) {
+      return {
+        ok: true,
+        status: 'NO_PENDING' as const,
+        attempted: false,
+      };
+    }
+
+    const network =
+      await Network.getNetworkStateAsync();
+
+    if (
+      !network.isConnected ||
+      network.isInternetReachable === false
+    ) {
+      return {
+        ok: false,
+        status: 'OFFLINE' as const,
+        attempted: false,
+      };
+    }
+
+    await uploadSyncQueue(db);
+
+    const remainingItem: any =
+      await db.getFirstAsync(
+        `
+          SELECT id
+          FROM sync_queue
+          WHERE COALESCE(
+            status,
+            'PENDING'
+          ) IN (
+            'PENDING',
+            'RETRY'
+          )
+          LIMIT 1
+        `
+      );
+
+    return {
+      ok: !remainingItem?.id,
+      status:
+        remainingItem?.id
+          ? 'PARTIAL' as const
+          : 'SUCCESS' as const,
+      attempted: true,
+    };
+  } catch (error: any) {
+    console.log(
+      '[FastSync] falhou:',
+      error?.message || error
+    );
+
+    return {
+      ok: false,
+      status: 'FAILED' as const,
+      attempted: true,
+      error:
+        String(
+          error?.message ||
+          error ||
+          'Erro desconhecido'
+        ),
+    };
+  } finally {
+    syncInProgress = false;
+
+    /*
+     * Uma segunda operação pode ter sido gravada enquanto este FastSync
+     * estava trabalhando. Fazemos nova passagem imediatamente.
+     */
+    if (fastSyncRerunRequested) {
+      fastSyncRerunRequested = false;
+
+      setTimeout(() => {
+        void fastSync();
+      }, 0);
+    }
+  }
+};
+
 export const globalSync = async () => {
   const { user, token, login } = useAuthStore.getState();
   const { setSyncing, setLastSync } = useSyncStore.getState();
@@ -5167,10 +5348,91 @@ export const globalSync = async () => {
     let categorias: any[] = [];
     let produtosCatalogo: any[] = [];
 
-    if (resLojas && resLojas.ok) {
-      const lojasData = await resLojas.json();
-      lojas = Array.isArray(lojasData) ? lojasData : (lojasData.data || lojasData.lojas || []);
+    /*
+     * MOBILE_REQUIRED_STORE_CATALOG_V1
+     *
+     * O catálogo completo de lojas é autoridade para a Carteira Livre.
+     * Não podemos continuar silenciosamente com lojas=[] porque isso
+     * transforma uma carteira com acesso externo em apenas lojas atribuídas.
+     */
+    if (!resLojas || !resLojas.ok) {
+      let responseBody = '';
+
+      try {
+        responseBody =
+          resLojas
+            ? await resLojas.text()
+            : 'NO_RESPONSE';
+      } catch {
+        responseBody = 'UNREADABLE_RESPONSE';
+      }
+
+      console.error(
+        '[GlobalSync] Falha obrigatória ao carregar catálogo de lojas',
+        {
+          projectId,
+          status: resLojas?.status ?? null,
+          body: responseBody,
+        }
+      );
+
+      throw new Error(
+        `STORE_CATALOG_NOT_CONFIRMED: HTTP ${resLojas?.status ?? 'NO_RESPONSE'}`
+      );
     }
+
+    const lojasData = await resLojas.json();
+
+    /*
+     * MOBILE_STORE_CATALOG_RESPONSE_NORMALIZER_V1
+     *
+     * O backend pode encapsular o catálogo em formatos diferentes.
+     * Escolhemos somente candidatos que sejam realmente arrays.
+     */
+    const storeCatalogCandidates = [
+      lojasData,
+      lojasData?.data,
+      lojasData?.lojas,
+      lojasData?.stores,
+      lojasData?.items,
+      lojasData?.results,
+      lojasData?.data?.lojas,
+      lojasData?.data?.stores,
+      lojasData?.data?.items,
+      lojasData?.data?.results,
+    ];
+
+    lojas =
+      storeCatalogCandidates.find(
+        (candidate: any) =>
+          Array.isArray(candidate)
+      ) || [];
+
+    console.log(
+      '[GlobalSync] Catálogo de lojas recebido',
+      {
+        projectId,
+        total: lojas.length,
+        responseUrl:
+          resLojas?.url || null,
+        responseType:
+          Array.isArray(lojasData)
+            ? 'array'
+            : typeof lojasData,
+        responseKeys:
+          lojasData &&
+          typeof lojasData === 'object' &&
+          !Array.isArray(lojasData)
+            ? Object.keys(lojasData)
+            : [],
+        dataKeys:
+          lojasData?.data &&
+          typeof lojasData.data === 'object' &&
+          !Array.isArray(lojasData.data)
+            ? Object.keys(lojasData.data)
+            : [],
+      }
+    );
 
     if (resCategorias && resCategorias.ok) {
       const categoriasData = await resCategorias.json();
@@ -5976,6 +6238,18 @@ export const globalSync = async () => {
   } finally {
     syncInProgress = false;
     setSyncing(false);
+
+    /*
+     * Se alguma ação operacional entrou na Outbox durante o GlobalSync,
+     * ela recebe uma passagem FastSync imediatamente após a liberação.
+     */
+    if (fastSyncRerunRequested) {
+      fastSyncRerunRequested = false;
+
+      setTimeout(() => {
+        void fastSync();
+      }, 0);
+    }
   }
 };
 

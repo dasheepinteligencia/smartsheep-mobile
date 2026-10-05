@@ -12,8 +12,12 @@ import {
 
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
-import { addAppLog, getDBConnection } from '../../database/db';
-import { enqueueSyncOperationInDb, globalSync } from '../../services/syncService';
+import {
+  addAppLog,
+  getDBConnection,
+  withSerializedDbTransaction,
+} from '../../database/db';
+import { enqueueSyncOperationInDb, fastSync } from '../../services/syncService';
 import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
@@ -720,8 +724,16 @@ const checkPendingLocalCollectionIsNewer = async (db: any, visit: any, surveyId:
         if (visitIds.length === 0 || !surveyId) return false;
 
         const placeholders = visitIds.map(() => '?').join(',');
+        /*
+         * MOBILE_SYNCED_COLLECTION_UI_PARITY_V1
+         *
+         * Não podemos limitar a proteção apenas a pending_sync = 1.
+         * Assim que o FastSync confirma a coleta, pending_sync vira 0,
+         * mas essa coleta continua sendo a resposta válida desta visita
+         * enquanto não existir um estado de servidor mais novo.
+         */
         const rows = await db.getAllAsync(
-            `SELECT pesquisa_id, visita_id, data_inicio, data_fim, raw_json, pending_sync FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
+            `SELECT pesquisa_id, visita_id, data_inicio, data_fim, raw_json, pending_sync, updated_at FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders})`,
             [String(surveyId), ...visitIds]
         );
 
@@ -746,16 +758,28 @@ const clearStaleLocalSurveyData = async (db: any, visit: any, surveyId: any, ser
 
         const placeholders = visitIds.map(() => '?').join(',');
         const rows = await db.getAllAsync(
-            `SELECT id, data_inicio, data_fim, raw_json, pending_sync FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders})`,
+            `SELECT id, data_inicio, data_fim, raw_json, pending_sync, updated_at FROM coletas WHERE pesquisa_id = ? AND visita_id IN (${placeholders})`,
             [String(surveyId), ...visitIds]
         );
 
         const serverTs = toTimestamp(serverStateUpdatedAt);
+
+        /*
+         * Uma coleta sincronizada NÃO é obsoleta apenas porque pending_sync = 0.
+         *
+         * Ela só pode ser removida quando existe um estado explícito do servidor
+         * com timestamp igual ou posterior ao da própria coleta. Isso preserva
+         * imediatamente a conclusão local e continua permitindo reabertura/reset
+         * quando o servidor realmente possuir um estado mais novo.
+         */
         const staleIds = (rows || [])
             .filter((row: any) => {
-                if (Number(row?.pending_sync || 0) !== 1) return true;
                 const localTs = getLocalCollectionTimestamp(row);
-                return serverTs > 0 && localTs <= serverTs;
+
+                return (
+                    serverTs > 0 &&
+                    localTs <= serverTs
+                );
             })
             .map((row: any) => row.id)
             .filter(Boolean);
@@ -1444,15 +1468,18 @@ export default function SurveyExecutionScreen() {
                         )
                         : false;
 
+                /*
+                 * MOBILE_LOCAL_COLLECTION_AUTHORITATIVE_V1
+                 *
+                 * Pesquisa não repetível:
+                 * se existe coleta local, não permitimos responder novamente,
+                 * independentemente de um snapshot PENDENTE ainda atrasado.
+                 */
                 const shouldLockCompletedNonRepeatable =
                     !selectedSurveyIsRepeatable &&
                     (
                         selectedPayload.selectedSurveyCompleted ||
-                        hasNewerLocalPending ||
-                        (
-                            !serverSaysPending &&
-                            selectedSurveyHasLocalCollection
-                        )
+                        selectedSurveyHasLocalCollection
                     );
 
                 setCompletedNonRepeatableLock(shouldLockCompletedNonRepeatable);
@@ -2593,7 +2620,7 @@ const finalizadoAt = new Date().toISOString();
                * na mesma transação SQLite. Se qualquer etapa falha, nada é
                * confirmado localmente e o formulário continua recuperável.
                */
-              await db.withTransactionAsync(async () => {
+              await withSerializedDbTransaction(async () => {
                   const currentVisit: any = await db.getFirstAsync(
                       `SELECT id FROM visits WHERE id = ? LIMIT 1`,
                       [String(id)]
@@ -2669,29 +2696,64 @@ const finalizadoAt = new Date().toISOString();
           await SecureStore.deleteItemAsync(`survey_answers_${id}_${idDaPesquisa || 'default'}`).catch(() => {});
 
           /*
-           * MOBILE_VISIT_REPEATABLE_SYNC_PARITY_V1
+           * MOBILE_SURVEY_FAST_SYNC_AFTER_SAVE_V1
            *
-           * Mesma regra já usada pela pesquisa avulsa:
+           * A coleta já está confirmada no SQLite + Outbox.
+           * FastSync faz somente PUSH, sem baixar snapshots.
+           * Vale para pesquisas repetíveis e não repetíveis.
+           */
+          void fastSync()
+              .then((result: any) => {
+                  if (result?.status === 'FAILED') {
+                      void addAppLog({
+                          level: 'WARNING',
+                          module: 'PESQUISA',
+                          action: 'FAST_SYNC_AFTER_COLLECTION_SAVE_FAILED',
+                          message: 'Coleta preservada localmente; FastSync será retomado posteriormente.',
+                          metadata: {
+                              visitId: id,
+                              pesquisaId: idDaPesquisa,
+                              clientOperationId: operationId,
+                              repeatable: isVisitRepeatable,
+                              fastSyncStatus: result?.status || null,
+                              error: result?.error || null,
+                          },
+                      }).catch(() => {});
+                  }
+              })
+              .catch((syncError: any) => {
+                  void addAppLog({
+                      level: 'WARNING',
+                      module: 'PESQUISA',
+                      action: 'FAST_SYNC_AFTER_COLLECTION_SAVE_EXCEPTION',
+                      message: 'Coleta preservada localmente; ocorreu uma falha inesperada no FastSync.',
+                      metadata: {
+                          visitId: id,
+                          pesquisaId: idDaPesquisa,
+                          clientOperationId: operationId,
+                          repeatable: isVisitRepeatable,
+                          error:
+                              syncError?.message ||
+                              String(syncError),
+                      },
+                  }).catch(() => {});
+              });
+
+          /*
+           * MOBILE_VISIT_REPEATABLE_FAST_SYNC_PARITY_V1
            *
-           * - NÃO repetível: tenta sincronizar imediatamente.
-           * - Repetível: preserva SQLite + Outbox, atualiza a tela pela coleta
-           *   local e NÃO força sync neste exato instante.
+           * A pesquisa repetível continua usando imediatamente o SQLite local
+           * para atualizar contador e navegação.
            *
-           * O motivo é evitar que um snapshot ainda atrasado do backend volte
-           * como PENDENTE e sobrescreva visualmente o progresso recém-criado.
-           * A Outbox permanece intacta e entra no próximo ciclo normal de sync
-           * (pull-to-sync, sync de outra etapa, background etc.).
-           *
-           * Na visita, o contador local lê TODAS as coletas SQLite da visita,
-           * inclusive depois de sincronizadas, e o checkout é o fechamento
-           * natural das pesquisas repetíveis daquele atendimento.
+           * Agora também pode executar FastSync porque ele somente envia a
+           * Outbox e não faz pull de snapshot atrasado do backend.
            */
           if (isVisitRepeatable) {
               await addAppLog({
                   level: 'INFO',
                   module: 'PESQUISA',
                   action: 'REPEATABLE_COLLECTION_SAVED_LOCAL',
-                  message: 'Resposta repetível preservada localmente; sync imediato adiado para manter o estado operacional da visita.',
+                  message: 'Resposta repetível preservada localmente; FastSync da Outbox disparado sem pull de snapshot.',
                   metadata: {
                       visitId: id,
                       pesquisaId: idDaPesquisa,
@@ -2719,32 +2781,6 @@ const finalizadoAt = new Date().toISOString();
 
               return;
           }
-
-          /*
-           * MOBILE_SURVEY_SYNC_AFTER_SAVE_V1
-           *
-           * Coleta não repetível: tentativa imediata de sync, sem tornar
-           * internet requisito para concluir o formulário.
-           */
-          globalSync().catch(async (syncError: any) => {
-              console.log(
-                  '[Pesquisa] sync imediato após finalizar falhou:',
-                  syncError?.message || syncError
-              );
-
-              await addAppLog({
-                  level: 'WARNING',
-                  module: 'PESQUISA',
-                  action: 'SYNC_AFTER_COLLECTION_SAVE',
-                  message: 'Coleta preservada localmente; sync imediato será retomado posteriormente.',
-                  metadata: {
-                      visitId: id,
-                      pesquisaId: idDaPesquisa,
-                      clientOperationId: operationId,
-                      error: syncError?.message || String(syncError),
-                  },
-              }).catch(() => {});
-          });
 
           showCustomAlert(
               'success',

@@ -32,12 +32,16 @@ import {
   Navigation,
 } from 'lucide-react-native';
 import MapView, { Marker } from 'react-native-maps';
-import { addAppLog, getDBConnection } from '../../database/db';
+import {
+  addAppLog,
+  getDBConnection,
+  withSerializedDbTransaction,
+} from '../../database/db';
 import { getSmartLocation, getDistanceInMeters } from '../../services/locationService';
 import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
-import { enqueueSyncOperationInDb, globalSync } from '../../services/syncService';
+import { enqueueSyncOperationInDb, fastSync, globalSync } from '../../services/syncService';
 import { api } from '../../services/api';
 import { materializeFreeVisitExecutionFromManifestInDb } from '../../services/fieldPortfolioService';
 import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveyStatus';
@@ -1114,10 +1118,18 @@ const getCompletedSurveyIdsForVisit = async (db: any, visit: any) => {
 
     const placeholders = visitIds.map(() => '?').join(',');
 
-    // Só consideramos coletas locais ainda pendentes de sync.
-    // Se o servidor já mandou um estado pendente mais recente, ele vence e a coleta local antiga é ignorada.
+    /*
+     * MOBILE_SYNCED_COLLECTION_UI_PARITY_V1
+     *
+     * A coleta local continua sendo evidência válida mesmo depois que o FastSync
+     * entrega a Outbox e muda pending_sync para 0.
+     *
+     * O desempate continua sendo temporal:
+     * se o servidor trouxer depois um estado PENDENTE mais novo que a coleta
+     * local, o estado do servidor vence.
+     */
     const rows = await db.getAllAsync(
-      `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim, updated_at FROM coletas WHERE visita_id IN (${placeholders}) AND COALESCE(pending_sync, 0) = 1`,
+      `SELECT pesquisa_id, raw_json, status, pending_sync, data_inicio, data_fim, updated_at FROM coletas WHERE visita_id IN (${placeholders})`,
       visitIds
     );
 
@@ -1126,14 +1138,20 @@ const getCompletedSurveyIdsForVisit = async (db: any, visit: any) => {
       const surveyId = String(getSurveyIdFromAnyPayload(row) || getSurveyIdFromAnyPayload(raw) || '');
       if (!surveyId) return;
 
-      const serverState = serverStates.get(surveyId);
-      const localUpdatedAt = getLocalCollectionTimestamp(row);
-
-      if (serverState?.explicit && !serverState.completed && serverState.updatedAt >= localUpdatedAt) {
-        completed.delete(surveyId);
-        return;
-      }
-
+      /*
+       * MOBILE_LOCAL_COLLECTION_AUTHORITATIVE_V1
+       *
+       * Se a coleta continua presente no SQLite, ela é a evidência operacional
+       * autoritativa de que esta pesquisa foi respondida nesta visita.
+       *
+       * pending_sync pode ser 0 ou 1:
+       * - 1 = ainda aguardando envio;
+       * - 0 = já entregue pelo FastSync.
+       *
+       * Um snapshot PENDENTE antigo do servidor não pode apagar visualmente
+       * uma coleta local válida. Reabertura/reset real é tratada pela camada
+       * central de reconciliação, que remove a coleta local quando necessário.
+       */
       completed.add(surveyId);
     });
   } catch {}
@@ -1940,35 +1958,55 @@ export default function VisitaDetailScreen() {
     }
   };
 
-  // MOBILE_VISIT_SYNC_AFTER_ACTION_V1
+  // MOBILE_VISIT_FAST_SYNC_AFTER_ACTION_V1
   const triggerSyncAfterVisitAction = (
     action: 'CHECKIN' | 'CHECKOUT' | 'JUSTIFICAR',
     operationId: string
   ) => {
     void (async () => {
       try {
-        await globalSync();
+        const result: any = await fastSync();
+
+        const fastSyncStatus =
+          String(result?.status || 'UNKNOWN');
+
+        const delivered =
+          fastSyncStatus === 'SUCCESS' ||
+          fastSyncStatus === 'NO_PENDING';
+
+        const safelyDeferred =
+          fastSyncStatus === 'OFFLINE' ||
+          fastSyncStatus === 'PARTIAL' ||
+          fastSyncStatus === 'SKIPPED_ALREADY_RUNNING' ||
+          fastSyncStatus === 'SKIPPED_WORKSPACE_SWITCH';
 
         await addAppLog({
-          level: 'INFO',
+          level:
+            delivered || safelyDeferred
+              ? 'INFO'
+              : 'WARNING',
           module: 'VISITA',
-          action: `AUTO_SYNC_AFTER_${action}`,
-          message: 'Sincronização automática disparada após ação operacional da visita.',
+          action: `FAST_SYNC_AFTER_${action}`,
+          message:
+            delivered
+              ? 'FastSync operacional executado após ação da visita.'
+              : safelyDeferred
+                ? 'A ação foi preservada na Outbox e será reenviada automaticamente.'
+                : 'FastSync operacional não confirmou a entrega imediata da ação.',
           metadata: {
             visitId: visita?.id,
             clientOperationId: operationId,
+            fastSyncStatus,
+            attempted: result?.attempted === true,
+            error: result?.error || null,
           },
         }).catch(() => {});
       } catch (error: any) {
-        /*
-         * Offline-first: a ação já está salva localmente e na Outbox.
-         * Uma falha de rede não desfaz check-in/check-out/justificativa.
-         */
         await addAppLog({
           level: 'WARNING',
           module: 'VISITA',
-          action: `AUTO_SYNC_AFTER_${action}_FAILED`,
-          message: 'A ação foi preservada localmente, mas a tentativa imediata de sincronização falhou.',
+          action: `FAST_SYNC_AFTER_${action}_FAILED`,
+          message: 'A ação foi preservada localmente, mas o FastSync encontrou uma falha inesperada.',
           metadata: {
             visitId: visita?.id,
             clientOperationId: operationId,
@@ -2631,6 +2669,10 @@ export default function VisitaDetailScreen() {
             .trim()
             .toUpperCase();
 
+        /*
+         * O endpoint responde HTTP 200 tanto para
+         * allowed=true quanto para conflito operacional.
+         */
         if (
           response.ok &&
           result?.allowed === false &&
@@ -2804,12 +2846,12 @@ export default function VisitaDetailScreen() {
       );
 
       /*
-       * CHECK-IN online:
-       * antes de qualquer escrita no SQLite/Outbox,
-       * pergunta ao servidor se OUTRO usuário
-       * já está atendendo esta loja.
+       * Antes de qualquer escrita no SQLite/Outbox,
+       * o CHECK-IN online pergunta ao servidor se
+       * já existe OUTRO usuário atendendo esta loja.
        *
-       * Vários usuários atribuídos à loja continuam permitidos.
+       * A atribuição múltipla da loja não é conflito.
+       * Apenas visita simultânea em andamento.
        */
       if (acao === 'CHECKIN') {
         const concurrencyAllowed =
@@ -2867,7 +2909,7 @@ export default function VisitaDetailScreen() {
        * Não existe mais visita alterada sem operação durável correspondente.
        */
       try {
-        await db.withTransactionAsync(async () => {
+        await withSerializedDbTransaction(async () => {
           const currentVisit: any = await db.getFirstAsync(
             `SELECT id FROM visits WHERE id = ? LIMIT 1`,
             [visita.id]
