@@ -57,7 +57,8 @@
         {
           "locationWhenInUsePermission": "O SmartSheep utiliza sua localização para validar visitas, check-ins, check-outs e evidências de campo."
         }
-      ]
+      ],
+      "./plugins/withDeviceMemory"
     ],
     "experiments": {
       "typedRoutes": true,
