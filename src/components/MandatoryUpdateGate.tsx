@@ -37,6 +37,9 @@ type VersionPolicy = {
   enabled: boolean;
   platform: string;
   minimumVersion: string;
+  targetMinimumVersion: string;
+  publishedVersion: string;
+  enforcementReady: boolean;
   latestVersion: string;
   storeUrl: string | null;
   message: string | null;
@@ -160,6 +163,24 @@ const normalizePolicy = (
         .toLowerCase(),
 
     minimumVersion,
+
+    targetMinimumVersion:
+      normalizeVersion(
+        source.targetMinimumVersion ||
+        source.target_minimum_version ||
+        minimumVersion
+      ),
+
+    publishedVersion:
+      normalizeVersion(
+        source.publishedVersion ||
+        source.published_version ||
+        minimumVersion
+      ),
+
+    enforcementReady:
+      source.enforcementReady === true ||
+      source.enforcement_ready === true,
 
     latestVersion:
       normalizeVersion(
@@ -403,13 +424,31 @@ export function MandatoryUpdateGate({
             return;
           }
 
+          const targetMinimumVersion =
+            nextPolicy.targetMinimumVersion ||
+            nextPolicy.minimumVersion;
+
+          const publishedVersion =
+            nextPolicy.publishedVersion ||
+            nextPolicy.minimumVersion;
+
+          const releaseAvailable =
+            compareVersion(
+              publishedVersion,
+              targetMinimumVersion
+            ) >= 0;
+
           const outdated =
             compareVersion(
               currentVersion,
-              nextPolicy.minimumVersion
+              targetMinimumVersion
             ) < 0;
 
-          if (!outdated) {
+          const mustUpdate =
+            releaseAvailable &&
+            outdated;
+
+          if (!mustUpdate) {
             setPolicy(
               nextPolicy
             );
@@ -686,7 +725,8 @@ export function MandatoryUpdateGate({
             }
           >
             {policy
-              ?.minimumVersion}
+              ?.targetMinimumVersion ||
+              policy?.minimumVersion}
           </Text>
         </View>
 
