@@ -19,6 +19,13 @@ import {
 } from '../../database/db';
 import { enqueueSyncOperationInDb, fastSync } from '../../services/syncService';
 import { fetchRepeatableStatusForVisit, isRepeatableStatusBlocked } from '../../services/repeatableSurveyStatus';
+import {
+  deleteSurveyDraftAnswer,
+  deserializeSurveyDraftValue,
+  getOrCreateSurveyDraft,
+  getSurveyDraftAnswers,
+  saveSurveyDraftAnswer,
+} from '../../services/surveyDraftService';
 import { t } from '../../utils/i18n';
 import { getSmartLocation, getFastPhotoLocation } from '../../services/locationService';
 import { evaluateSurveyMatchAnswer, flattenSurveyQuestionsPreservingGroups, getSurveyMatchInlineState, resolveSingleSurveyProductIdFromAnswer, shouldShowProductBySurveyMatch } from '../../utils/surveyMatch';
@@ -1204,6 +1211,33 @@ export default function SurveyExecutionScreen() {
 
   const [answers, setAnswers] = useState<Record<string, any>>({});
 
+  // MOBILE_SURVEY_DRAFT_AUTOSAVE_V1
+  const [activeDraftId, setActiveDraftId] =
+      useState<string | null>(null);
+
+  const draftHydratedRef =
+      useRef(false);
+
+  const draftLastAnswersRef =
+      useRef<Record<string, any>>({});
+
+  const draftAutosaveTimerRef =
+      useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /*
+   * Serializa escritas sucessivas.
+   *
+   * Se o usuário responder rapidamente:
+   *
+   *   A -> B -> C
+   *
+   * nunca teremos C persistido antes de B.
+   */
+  const draftSaveChainRef =
+      useRef<Promise<void>>(
+          Promise.resolve()
+      );
+
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
 
@@ -1516,19 +1550,260 @@ export default function SurveyExecutionScreen() {
                     return;
                 }
 
-                if (serverSaysPending && !hasNewerLocalPending) {
-                    await SecureStore.deleteItemAsync(draftKey).catch(() => {});
-                    await clearStaleLocalSurveyData(db, v, selectedPayload.selectedSurveyId, selectedPayload.selectedSurveyServerStateUpdatedAt);
-                    photosRef.current = {};
-                    setAnswers({});
-                } else {
-                    const savedDraft = await SecureStore.getItemAsync(draftKey);
-                    if (savedDraft) {
-                        setAnswers(JSON.parse(savedDraft));
-                    } else {
-                        setAnswers({});
+                /*
+                 * MOBILE_SURVEY_DRAFT_AUTOSAVE_V1
+                 *
+                 * A partir da 1.3.5, PENDENTE no servidor não significa
+                 * "apagar respostas locais".
+                 *
+                 * Um formulário pode estar legitimamente EM_ANDAMENTO.
+                 *
+                 * SecureStore permanece apenas como ponte de migração para
+                 * algum rascunho criado por versões anteriores.
+                 */
+                draftHydratedRef.current = false;
+                setActiveDraftId(null);
+
+                const draftProjectId =
+                    String(
+                        getProjectId(
+                            user,
+                            v
+                        ) || ''
+                    ).trim();
+
+                const draftUserId =
+                    String(
+                        user?.id || ''
+                    ).trim();
+
+                const draftSurveyId =
+                    String(
+                        selectedPayload
+                            .selectedSurveyId ||
+                        ''
+                    ).trim();
+
+                const draftVisitId =
+                    String(
+                        v?.id ||
+                        id ||
+                        ''
+                    ).trim();
+
+                const rawSurveyVersion =
+                    selectedPayload
+                        ?.selectedSurveyRaw
+                        ?.versao_atual ??
+                    selectedPayload
+                        ?.selectedSurveyRaw
+                        ?.versao ??
+                    selectedPayload
+                        ?.selectedSurveyRaw
+                        ?.version ??
+                    selectedPayload
+                        ?.selectedSurveyRaw
+                        ?.survey_version ??
+                    null;
+
+                const parsedSurveyVersion =
+                    Number(
+                        rawSurveyVersion
+                    );
+
+                const draft =
+                    await getOrCreateSurveyDraft({
+                        projectId:
+                            draftProjectId,
+
+                        usuarioId:
+                            draftUserId,
+
+                        lojaId:
+                            v?.loja_id ||
+                            v?.lojaId ||
+                            null,
+
+                        visitaId:
+                            draftVisitId,
+
+                        registroVisitaId:
+                            getRegistroVisitaId(
+                                v
+                            ) ||
+                            null,
+
+                        pesquisaId:
+                            draftSurveyId,
+
+                        pesquisaVersao:
+                            Number.isInteger(
+                                parsedSurveyVersion
+                            ) &&
+                            parsedSurveyVersion > 0
+                                ? parsedSurveyVersion
+                                : null,
+                    });
+
+                const draftRows =
+                    await getSurveyDraftAnswers(
+                        draft.id
+                    );
+
+                const restoredAnswers:
+                    Record<string, any> =
+                    {};
+
+                photosRef.current =
+                    {};
+
+                for (
+                    const row
+                    of draftRows
+                ) {
+                    const answerKey =
+                        String(
+                            row?.answer_key ||
+                            ''
+                        ).trim();
+
+                    if (!answerKey) {
+                        continue;
+                    }
+
+                    const parsedValue =
+                        deserializeSurveyDraftValue(
+                            row?.valor
+                        );
+
+                    /*
+                     * Fotos são persistidas no draft com metadata.
+                     *
+                     * A tela, porém, usa answers[key] como lista de URI
+                     * e photosRef como objeto completo.
+                     */
+                    if (
+                        Array.isArray(
+                            parsedValue
+                        ) &&
+                        parsedValue.length > 0 &&
+                        parsedValue.every(
+                            (item: any) =>
+                                item &&
+                                typeof item ===
+                                    'object' &&
+                                Boolean(
+                                    item?.uri ||
+                                    item?.url ||
+                                    item?.base64
+                                )
+                        )
+                    ) {
+                        const restoredPhotos =
+                            parsedValue.map(
+                                (photo: any) => ({
+                                    ...photo,
+
+                                    uri:
+                                        photo?.uri ||
+                                        photo?.url ||
+                                        photo?.base64,
+                                })
+                            );
+
+                        photosRef.current[
+                            answerKey
+                        ] =
+                            restoredPhotos;
+
+                        restoredAnswers[
+                            answerKey
+                        ] =
+                            restoredPhotos.map(
+                                (photo: any) =>
+                                    photo.uri
+                            );
+
+                        continue;
+                    }
+
+                    restoredAnswers[
+                        answerKey
+                    ] =
+                        parsedValue;
+                }
+
+                /*
+                 * Compatibilidade 1.3.4:
+                 *
+                 * Se ainda não existe nenhuma resposta no novo SQLite,
+                 * recuperamos o antigo SecureStore e deixamos o autosave
+                 * migrá-lo automaticamente.
+                 */
+                let answersToOpen =
+                    restoredAnswers;
+
+                let autosaveBaseline =
+                    restoredAnswers;
+
+                if (
+                    draftRows.length === 0
+                ) {
+                    const legacyDraft =
+                        await SecureStore
+                            .getItemAsync(
+                                draftKey
+                            )
+                            .catch(
+                                () => null
+                            );
+
+                    if (legacyDraft) {
+                        try {
+                            const parsedLegacy =
+                                JSON.parse(
+                                    legacyDraft
+                                );
+
+                            if (
+                                parsedLegacy &&
+                                typeof parsedLegacy ===
+                                    'object' &&
+                                !Array.isArray(
+                                    parsedLegacy
+                                )
+                            ) {
+                                answersToOpen =
+                                    parsedLegacy;
+
+                                /*
+                                 * Baseline vazio faz todas as respostas
+                                 * legadas entrarem no novo draft.
+                                 */
+                                autosaveBaseline =
+                                    {};
+                            }
+                        } catch {}
                     }
                 }
+
+                draftLastAnswersRef.current =
+                    autosaveBaseline;
+
+                setActiveDraftId(
+                    draft.id
+                );
+
+                setAnswers(
+                    answersToOpen
+                );
+
+                /*
+                 * Só depois de preparar baseline + estado permitimos que
+                 * o useEffect de autosave trabalhe.
+                 */
+                draftHydratedRef.current =
+                    true;
 
                 setVisita({
                     ...v,
@@ -1630,6 +1905,328 @@ export default function SurveyExecutionScreen() {
           };
       });
   }, [pesquisasRaw]);
+
+  /*
+   * ============================================================
+   * MOBILE_SURVEY_DRAFT_AUTOSAVE_V2
+   *
+   * REGRA:
+   *
+   * SQLite + Outbox:
+   *   iniciam imediatamente após alteração de answers{}.
+   *
+   * Rede:
+   *   FastSync continua com debounce de 450ms.
+   *
+   * Ao sair da tela antes dos 450ms:
+   *   somente o FastSync pendente é cancelado.
+   *
+   * A gravação local continua na cadeia serial.
+   * ============================================================
+   */
+  useEffect(() => {
+      if (
+          !draftHydratedRef.current ||
+          !activeDraftId ||
+          completedNonRepeatableLock
+      ) {
+          return;
+      }
+
+      const snapshot:
+          Record<string, any> =
+          JSON.parse(
+              JSON.stringify(
+                  answers || {}
+              )
+          );
+
+      const draftIdForSave =
+          activeDraftId;
+
+      /*
+       * Persistência local começa imediatamente.
+       *
+       * A cadeia garante ordem:
+       *
+       * A -> B -> C
+       */
+      draftSaveChainRef.current =
+          draftSaveChainRef.current
+              .then(
+                  async () => {
+                      const previous =
+                          draftLastAnswersRef.current ||
+                          {};
+
+                      const allKeys =
+                          Array.from(
+                              new Set([
+                                  ...Object.keys(
+                                      previous
+                                  ),
+
+                                  ...Object.keys(
+                                      snapshot
+                                  ),
+                              ])
+                          );
+
+                      for (
+                          const answerKey
+                          of allKeys
+                      ) {
+                          const previousValue =
+                              previous[
+                                  answerKey
+                              ];
+
+                          const currentValue =
+                              snapshot[
+                                  answerKey
+                              ];
+
+                          if (
+                              JSON.stringify(
+                                  previousValue
+                              ) ===
+                              JSON.stringify(
+                                  currentValue
+                              )
+                          ) {
+                              continue;
+                          }
+
+                          const parts =
+                              String(
+                                  answerKey
+                              )
+                                  .split(
+                                      '::'
+                                  );
+
+                          const perguntaId =
+                              String(
+                                  parts[0] ||
+                                  ''
+                              ).trim();
+
+                          if (!perguntaId) {
+                              continue;
+                          }
+
+                          const possibleProduct =
+                              String(
+                                  parts[1] ||
+                                  ''
+                              ).trim();
+
+                          const produtoId =
+                              possibleProduct &&
+                              !possibleProduct
+                                  .startsWith(
+                                      'foto_'
+                                  )
+                                  ? possibleProduct
+                                  : null;
+
+                          const isEmpty =
+                              currentValue ===
+                                  undefined ||
+                              currentValue ===
+                                  null ||
+                              currentValue ===
+                                  '' ||
+                              (
+                                  Array.isArray(
+                                      currentValue
+                                  ) &&
+                                  currentValue.length ===
+                                      0
+                              );
+
+                          if (isEmpty) {
+                              await deleteSurveyDraftAnswer({
+                                  draftId:
+                                      draftIdForSave,
+
+                                  answerKey,
+
+                                  perguntaId,
+
+                                  produtoId,
+                              });
+
+                              continue;
+                          }
+
+                          /*
+                           * FOTO:
+                           *
+                           * answers{} carrega URIs.
+                           * photosRef preserva metadata completa.
+                           */
+                          const structuredPhotos =
+                              photosRef.current[
+                                  answerKey
+                              ];
+
+                          const valueToPersist =
+                              Array.isArray(
+                                  structuredPhotos
+                              ) &&
+                              structuredPhotos.length >
+                                  0
+                                  ? structuredPhotos.map(
+                                      (
+                                          photo: any
+                                      ) => ({
+                                          uri:
+                                              photo?.uri ||
+                                              null,
+
+                                          url:
+                                              photo?.url ||
+                                              photo?.base64 ||
+                                              photo?.uri ||
+                                              null,
+
+                                          base64:
+                                              photo?.base64 ||
+                                              null,
+
+                                          origin:
+                                              photo?.origin ||
+                                              null,
+
+                                          capturedAt:
+                                              photo?.capturedAt ||
+                                              null,
+
+                                          latitude:
+                                              photo?.latitude ??
+                                              null,
+
+                                          longitude:
+                                              photo?.longitude ??
+                                              null,
+                                      })
+                                  )
+                                  : currentValue;
+
+                          await saveSurveyDraftAnswer({
+                              draftId:
+                                  draftIdForSave,
+
+                              answerKey,
+
+                              perguntaId,
+
+                              produtoId,
+
+                              valor:
+                                  valueToPersist,
+                          });
+                      }
+
+                      /*
+                       * Baseline só avança depois que este snapshot
+                       * foi realmente persistido.
+                       */
+                      draftLastAnswersRef.current =
+                          snapshot;
+                  }
+              )
+              .catch(
+                  async (
+                      error: any
+                  ) => {
+                      console.error(
+                          '[SURVEY_DRAFT] Falha no autosave:',
+                          error
+                      );
+
+                      await addAppLog({
+                          level:
+                              'ERROR',
+
+                          module:
+                              'SURVEY_DRAFT',
+
+                          action:
+                              'DRAFT_AUTOSAVE_ERROR',
+
+                          message:
+                              'Falha ao persistir resposta parcial do formulário.',
+
+                          metadata: {
+                              draftId:
+                                  draftIdForSave,
+
+                              visitId:
+                                  id,
+
+                              error:
+                                  error?.message ||
+                                  String(
+                                      error
+                                  ),
+                          },
+                      }).catch(
+                          () => {}
+                      );
+                  }
+              );
+
+      /*
+       * Debounce somente da REDE.
+       */
+      if (
+          draftAutosaveTimerRef.current
+      ) {
+          clearTimeout(
+              draftAutosaveTimerRef.current
+          );
+      }
+
+      draftAutosaveTimerRef.current =
+          setTimeout(
+              () => {
+                  draftAutosaveTimerRef.current =
+                      null;
+
+                  void fastSync()
+                      .catch(
+                          () => {}
+                      );
+              },
+              450
+          );
+
+      return () => {
+          /*
+           * Nunca cancelamos draftSaveChainRef.
+           *
+           * Só cancelamos a tentativa de rede agendada.
+           */
+          if (
+              draftAutosaveTimerRef.current
+          ) {
+              clearTimeout(
+                  draftAutosaveTimerRef.current
+              );
+
+              draftAutosaveTimerRef.current =
+                  null;
+          }
+      };
+  }, [
+      answers,
+      activeDraftId,
+      completedNonRepeatableLock,
+      id,
+  ]);
+
 
   const perguntasLookup = useMemo(() => {
       const byId = new Map<string, any>();

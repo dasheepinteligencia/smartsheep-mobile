@@ -2014,6 +2014,336 @@ const buildCampaignDebugSnapshot = (list: any[]) =>
     data_fim: item?.data_fim || item?.dataFim || item?.endDate || null,
   }));
 
+
+/*
+ * ============================================================
+ * MOBILE_SURVEY_DRAFT_FINALIZE_AFTER_COLLECTION_ACK_V1
+ *
+ * Regra:
+ *
+ * draft parcial só deixa EM_ANDAMENTO depois que /coletas
+ * recebeu ACK positivo do servidor.
+ *
+ * Isso impede que um formulário pareça concluído quando a
+ * submissão oficial ainda não chegou ao backend.
+ * ============================================================
+ */
+const finalizeSurveyDraftAfterCollectionAck = async (
+  db: any,
+  item: any,
+  payload: any
+) => {
+
+  try {
+
+    const projectId =
+      String(
+        payload?.projectId ||
+        payload?.project_id ||
+        ''
+      ).trim();
+
+    const usuarioId =
+      String(
+        payload?.usuario_id ||
+        payload?.usuarioId ||
+        payload?.promotorId ||
+        payload?.promotor_id ||
+        ''
+      ).trim();
+
+    const pesquisaId =
+      String(
+        payload?.pesquisa_id ||
+        payload?.pesquisaId ||
+        payload?.survey_id ||
+        payload?.surveyId ||
+        ''
+      ).trim();
+
+    const visitIds =
+      Array.from(
+        new Set(
+          [
+            payload?.visitaId,
+            payload?.visita_id,
+
+            payload?.registroVisitaId,
+            payload?.registro_visita_id,
+
+            payload?.visitaIdJson,
+            payload?.visita_id_json,
+
+            payload?.visitaAgendadaId,
+            payload?.visita_agendada_id,
+          ]
+            .map(
+              value =>
+                String(
+                  value ||
+                  ''
+                ).trim()
+            )
+            .filter(Boolean)
+        )
+      );
+
+    if (
+      !projectId ||
+      !usuarioId ||
+      !pesquisaId ||
+      visitIds.length === 0
+    ) {
+
+      return;
+    }
+
+    const placeholders =
+      visitIds
+        .map(() => '?')
+        .join(',');
+
+    /*
+     * Procuramos somente draft ainda EM_ANDAMENTO.
+     *
+     * Se já foi finalizado anteriormente, a operação é
+     * naturalmente idempotente.
+     */
+    const draft: any =
+      await db.getFirstAsync(
+        `
+          SELECT
+            id,
+            status,
+            pesquisa_id,
+            visita_id,
+            registro_visita_id
+
+          FROM survey_drafts
+
+          WHERE
+            project_id = ?
+            AND usuario_id = ?
+            AND pesquisa_id = ?
+            AND status = 'EM_ANDAMENTO'
+            AND (
+              visita_id IN (${placeholders})
+              OR
+              registro_visita_id IN (${placeholders})
+            )
+
+          ORDER BY
+            client_updated_at DESC
+
+          LIMIT 1
+        `,
+        [
+          projectId,
+          usuarioId,
+          pesquisaId,
+
+          ...visitIds,
+          ...visitIds,
+        ]
+      );
+
+    if (!draft?.id) {
+      return;
+    }
+
+    const finalizedAt =
+      new Date()
+        .toISOString();
+
+    const finalizeOperationId =
+      `survey_draft_finalize_${String(
+        draft.id
+      )}`;
+
+    /*
+     * Primeiro preservamos a finalização na Outbox.
+     *
+     * Só depois alteramos o estado local.
+     */
+    const enqueueResult =
+      await enqueueSyncOperationInDb(
+        db,
+
+        `/survey-drafts/${encodeURIComponent(
+          String(
+            draft.id
+          )
+        )}/finalize`,
+
+        {
+          draft_id:
+            String(
+              draft.id
+            ),
+
+          project_id:
+            projectId,
+
+          usuario_id:
+            usuarioId,
+
+          pesquisa_id:
+            pesquisaId,
+
+          visita_id:
+            String(
+              draft?.visita_id ||
+              visitIds[0] ||
+              ''
+            ) ||
+            null,
+
+          registro_visita_id:
+            String(
+              draft?.registro_visita_id ||
+              ''
+            ) ||
+            null,
+
+          finalized_at:
+            finalizedAt,
+
+          origem:
+            'MOBILE_OFFLINE',
+
+          client_operation_id:
+            finalizeOperationId,
+        },
+
+        'POST'
+      );
+
+    /*
+     * Mesmo se a operação já existia na Outbox,
+     * o ACK da coleta oficial permite encerrar o draft local.
+     */
+    if (
+      enqueueResult?.success !== true
+    ) {
+      return;
+    }
+
+    await db.runAsync(
+      `
+        UPDATE survey_drafts
+
+        SET
+          status = 'FINALIZADO',
+          finalized_at = ?,
+          client_updated_at = ?,
+          updated_at = ?
+
+        WHERE
+          id = ?
+          AND status = 'EM_ANDAMENTO'
+      `,
+      [
+        finalizedAt,
+        finalizedAt,
+        finalizedAt,
+        String(
+          draft.id
+        ),
+      ]
+    );
+
+    /*
+     * A fila de finalize foi criada durante uma passagem
+     * do próprio FastSync.
+     *
+     * Pedimos uma segunda passagem assim que a trava atual
+     * for liberada.
+     */
+    fastSyncRerunRequested =
+      true;
+
+    await addAppLog({
+      level:
+        'INFO',
+
+      module:
+        'SURVEY_DRAFT',
+
+      action:
+        'FINALIZE_AFTER_COLLECTION_ACK',
+
+      message:
+        'Draft finalizado após confirmação da coleta oficial pelo servidor.',
+
+      metadata: {
+        draftId:
+          String(
+            draft.id
+          ),
+
+        collectionOperationId:
+          payload?.client_operation_id ||
+          item?.operation_key ||
+          null,
+
+        finalizeOperationId,
+
+        pesquisaId,
+
+        visitIds,
+      },
+    }).catch(
+      () => {}
+    );
+
+  } catch (
+    error: any
+  ) {
+
+    /*
+     * O ACK de /coletas já aconteceu.
+     *
+     * Uma falha secundária de housekeeping do draft
+     * nunca pode transformar uma coleta confirmada
+     * novamente em erro de sincronização.
+     */
+    console.warn(
+      '[SURVEY_DRAFT] Falha ao preparar finalização pós-ACK:',
+      error
+    );
+
+    await addAppLog({
+      level:
+        'WARNING',
+
+      module:
+        'SURVEY_DRAFT',
+
+      action:
+        'FINALIZE_AFTER_COLLECTION_ACK_FAILED',
+
+      message:
+        'A coleta foi confirmada, mas o encerramento do draft não pôde ser preparado.',
+
+      metadata: {
+        collectionOperationId:
+          payload?.client_operation_id ||
+          item?.operation_key ||
+          null,
+
+        error:
+          error?.message ||
+          String(
+            error
+          ),
+      },
+    }).catch(
+      () => {}
+    );
+  }
+};
+
+
 const updateVisitAfterSyncedQueueItem = async (db: any, item: any) => {
   try {
     const payload = safeJsonParse(item.payload, {});
@@ -2036,6 +2366,18 @@ const updateVisitAfterSyncedQueueItem = async (db: any, item: any) => {
           )
           .catch(() => {});
       }
+
+      /*
+       * MOBILE_SURVEY_DRAFT_FINALIZE_AFTER_COLLECTION_ACK_V1
+       *
+       * Estamos neste ponto somente depois que /coletas
+       * recebeu resposta considerada entregue pelo sync.
+       */
+      await finalizeSurveyDraftAfterCollectionAck(
+        db,
+        item,
+        payload
+      );
 
       // Sincronizar formulário não deve alterar pending_sync da visita.
       return;
@@ -6259,72 +6601,309 @@ export const enqueueSyncOperationInDb = async (
   payload: any,
   method: string = 'POST'
 ) => {
+  const dataCriacao =
+    new Date().toISOString();
+
+  const endpointNormalized =
+    String(endpoint || '').trim();
+
+  const methodToUse =
+    String(method || 'POST')
+      .toUpperCase();
+
+  /*
+   * MOBILE_SURVEY_DRAFT_OUTBOX_COALESCE_V2
+   *
+   * Para /survey-drafts/upsert com UMA resposta:
+   *
+   * PENDING/RETRY da mesma resposta:
+   *   atualiza a linha existente.
+   *
+   * SENDING:
+   *   nunca sobrescreve.
+   *
+   * CONFLICT:
+   *   nunca sobrescreve.
+   *
+   * Chave lógica:
+   *
+   * survey_draft_upsert:<draftId>:<answerKey>
+   */
+  const draftId =
+    String(
+      payload?.draft_id ||
+      payload?.draftId ||
+      payload?.id ||
+      ''
+    ).trim();
+
+  const draftAnswers =
+    Array.isArray(
+      payload?.answers
+    )
+      ? payload.answers
+      : [];
+
+  const draftAnswerKey =
+    draftAnswers.length === 1
+      ? String(
+          draftAnswers[0]?.answer_key ||
+          draftAnswers[0]?.answerKey ||
+          ''
+        ).trim()
+      : '';
+
+  const isSingleDraftAnswerUpsert =
+    endpointNormalized ===
+      '/survey-drafts/upsert' &&
+    Boolean(draftId) &&
+    Boolean(draftAnswerKey);
+
+  const compactOperationKey =
+    isSingleDraftAnswerUpsert
+      ? `survey_draft_upsert:${draftId}:${draftAnswerKey}`
+      : null;
+
   const payloadWithMetadata = {
     ...payload,
+
     client_operation_id:
       payload?.client_operation_id ||
       payload?.clientOperationId ||
-      `op_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      `op_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2)}`,
+
     created_offline_at:
       payload?.created_offline_at ||
       payload?.createdOfflineAt ||
-      new Date().toISOString(),
-    origem: payload?.origem || 'MOBILE_OFFLINE',
+      dataCriacao,
+
+    origem:
+      payload?.origem ||
+      'MOBILE_OFFLINE',
   };
 
-  const payloadString = JSON.stringify(payloadWithMetadata);
-  const dataCriacao = new Date().toISOString();
-  const methodToUse = String(method || 'POST').toUpperCase();
-  const clientOperationId = String(
-    payloadWithMetadata.client_operation_id || ''
-  ).trim();
-  const operationKey = clientOperationId || null;
+  const clientOperationId =
+    String(
+      payloadWithMetadata
+        .client_operation_id ||
+      ''
+    ).trim();
 
-  if (clientOperationId) {
-    const existing: any = await db.getFirstAsync(
-      `SELECT id
-         FROM sync_queue
-        WHERE endpoint = ?
-          AND (operation_key = ? OR payload LIKE ?)
-        LIMIT 1`,
-      [
-        endpoint,
-        clientOperationId,
-        `%\"client_operation_id\":\"${clientOperationId}\"%`,
-      ]
+  const operationKey =
+    compactOperationKey ||
+    clientOperationId ||
+    null;
+
+  const payloadString =
+    JSON.stringify(
+      payloadWithMetadata
     );
+
+  /*
+   * Compactação especializada.
+   *
+   * Somente itens ainda não enviados podem ser atualizados.
+   */
+  if (compactOperationKey) {
+    const existingPending: any =
+      await db.getFirstAsync(
+        `
+          SELECT
+            id,
+            status
+
+          FROM sync_queue
+
+          WHERE
+            endpoint = ?
+            AND operation_key = ?
+
+            AND UPPER(
+              COALESCE(
+                status,
+                'PENDING'
+              )
+            ) IN (
+              'PENDING',
+              'RETRY'
+            )
+
+          ORDER BY id DESC
+
+          LIMIT 1
+        `,
+        [
+          endpointNormalized,
+          compactOperationKey,
+        ]
+      );
+
+    if (existingPending?.id) {
+      const coalesceResult: any =
+        await db.runAsync(
+          `
+            UPDATE sync_queue
+
+            SET
+              payload = ?,
+              method = ?,
+              status = 'PENDING',
+              attempts = 0,
+              last_error = NULL,
+              next_retry_at = NULL,
+              updated_at = ?
+
+            WHERE
+              id = ?
+
+              AND UPPER(
+                COALESCE(
+                  status,
+                  'PENDING'
+                )
+              ) IN (
+                'PENDING',
+                'RETRY'
+              )
+          `,
+          [
+            payloadString,
+            methodToUse,
+            dataCriacao,
+            existingPending.id,
+          ]
+        );
+
+      /*
+       * MOBILE_SURVEY_DRAFT_OUTBOX_RACE_GUARD_V1
+       *
+       * Entre o SELECT e o UPDATE o watchdog pode ter
+       * mudado a linha para SENDING.
+       *
+       * Nesse caso changes=0:
+       * NÃO retornamos coalesced.
+       * Deixamos o fluxo continuar e inserir uma nova
+       * operação PENDING com o valor mais recente.
+       */
+      if (
+        Number(
+          coalesceResult?.changes ||
+          0
+        ) > 0
+      ) {
+        return {
+          success: true,
+          offline: true,
+
+          coalesced: true,
+
+          existingQueueId:
+            existingPending.id,
+
+          operationKey,
+
+          payload:
+            payloadWithMetadata,
+        };
+      }
+    }
+  }
+
+  /*
+   * Deduplicação genérica já existente.
+   *
+   * Para drafts compactáveis usamos operation_key lógico,
+   * então não aplicamos esta deduplicação por ID aleatório.
+   */
+  if (
+    clientOperationId &&
+    !compactOperationKey
+  ) {
+    const existing: any =
+      await db.getFirstAsync(
+        `
+          SELECT id
+
+          FROM sync_queue
+
+          WHERE
+            endpoint = ?
+
+            AND (
+              operation_key = ?
+              OR payload LIKE ?
+            )
+
+          LIMIT 1
+        `,
+        [
+          endpointNormalized,
+          clientOperationId,
+          `%\"client_operation_id\":\"${clientOperationId}\"%`,
+        ]
+      );
 
     if (existing?.id) {
       return {
         success: true,
         offline: true,
-        skippedDuplicate: true,
-        existingQueueId: existing.id,
-        payload: payloadWithMetadata,
+
+        skippedDuplicate:
+          true,
+
+        existingQueueId:
+          existing.id,
+
+        payload:
+          payloadWithMetadata,
       };
     }
   }
 
-  const result: any = await db.runAsync(
-    `INSERT INTO sync_queue (
-       endpoint, payload, method, created_at, operation_key,
-       status, next_retry_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'PENDING', NULL, ?)`,
-    [
-      endpoint,
-      payloadString,
-      methodToUse,
-      dataCriacao,
-      operationKey,
-      dataCriacao,
-    ]
-  );
+  const result: any =
+    await db.runAsync(
+      `
+        INSERT INTO sync_queue (
+          endpoint,
+          payload,
+          method,
+          created_at,
+          operation_key,
+          status,
+          next_retry_at,
+          updated_at
+        )
+        VALUES (
+          ?, ?, ?, ?, ?,
+          'PENDING',
+          NULL,
+          ?
+        )
+      `,
+      [
+        endpointNormalized,
+        payloadString,
+        methodToUse,
+        dataCriacao,
+        operationKey,
+        dataCriacao,
+      ]
+    );
 
   return {
     success: true,
     offline: true,
-    queueId: result?.lastInsertRowId ?? null,
-    payload: payloadWithMetadata,
+
+    queueId:
+      result?.lastInsertRowId ??
+      null,
+
+    operationKey,
+
+    payload:
+      payloadWithMetadata,
   };
 };
 
