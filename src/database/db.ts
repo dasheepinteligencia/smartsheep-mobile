@@ -72,6 +72,12 @@ const LOCAL_WORKSPACE_TABLES = [
   'campanhas_gamificacao',
   'pesquisas',
   'coletas',
+
+  // MOBILE_SURVEY_DRAFT_V1
+  // Execuções parciais de formulários e suas respostas.
+  'survey_drafts',
+  'survey_draft_answers',
+
   'justificativas',
   'alerts',
   'field_portfolio_state',
@@ -636,6 +642,56 @@ const initializeDatabaseInternal = async () => {
         updated_at TEXT
       );
 
+      /*
+       * MOBILE_SURVEY_DRAFT_V1
+       *
+       * Uma execução parcial de formulário é independente da tabela
+       * coletas. Coleta continua significando submissão final.
+       */
+      CREATE TABLE IF NOT EXISTS survey_drafts (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        usuario_id TEXT NOT NULL,
+        loja_id TEXT,
+        visita_id TEXT,
+        registro_visita_id TEXT,
+        pesquisa_id TEXT NOT NULL,
+        pesquisa_versao INTEGER,
+        status TEXT NOT NULL DEFAULT 'EM_ANDAMENTO',
+        started_at TEXT NOT NULL,
+        finalized_at TEXT,
+        client_updated_at TEXT NOT NULL,
+        server_updated_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      /*
+       * Cada chave representa uma resposta lógica.
+       *
+       * answer_key diferencia também respostas por produto/opção,
+       * quando aplicável.
+       */
+      CREATE TABLE IF NOT EXISTS survey_draft_answers (
+        id TEXT PRIMARY KEY,
+        draft_id TEXT NOT NULL,
+        answer_key TEXT NOT NULL,
+        pergunta_id TEXT NOT NULL,
+        produto_id TEXT,
+        valor TEXT,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        client_updated_at TEXT NOT NULL,
+        server_updated_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        FOREIGN KEY (draft_id)
+          REFERENCES survey_drafts(id)
+          ON DELETE CASCADE,
+
+        UNIQUE (draft_id, answer_key)
+      );
+
       CREATE TABLE IF NOT EXISTS scorecards ( 
         id TEXT PRIMARY KEY, 
         nome TEXT, 
@@ -751,6 +807,27 @@ const initializeDatabaseInternal = async () => {
       CREATE INDEX IF NOT EXISTS idx_coletas_pesquisa_id ON coletas(pesquisa_id);
       CREATE INDEX IF NOT EXISTS idx_coletas_pending_sync ON coletas(pending_sync);
       CREATE INDEX IF NOT EXISTS idx_coletas_status ON coletas(status);
+
+      CREATE INDEX IF NOT EXISTS idx_survey_drafts_context
+        ON survey_drafts(
+          project_id,
+          usuario_id,
+          pesquisa_id,
+          visita_id,
+          status
+        );
+
+      CREATE INDEX IF NOT EXISTS idx_survey_drafts_status
+        ON survey_drafts(status);
+
+      CREATE INDEX IF NOT EXISTS idx_survey_draft_answers_draft
+        ON survey_draft_answers(draft_id);
+
+      CREATE INDEX IF NOT EXISTS idx_survey_draft_answers_question
+        ON survey_draft_answers(
+          draft_id,
+          pergunta_id
+        );
       CREATE INDEX IF NOT EXISTS idx_field_portfolio_state_user
         ON field_portfolio_state(user_id, project_id);
 

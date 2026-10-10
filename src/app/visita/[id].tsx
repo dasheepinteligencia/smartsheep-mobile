@@ -1392,6 +1392,12 @@ export default function VisitaDetailScreen() {
       let tarefasConsolidadas: any[] = [];
       let completedSurveyIds = new Set<string>();
       let collectionCountsBySurvey = new Map<string, number>();
+
+      // MOBILE_VISIT_SURVEY_DRAFT_PROGRESS_V1
+      // pesquisa_id -> quantidade de respostas ativas no draft local.
+      let draftProgressBySurvey =
+        new Map<string, number>();
+
       let visitClosedForRepeatable = false;
 
       const resultVisita = await db.getFirstAsync<any>(`SELECT * FROM visits WHERE id = ?`, [
@@ -1425,6 +1431,92 @@ export default function VisitaDetailScreen() {
 
         completedSurveyIds = await getCompletedSurveyIdsForVisit(db, resultVisita);
         collectionCountsBySurvey = await getCollectionCountsBySurveyForVisit(db, resultVisita);
+
+        /*
+         * MOBILE_VISIT_SURVEY_DRAFT_PROGRESS_V1
+         *
+         * Draft parcial NÃO é coleta concluída.
+         *
+         * Ele só muda a apresentação da tarefa para EM_ANDAMENTO
+         * e informa quantas respostas já existem.
+         */
+        try {
+          const draftRows: any[] =
+            await db.getAllAsync(
+              `
+                SELECT
+                  d.pesquisa_id,
+
+                  COUNT(
+                    DISTINCT CASE
+                      WHEN COALESCE(
+                        a.is_deleted,
+                        0
+                      ) = 0
+                      THEN a.answer_key
+                    END
+                  ) AS answered_count
+
+                FROM survey_drafts d
+
+                LEFT JOIN survey_draft_answers a
+                  ON a.draft_id = d.id
+
+                WHERE
+                  d.usuario_id = ?
+                  AND d.visita_id = ?
+                  AND d.status = 'EM_ANDAMENTO'
+
+                GROUP BY
+                  d.pesquisa_id
+              `,
+              [
+                String(
+                  user?.id || ''
+                ),
+                String(
+                  resultVisita?.id ||
+                  id
+                ),
+              ]
+            );
+
+          draftProgressBySurvey =
+            new Map(
+              (draftRows || [])
+                .map(
+                  (row: any) => [
+                    String(
+                      row?.pesquisa_id ||
+                      ''
+                    ),
+                    Math.max(
+                      0,
+                      Number(
+                        row?.answered_count ||
+                        0
+                      )
+                    ),
+                  ]
+                )
+                .filter(
+                  ([surveyId]) =>
+                    Boolean(
+                      surveyId
+                    )
+                )
+            );
+
+        } catch (draftProgressError) {
+
+          /*
+           * Compatibilidade defensiva:
+           * se houver qualquer problema nessa leitura,
+           * a visita continua funcionando com o comportamento antigo.
+           */
+          draftProgressBySurvey =
+            new Map<string, number>();
+        }
 
         setVisita({
           ...resultVisita,
@@ -1679,13 +1771,27 @@ export default function VisitaDetailScreen() {
               )
             );
 
+          const draftAnsweredCount =
+            Math.max(
+              0,
+              Number(
+                draftProgressBySurvey.get(
+                  String(
+                    survey.id
+                  )
+                ) || 0
+              )
+            );
+
           const taskStatus =
             survey.repetivel === true
               ? repeatableCount > 0
                 ? visitClosedForRepeatable
                   ? 'REALIZADA'
                   : 'EM_ANDAMENTO'
-                : 'PENDENTE'
+                : draftAnsweredCount > 0
+                  ? 'EM_ANDAMENTO'
+                  : 'PENDENTE'
               : (
                   isDoneStatus(
                     backendSurveyStatus
@@ -1697,7 +1803,9 @@ export default function VisitaDetailScreen() {
                   )
                 )
                 ? 'REALIZADA'
-                : 'PENDENTE';
+                : draftAnsweredCount > 0
+                  ? 'EM_ANDAMENTO'
+                  : 'PENDENTE';
 
           tarefasConsolidadas.push({
             id: survey.id,
@@ -1729,6 +1837,10 @@ export default function VisitaDetailScreen() {
                 ),
             status:
               taskStatus,
+
+            // MOBILE_VISIT_SURVEY_DRAFT_PROGRESS_V1
+            answeredCount:
+              draftAnsweredCount,
 
             concluida:
               taskStatus ===
@@ -1786,6 +1898,34 @@ export default function VisitaDetailScreen() {
                   })
                 : null;
 
+            const draftAnsweredCount =
+              Math.max(
+                0,
+                Number(
+                  draftProgressBySurvey.get(
+                    String(
+                      t.id
+                    )
+                  ) || 0
+                )
+              );
+
+            const completed =
+              repeatableMeta.repetivel
+                ? visitClosedForRepeatable
+                : completedSurveyIds.has(
+                    String(
+                      t.id
+                    )
+                  );
+
+            const taskStatus =
+              completed
+                ? 'REALIZADA'
+                : draftAnsweredCount > 0
+                  ? 'EM_ANDAMENTO'
+                  : 'PENDENTE';
+
             return {
               id: t.id,
               titulo:
@@ -1800,11 +1940,14 @@ export default function VisitaDetailScreen() {
               tipo:
                 'AVULSA_VISITA',
               concluida:
-                repeatableMeta.repetivel
-                  ? visitClosedForRepeatable
-                  : completedSurveyIds.has(
-                      String(t.id)
-                    ),
+                completed,
+
+              status:
+                taskStatus,
+
+              answeredCount:
+                draftAnsweredCount,
+
               repetivel:
                 repeatableMeta.repetivel,
               repeticaoMin:
@@ -3787,8 +3930,33 @@ export default function VisitaDetailScreen() {
                     {tarefa.repeatableSubtitle
                       ? tarefa.repeatableSubtitle
                       : tarefaConcluida
-                        ? visitT('visitTaskCompleted', 'Tarefa concluída')
-                        : `${taskStatusLabel} · ${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? visitT('visitQuestionSingular', 'pergunta') : visitT('visitQuestionPlural', 'perguntas')}`}
+                        ? visitT(
+                            'visitTaskCompleted',
+                            'Tarefa concluída'
+                          )
+                        : tarefaEmAndamento &&
+                          Number(
+                            tarefa?.answeredCount ||
+                            0
+                          ) > 0
+                          ? visitT(
+                              'visitTaskAnsweredProgress',
+                              'Em andamento · {{answered}} de {{total}} respondidas',
+                              {
+                                answered:
+                                  Number(
+                                    tarefa?.answeredCount ||
+                                    0
+                                  ),
+
+                                total:
+                                  Number(
+                                    tarefa?.qtdPerguntas ||
+                                    0
+                                  ),
+                              }
+                            )
+                          : `${taskStatusLabel} · ${tarefa.qtdPerguntas} ${tarefa.qtdPerguntas === 1 ? visitT('visitQuestionSingular', 'pergunta') : visitT('visitQuestionPlural', 'perguntas')}`}
                   </Text>
                 </View>
                 <ChevronRight
