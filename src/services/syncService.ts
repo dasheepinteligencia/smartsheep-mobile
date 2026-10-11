@@ -1092,55 +1092,19 @@ const markCollectionAsSyncError = async (db: any, item: any, payload: any, messa
   });
 };
 
-const shouldRemoveFromQueue = async (res: Response | null) => {
-  if (!res) return false;
-
-  if (res.ok) return true;
-
-  // 422, nesse fluxo, pode significar "exige aceite antes de apagar".
-  // Não removemos da fila automaticamente para evitar falso sucesso.
-  if (res.status === 422) return false;
-
-  /*
-   * MOBILE_DIAMOND_RESPONSE_ORDER_GUARD_V1
-   *
-   * Defesa em profundidade:
-   * códigos semânticos Diamond nunca podem cair no
-   * heurístico textual amplo de "já processado".
-   */
-  const body =
-    await readResponseBodySafely(
-      res
-    );
-
-  if (
-    isTerminalSyncConflictResponse(
-      res,
-      body
-    )
-  ) {
-    return false;
-  }
-
-  if (
-    isTransientIdempotencyResponse(
-      body
-    )
-  ) {
-    return false;
-  }
-
-  if (
-    await isAlreadyProcessedResponse(
-      res
-    )
-  ) {
-    return true;
-  }
-
-  // 401/403 não devem apagar fila: pode ser sessão/perm.
-  // 400/404/422 também não devem apagar automaticamente.
-  return false;
+/*
+ * OMNI_ACK_SAFE_135
+ *
+ * Uma resposta de erro não comprova persistência.
+ * Duplicidade textual não equivale a ACK.
+ *
+ * HTTP não-2xx permanece na Outbox para investigação
+ * ou reconciliação por recibo verificável.
+ */
+const shouldRemoveFromQueue = async (
+  res: Response | null
+): Promise<boolean> => {
+  return Boolean(res && res.ok);
 };
 
 const getMainProjectId = (user: any) => {
@@ -2383,15 +2347,126 @@ const updateVisitAfterSyncedQueueItem = async (db: any, item: any) => {
       return;
     }
 
-    const visitId = payload.offline_id || payload.visita_id || payload.visitaId || payload.visitaIdJson;
+    /*
+     * OMNI_ACK_LOCAL_GUARD_135
+     *
+     * Confirmar uma operação não confirma automaticamente
+     * outras ações ainda pendentes da mesma visita.
+     */
+    if (!endpoint.includes('/visitas/')) return;
 
-    if (!visitId) return;
+    const visitId = String(
+      payload.offline_id ||
+      payload.visita_id ||
+      payload.visitaId ||
+      payload.registro_visita_id ||
+      payload.registroVisitaId ||
+      payload.visitaIdJson ||
+      ''
+    ).trim();
+
+    if (!visitId) {
+      throw new Error(
+        'ACK recebido sem identificador local da visita.'
+      );
+    }
+
+    const localVisit: any = await db.getFirstAsync(
+      `SELECT id, client_operation_id
+       FROM visits
+       WHERE id = ?
+       LIMIT 1`,
+      [visitId]
+    );
+
+    const confirmedOperationKey = String(
+      item.operation_key ||
+      payload.client_operation_id ||
+      ''
+    ).trim();
+
+    const currentOperationKey = String(
+      localVisit?.client_operation_id ||
+      ''
+    ).trim();
+
+    // Uma operação mais recente pode ter atualizado a visita.
+    if (
+      currentOperationKey &&
+      currentOperationKey !== confirmedOperationKey
+    ) {
+      console.warn(
+        '[SYNC] ACK antigo: visita ainda possui outra operação.',
+        { visitId, confirmedOperationKey }
+      );
+      return;
+    }
+
+    const otherItems: any[] = await db.getAllAsync(
+      `SELECT id, endpoint, payload
+       FROM sync_queue
+       WHERE id <> ?`,
+      [item.id]
+    );
+
+    const hasOtherVisitOperation = otherItems.some(
+      (queued: any) => {
+        if (
+          !String(queued.endpoint || '')
+            .toLowerCase()
+            .includes('/visitas/')
+        ) {
+          return false;
+        }
+
+        let queuedPayload: any = {};
+
+        try {
+          queuedPayload = JSON.parse(
+            String(queued.payload || '{}')
+          );
+        } catch {
+          // Payload inválido não pode autorizar limpeza.
+          return true;
+        }
+
+        const identifiers = [
+          queuedPayload.offline_id,
+          queuedPayload.visita_id,
+          queuedPayload.visitaId,
+          queuedPayload.visita_id_json,
+          queuedPayload.visitaIdJson,
+          queuedPayload.registro_visita_id,
+          queuedPayload.registroVisitaId
+        ]
+          .filter((value: any) => value != null)
+          .map((value: any) => String(value).trim());
+
+        return identifiers.includes(visitId);
+      }
+    );
+
+    if (hasOtherVisitOperation) {
+      console.warn(
+        '[SYNC] Visita mantém operações não confirmadas.',
+        { visitId }
+      );
+      return;
+    }
 
     await db.runAsync(
-      `UPDATE visits SET pending_sync = 0 WHERE id = ?`,
-      [String(visitId)]
+      `UPDATE visits
+       SET pending_sync = 0
+       WHERE id = ?`,
+      [visitId]
     );
-  } catch {}
+  } catch (error) {
+    console.error(
+      '[SYNC] Falha ao atualizar estado local após ACK:',
+      error
+    );
+    throw error;
+  }
 };
 
 const PHOTO_PAYLOAD_FIELDS = ['foto_checkin_url', 'foto_checkout_url', 'foto_justificativa_url'];
@@ -2718,7 +2793,15 @@ const scheduleOutboxRetry = async (
   );
 };
 
-const uploadSyncQueue = async (db: any) => {
+/*
+ * OMNI_MANUAL_RETRY_135
+ * Retry manual antecipa o backoff.
+ * Retry automático continua respeitando o agendamento.
+ */
+const uploadSyncQueue = async (
+  db: any,
+  forceRetry = false
+) => {
   // MOBILE_ENTERPRISE_OUTBOX_READY_V2
   const nowIso =
     new Date()
@@ -2729,9 +2812,9 @@ const uploadSyncQueue = async (db: any) => {
       `
         SELECT *
         FROM sync_queue
-        WHERE
-          (
-            next_retry_at IS NULL
+        WHERE (
+            ? = 1
+            OR next_retry_at IS NULL
             OR next_retry_at = ''
             OR next_retry_at <= ?
           )
@@ -2745,6 +2828,7 @@ const uploadSyncQueue = async (db: any) => {
         ORDER BY created_at ASC
       `,
       [
+        forceRetry ? 1 : 0,
         nowIso
       ]
     );
@@ -3110,8 +3194,7 @@ const uploadLegacyPendingVisits = async (db: any, rawProjectId: string, user: an
       ) {
 
         await addAppLog({
-          level:
-            'WARN',
+          level: 'WARNING',
 
           module:
             'SYNC',
@@ -3817,8 +3900,7 @@ const reconcileDiamondIdempotencyConflicts =
       ) {
 
         await addAppLog({
-          level:
-            'WARN',
+          level: 'WARNING',
 
           module:
             'SYNC',
@@ -3949,9 +4031,17 @@ const reconcileDiamondIdempotencyConflicts =
          * COMPLETED
          * ====================================================
          */
+        /*
+         * OMNI_ACK_SAFE_135_RECEIPT
+         *
+         * COMPLETED sem HTTP 2xx não é confirmação
+         * de persistência bem-sucedida.
+         */
         if (
-          receiptStatus ===
-          'COMPLETED'
+          receiptStatus === 'COMPLETED' &&
+          Number.isInteger(receiptHttpStatus) &&
+          receiptHttpStatus >= 200 &&
+          receiptHttpStatus < 300
         ) {
 
           const queueItem =
@@ -4102,8 +4192,7 @@ const reconcileDiamondIdempotencyConflicts =
           );
 
           await addAppLog({
-            level:
-              'WARN',
+            level: 'WARNING',
 
             module:
               'SYNC',
@@ -4204,8 +4293,7 @@ const reconcileDiamondIdempotencyConflicts =
         );
 
         await addAppLog({
-          level:
-            'WARN',
+          level: 'WARNING',
 
           module:
             'SYNC',
@@ -5060,8 +5148,40 @@ export const getDiamondPendingOperations = async (limit = 100): Promise<DiamondP
       db.getAllAsync(`SELECT id, nome, titulo FROM pesquisas`),
     ]);
 
-    const collections = new Map(collectionRows.map((row: any) => [String(row.id), row]));
-    const surveys = new Map(surveyRows.map((row: any) => [String(row.id), row]));
+    /*
+     * OMNI_PENDING_LOOKUP_TYPES_135
+     *
+     * Tipagem dos registros utilizados pelo diagnóstico
+     * da Outbox. Não altera os dados nem as consultas.
+     */
+    type PendingCollectionRow = {
+      visita_id?: string | null;
+      pesquisa_id?: string | null;
+      loja_id?: string | null;
+    };
+
+    type PendingSurveyRow = {
+      titulo?: string | null;
+      nome?: string | null;
+    };
+
+    const collections = new Map<string, PendingCollectionRow>(
+      collectionRows.map(
+        (row: any): [string, PendingCollectionRow] => [
+          String(row.id),
+          row
+        ]
+      )
+    );
+
+    const surveys = new Map<string, PendingSurveyRow>(
+      surveyRows.map(
+        (row: any): [string, PendingSurveyRow] => [
+          String(row.id),
+          row
+        ]
+      )
+    );
     const visits = new Map<string, any>();
 
     for (const row of visitRows) {
@@ -5178,6 +5298,32 @@ export const getDiamondSyncDiagnostics =
  *
  * A regra de negócio continua no backend através dos mesmos endpoints.
  */
+
+/*
+ * OMNI_SYNC_COMPLETE_GATE_135
+ * Uma fila sem itens prontos para envio não significa
+ * que todas as operações locais foram confirmadas.
+ */
+const isLocalSyncComplete = (
+  health: DiamondSyncHealth
+): boolean => {
+  return (
+    health.diagnosticsOk === true &&
+    health.pending === 0 &&
+    health.retry === 0 &&
+    health.conflict === 0 &&
+    health.unresolvedConflicts === 0 &&
+    health.collectionsPending === 0 &&
+    health.collectionsConflict === 0 &&
+    health.visitsPending === 0 &&
+    health.orphanVisitsPending === 0 &&
+    health.orphanServerEvidence === 0 &&
+    health.configurationPending === 0 &&
+    health.taskReconciliationPending === 0 &&
+    !health.lastServerPullError
+  );
+};
+
 export const fastSync = async () => {
   const { user, token } = useAuthStore.getState();
 
@@ -5244,10 +5390,16 @@ export const fastSync = async () => {
       );
 
     if (!readyItem?.id) {
+      const health = await getDiamondSyncHealth();
+      const complete = isLocalSyncComplete(health);
+
       return {
-        ok: true,
-        status: 'NO_PENDING' as const,
+        ok: complete,
+        status: complete
+          ? 'NO_PENDING' as const
+          : 'PARTIAL' as const,
         attempted: false,
+        health,
       };
     }
 
@@ -5283,13 +5435,17 @@ export const fastSync = async () => {
         `
       );
 
+    const health = await getDiamondSyncHealth();
+    const complete =
+      !remainingItem?.id && isLocalSyncComplete(health);
+
     return {
-      ok: !remainingItem?.id,
-      status:
-        remainingItem?.id
-          ? 'PARTIAL' as const
-          : 'SUCCESS' as const,
+      ok: complete,
+      status: complete
+        ? 'SUCCESS' as const
+        : 'PARTIAL' as const,
       attempted: true,
+      health,
     };
   } catch (error: any) {
     console.log(
@@ -5325,7 +5481,9 @@ export const fastSync = async () => {
   }
 };
 
-export const globalSync = async () => {
+export const globalSync = async (
+  options: { forceRetry?: boolean } = {}
+) => {
   const { user, token, login } = useAuthStore.getState();
   const { setSyncing, setLastSync } = useSyncStore.getState();
 
@@ -5376,7 +5534,7 @@ export const globalSync = async () => {
     await cleanExpiredLocalTasks(db);
 
     // 1. Primeiro envia pendências locais, antes de espelhar dados do servidor.
-    await uploadSyncQueue(db);
+    await uploadSyncQueue(db, options.forceRetry === true);
 
     /*
      * MOBILE_DIAMOND_IDEMPOTENCY_RECONCILIATION_CALL_V1
@@ -6494,7 +6652,6 @@ export const globalSync = async () => {
       throw new Error('Falha ao persistir o snapshot local do roteiro.');
     }
 
-    setLastSync(new Date());
 
     useAuthStore.setState({ user: updatedUser, token });
 
@@ -6508,16 +6665,7 @@ export const globalSync = async () => {
 
     const health = await getDiamondSyncHealth();
     const hasBlockingState =
-      !health.diagnosticsOk ||
-      health.pending > 0 ||
-      health.retry > 0 ||
-      health.unresolvedConflicts > 0 ||
-      health.collectionsPending > 0 ||
-      health.collectionsConflict > 0 ||
-      health.visitsPending > 0 ||
-      health.orphanVisitsPending > 0 ||
-      health.orphanServerEvidence > 0 ||
-      health.configurationPending > 0;
+      !isLocalSyncComplete(health);
 
     await setSyncStateValue(
       db,
@@ -6541,9 +6689,67 @@ export const globalSync = async () => {
       null
     );
 
+    if (!hasBlockingState) {
+
+      /*
+       * OMNI_GLOBAL_SYNC_CLIENT_135
+       *
+       * Apenas GlobalSync SUCCESS confirma Sinc.
+       * FastSync e respostas parciais nunca enviam
+       * esta declaracao.
+       *
+       * A telemetria continua usando o mesmo endpoint.
+       */
+      try {
+        const receiptAccepted = await collectAndSendTelemetry(
+          String(user.id),
+          {
+            protocol: 'OMNI_GLOBAL_SYNC_V1',
+            status: 'SUCCESS',
+            completed_at: new Date().toISOString(),
+            push_completed: true,
+            pull_completed: true,
+            diagnostics_ok: true,
+
+            pending: health.pending,
+            retry: health.retry,
+            conflict: health.conflict,
+            unresolvedConflicts: health.unresolvedConflicts,
+            collectionsPending: health.collectionsPending,
+            collectionsConflict: health.collectionsConflict,
+            visitsPending: health.visitsPending,
+            orphanVisitsPending: health.orphanVisitsPending,
+            orphanServerEvidence: health.orphanServerEvidence,
+            configurationPending: health.configurationPending,
+            taskReconciliationPending:
+              health.taskReconciliationPending,
+
+            last_server_pull_error:
+              health.lastServerPullError || null,
+          }
+        );
+
+        // OMNI_GLOBAL_ACK_VERIFIED_135
+        if (receiptAccepted === true) {
+          setLastSync(new Date());
+        } else {
+          console.warn(
+            '[GLOBAL SYNC] Dados locais sincronizados, mas Sinc remoto não confirmado.'
+          );
+        }
+      } catch (error) {
+        console.warn(
+          '[GLOBAL SYNC] Falha ao confirmar Sinc na API:',
+          error
+        );
+      }
+    }
+
     return {
       ok: !hasBlockingState,
-      status: hasBlockingState ? 'PARTIAL' as const : 'SUCCESS' as const,
+      status: hasBlockingState
+        ? 'PARTIAL' as const
+        : 'SUCCESS' as const,
       health,
     };
 

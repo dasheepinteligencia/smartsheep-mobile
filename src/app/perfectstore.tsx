@@ -2688,6 +2688,26 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  // OMNI_PERFECTSTORE_DETAIL_STYLES_135
+  snapshotDetailHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    borderTopWidth: 1,
+    paddingTop: 14,
+    marginTop: 16,
+    marginBottom: 10,
+  },
+  snapshotDetailTitle: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  snapshotDetailCount: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   snapshotHeader: {
     flexDirection: 'row',
     alignItems: 'center',

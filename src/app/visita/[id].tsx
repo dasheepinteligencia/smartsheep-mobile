@@ -58,7 +58,7 @@ const priorityMapping: Record<string, any> = {
 };
 
 const hasGoogleMapsApiKey = () => {
-  const extra = (Constants?.expoConfig?.extra || Constants?.manifest?.extra || {}) as any;
+  const extra = (Constants?.expoConfig?.extra || {}) as any;
   return Boolean(extra?.googleMapsAndroidApiKey || extra?.googleMapsApiKey);
 };
 
@@ -1487,7 +1487,7 @@ export default function VisitaDetailScreen() {
             new Map(
               (draftRows || [])
                 .map(
-                  (row: any) => [
+                  (row: any): [string, number] => [
                     String(
                       row?.pesquisa_id ||
                       ''
@@ -2185,6 +2185,9 @@ export default function VisitaDetailScreen() {
             carteira_livre: true,
           }
         : {
+            // Campos opcionais da modalidade livre: omitidos no JSON roteirizado.
+            fieldVisitMode: undefined,
+            field_visit_mode: undefined,
             roteiroId:
               visita?.roteiro_id,
             roteiro_id:
@@ -3108,8 +3111,6 @@ export default function VisitaDetailScreen() {
               String(
                 payload
                   ?.projectId ||
-                payload
-                  ?.project_id ||
                 ''
               ).trim();
 

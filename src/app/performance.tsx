@@ -214,7 +214,7 @@ type PerfTextKey = keyof typeof PERF_TEXTS['pt-BR'];
 
 const perfText = (key: PerfTextKey, language: string, params?: Record<string, string | number>) => {
   const lang = language === 'en-US' || language === 'es-ES' ? language : 'pt-BR';
-  let value = PERF_TEXTS[lang][key];
+  let value: string = PERF_TEXTS[lang][key];
 
   if (params) {
     Object.entries(params).forEach(([paramKey, paramValue]) => {

@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  RefreshControl,
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
@@ -240,7 +241,7 @@ type RouteTextKey = keyof typeof ROUTE_TEXTS['pt-BR'];
 
 const rt = (key: RouteTextKey, language: string, params?: Record<string, string>) => {
   const lang = language === 'en-US' || language === 'es-ES' ? language : 'pt-BR';
-  let value = ROUTE_TEXTS[lang][key];
+  let value: string = ROUTE_TEXTS[lang][key];
 
   if (params) {
     Object.entries(params).forEach(([paramKey, paramValue]) => {
@@ -1795,9 +1796,9 @@ export default function RoteiroScreen() {
                 raw: any
               ) => {
                 const authUser =
-                  useAuthStore
-                    .getState()
-                    .user || {};
+                  routeObject(
+                    useAuthStore.getState().user
+                  );
 
                 const authCustom =
                   routeObject(
@@ -3789,10 +3790,15 @@ qtdPerguntas:
                     : renderTaskCard({ item })
         }
         contentContainerStyle={styles.listContent}
-        refreshing={refreshing}
-        onRefresh={onRefresh}
-        progressViewOffset={Math.max(insets.top, 0) + 120}
-        tintColor={accent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            progressViewOffset={Math.max(insets.top, 0) + 120}
+            tintColor={accent}
+            colors={[accent]}
+          />
+        }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <AlertCircle size={40} color={textSecondary} />

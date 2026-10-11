@@ -562,9 +562,11 @@ export const saveFieldPortfolioOffline =
             .map(
               normalizeOutsideStore
             )
-            .filter(Boolean)
             .filter(
-              (item: any) =>
+              (item): item is LocalFieldPortfolioStore => item !== null
+            )
+            .filter(
+              (item) =>
                 !assignedIds.has(
                   String(
                     item.loja_id

@@ -16,7 +16,10 @@ const telemetryDebug = (...args: any[]) => {
   }
 };
 
-export const collectAndSendTelemetry = async (userId: string) => {
+export const collectAndSendTelemetry = async (
+  userId: string,
+  syncCompletion?: Record<string, string | number | boolean | null>
+) => {
   try {
     // 1. Bateria
     let batteryLevel: number | undefined = undefined;
@@ -228,6 +231,10 @@ export const collectAndSendTelemetry = async (userId: string) => {
 
     const payload: any = {
       usuario_id: userId,
+      // OMNI_GLOBAL_SYNC_CLIENT_135
+      ...(syncCompletion
+        ? { sync_completion: syncCompletion }
+        : {}),
       device_model: Device.modelName || 'Dispositivo Desconhecido',
       os_version: `${Device.osName || 'OS'} ${Device.osVersion || ''}`.trim(),
       app_version: Application.nativeApplicationVersion || '1.0.0',
@@ -289,8 +296,24 @@ export const collectAndSendTelemetry = async (userId: string) => {
 
     if (!response || !response.ok) {
       console.warn(`[Telemetria] Servidor recusou. Status: ${response?.status || 'unknown'}`);
+      return false;
     }
+
+    // OMNI_GLOBAL_ACK_VERIFIED_135
+    if (syncCompletion) {
+      const accepted =
+        response.headers.get('x-omni-global-sync-accepted') === '1';
+
+      if (!accepted) {
+        console.warn('[Telemetria] Global Sync não confirmada pela API.');
+      }
+
+      return accepted;
+    }
+
+    return true;
   } catch (error) {
     console.warn('[Telemetria] Falha crítica no motor:', error);
+    return false;
   }
 };

@@ -801,7 +801,7 @@ const clearStaleLocalSurveyData = async (db: any, visit: any, surveyId: any, ser
 
 
 // MOBILE_VISIT_NON_REPEATABLE_COMPLETED_LOCK_V1
-const hasRepeatableQuestionConfig = (questions: any[]) =>
+const hasRepeatableQuestionConfig = (questions: any[]): boolean =>
     (Array.isArray(questions) ? questions : []).some((question: any) => {
         const validation = safeParseObject(
             question?.validacao ||
@@ -3022,7 +3022,11 @@ const handleWatermarkImageLoaded = async () => {
       setSaving(true);
       try {
           const token = user?.token || "PENDING_TOKEN";
-          const respostasArray = [];
+          const respostasArray: Array<{
+              pergunta_id: string;
+              produto_id: string | null | undefined;
+              valor: string;
+          }> = [];
           const baseKeys = Object.keys(answers).filter(k => !k.includes('::foto_'));
 
           for (const baseKey of baseKeys) {
@@ -3175,7 +3179,7 @@ const handleWatermarkImageLoaded = async () => {
                      'Esta pesquisa já possui {{current}}/{{max}} {{label}}. Não é possível registrar nova resposta.',
                      {
                        current: effectiveCount,
-                       max: effectiveMax,
+                       max: effectiveMax ?? '—',
                        label: String(
                          repeatLabelPlural ||
                          serverStatus?.labelPlural ||

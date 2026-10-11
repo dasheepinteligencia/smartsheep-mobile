@@ -163,7 +163,7 @@ type AlertTextKey = keyof typeof ALERT_TEXTS['pt-BR'];
 
 const alertText = (key: AlertTextKey, language: string, params?: Record<string, string | number>) => {
   const lang = language === 'en-US' || language === 'es-ES' ? language : 'pt-BR';
-  let value = ALERT_TEXTS[lang][key];
+  let value: string = ALERT_TEXTS[lang][key];
 
   if (params) {
     Object.entries(params).forEach(([paramKey, paramValue]) => {

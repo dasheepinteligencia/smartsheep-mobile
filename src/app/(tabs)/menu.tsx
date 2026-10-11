@@ -31,6 +31,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Smartphone,
+  type LucideIcon,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -862,7 +863,19 @@ export default function MenuScreen() {
       : []),
   ];
 
-  const menuSections = [
+  // OMNI_MENU_ITEM_TYPES_135: campos opcionais presentes em seções diferentes.
+  type MenuItem = {
+    title: string;
+    subtitle: string;
+    icon: LucideIcon;
+    color: string;
+    onPress: () => void;
+    badge?: string;
+    metric?: string;
+    loading?: boolean;
+  };
+
+  const menuSections: Array<{ title: string; items: MenuItem[] }> = [
     {
       title: translate('menuSectionOperation', 'Minha operação'),
       items: [
