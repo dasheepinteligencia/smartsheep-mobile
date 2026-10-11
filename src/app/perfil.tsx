@@ -389,7 +389,6 @@ export default function PerfilUsuarioScreen() {
 
   const version =
     Constants?.expoConfig?.version ||
-    Constants?.manifest?.version ||
     Constants?.nativeAppVersion ||
     profileText('versionNotInformed', language);
 

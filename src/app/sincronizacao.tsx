@@ -555,7 +555,7 @@ export default function SincronizacaoScreen() {
            * falhas ficam preservadas no Outbox/Conflict Ledger.
            */
           const result =
-            await globalSync();
+            await globalSync({ forceRetry: true });
 
           if (
             result &&
@@ -1436,6 +1436,15 @@ export default function SincronizacaoScreen() {
                               'It could not be sent yet. The app will try again automatically.',
                               'Aún no se pudo enviar. La app volverá a intentarlo automáticamente.'
                             )}
+                          </Text>
+                        ) : null}
+                        {/* OMNI_PENDING_ERROR_VISIBLE_135 */}
+                        {item.lastError ? (
+                          <Text
+                            style={[styles.pendingError, { color: '#D97706' }]}
+                            selectable
+                          >
+                            {String(item.lastError).slice(0, 500)}
                           </Text>
                         ) : null}
                       </View>

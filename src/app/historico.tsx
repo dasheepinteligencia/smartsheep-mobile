@@ -314,7 +314,7 @@ type HistoryTextKey = keyof typeof HISTORY_TEXTS['pt-BR'];
 
 const historyText = (key: HistoryTextKey, language: string, params?: Record<string, string | number>) => {
   const lang = language === 'en-US' || language === 'es-ES' ? language : 'pt-BR';
-  let value = HISTORY_TEXTS[lang][key];
+  let value: string = HISTORY_TEXTS[lang][key];
 
   if (params) {
     Object.entries(params).forEach(([paramKey, paramValue]) => {

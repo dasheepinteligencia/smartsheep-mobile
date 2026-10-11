@@ -272,7 +272,7 @@ export default function AjudaSuporteScreen() {
   const [diagnostic, setDiagnostic] = useState<DiagnosticState>({
     internet: supportText('checking', language),
     gps: supportText('checking', language),
-    appVersion: Constants?.expoConfig?.version || Constants?.manifest?.version || Constants?.nativeAppVersion || supportText('appVersionNotInformed', language),
+    appVersion: Constants?.expoConfig?.version || Constants?.nativeAppVersion || supportText('appVersionNotInformed', language),
     platform: `${Platform.OS} ${Platform.Version || ''}`.trim(),
     lastSync: formatLastSync(lastSync, language),
     sqlite: supportText('checking', language),
@@ -404,7 +404,7 @@ export default function AjudaSuporteScreen() {
 
       setDiagnostic((prev) => ({
         ...prev,
-        appVersion: Constants?.expoConfig?.version || Constants?.manifest?.version || Constants?.nativeAppVersion || supportText('appVersionNotInformed', language),
+        appVersion: Constants?.expoConfig?.version || Constants?.nativeAppVersion || supportText('appVersionNotInformed', language),
         platform: `${Platform.OS} ${Platform.Version || ''}`.trim(),
         lastSync: formatLastSync(lastSync, language),
         sqlite: supportText('operational', language),
@@ -484,7 +484,7 @@ export default function AjudaSuporteScreen() {
     setRefreshing(true);
 
     try {
-      await globalSync();
+      await globalSync({ forceRetry: true });
     } catch (error: any) {
       console.log('[Suporte] Sync falhou:', error?.message || error);
     }

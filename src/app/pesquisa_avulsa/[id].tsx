@@ -2846,7 +2846,7 @@ const handleWatermarkImageLoaded = async () => {
 
                     await addAppLog({
                       level:
-                        'WARN',
+                        'WARNING',
 
                       module:
                         'PESQUISA_AVULSA',
