@@ -17,6 +17,7 @@ import { MandatoryUpdateGate } from '../components/MandatoryUpdateGate';
 import { isSupervisorMobileUser } from '../utils/mobileRole';
 
 import { AppAlertProvider } from '../components/AppAlert';
+import { InternalCameraProvider } from '../components/InternalCameraProvider';
 const BACKGROUND_SYNC_TASK = 'BACKGROUND_SYNC_TASK';
 
 if (!TaskManager.isTaskDefined(BACKGROUND_SYNC_TASK)) {
@@ -403,6 +404,8 @@ export default function RootLayout() {
   return (
     <MandatoryUpdateGate>
       <DevicePreflightGate>
+      {/* MOBILE_INTERNAL_CAMERA_V1 */}
+      <InternalCameraProvider>
       {/* MOBILE_GLOBAL_APP_ALERT_PROVIDER_V2 */}
 <AppAlertProvider>
 <Stack
@@ -456,6 +459,7 @@ export default function RootLayout() {
       <Stack.Screen name="visita/[id]" options={{ headerShown: false }} />
       </Stack>
 </AppAlertProvider>
+      </InternalCameraProvider>
     </DevicePreflightGate>
     </MandatoryUpdateGate>
   );

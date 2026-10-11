@@ -58,7 +58,14 @@
           "locationWhenInUsePermission": "O SmartSheep utiliza sua localização para validar visitas, check-ins, check-outs e evidências de campo."
         }
       ],
-      "./plugins/withDeviceMemory"
+      "./plugins/withDeviceMemory",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "O Omni Field utiliza a câmera para registrar evidências de campo.",
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
