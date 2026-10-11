@@ -464,7 +464,7 @@ const markOutboxConflict = async (
       'DIAMOND_SYNC_CONFLICT',
 
     message:
-      'Operação retirada do retry automático por conflito de sincronização.',
+      `Fila #${item.id} ${item.endpoint}: HTTP ${httpStatus ?? '-'} ${conflictCode} — ${conflictMessage}. Evidência preservada.`,
 
     metadata: {
       queueId:
@@ -2777,6 +2777,21 @@ const scheduleOutboxRetry = async (
     ]
   );
 
+  await addAppLog({
+    level: 'WARNING',
+    module: 'SYNC',
+    action: 'OUTBOX_RETRY',
+    message: `Fila #${item.id} ${item.endpoint}: ${safeError}; tentativa ${attempts}; próxima ${nextRetryAt}.`,
+    metadata: {
+      queueId: item.id,
+      operationKey: item.operation_key || null,
+      endpoint: item.endpoint,
+      attempts,
+      nextRetryAt,
+      cause: safeError,
+    },
+  }).catch(() => {});
+
   console.warn(
     '[SYNC OUTBOX] retry agendado',
     {
@@ -2886,18 +2901,6 @@ const uploadSyncQueue = async (
         )
       ) {
 
-        if (
-          await resolveObsoleteServerTombstoneQueueItemV1(
-            db,
-            item,
-            preparedPayload,
-            res,
-            body
-          )
-        ) {
-          continue;
-        }
-
         await markOutboxConflict(
           db,
           item,
@@ -2953,23 +2956,9 @@ const uploadSyncQueue = async (
         continue;
       }
 
-      if (
-        isRequiredVisitSurveyPendingResponse(
-          res,
-          body
-        )
-      ) {
-        const recovered =
-          await recoverCheckoutRejectedByRequiredSurvey(
-            db,
-            item,
-            preparedPayload,
-            body
-          );
-
-        if (recovered) {
-          continue;
-        }
+      if (isRequiredVisitSurveyPendingResponse(res, body)) {
+        await markOutboxConflict(db, item, preparedPayload, res, body);
+        continue;
       }
 
       if (
@@ -2985,36 +2974,37 @@ const uploadSyncQueue = async (
 
         await db.runAsync(
           `DELETE FROM sync_queue WHERE id = ?`,
-          [
-            item.id
-          ]
+          [item.id]
         );
+
+        await addAppLog({
+          level: 'INFO',
+          module: 'SYNC',
+          action: 'OUTBOX_ACK',
+          message: `Fila #${item.id} ${item.endpoint}: recebimento confirmado HTTP ${res?.status}.`,
+          metadata: {
+            queueId: item.id,
+            endpoint: item.endpoint,
+            method: methodToUse,
+            operationKey: item.operation_key || null,
+            httpStatus: res?.status || null,
+            attempts: Number(item.attempts || 0) + 1,
+          },
+        }).catch(() => {});
 
       } else {
 
         if (
-          String(item.endpoint || '').toLowerCase().includes('/coletas') &&
-          isRepeatableSurveyLimitResponse(res, body)
+          res &&
+          res.status >= 400 &&
+          res.status < 500 &&
+          res.status !== 408 &&
+          res.status !== 429
         ) {
-          await discardCollectionRejectedByRepeatableLimit(db, item, preparedPayload, body);
+          await markOutboxConflict(
+            db, item, preparedPayload, res, body
+          );
           continue;
-        }
-
-        if (res?.status === 400) {
-          const resetDone = await resetInvalidJustificationWithoutPhoto(db, item, preparedPayload, body);
-
-          if (resetDone) {
-            continue;
-          }
-
-          if (
-            String(item.endpoint || '').toLowerCase().includes('/coletas') &&
-            isStockInsufficientResponse(res, body)
-          ) {
-            const friendlyMessage = getFriendlyStockErrorMessage(body);
-            await markCollectionAsSyncError(db, item, preparedPayload, friendlyMessage);
-            continue;
-          }
         }
 
         const errorMessage = extractApiErrorMessage(body, `HTTP ${res?.status || 'unknown'}`);
@@ -5282,6 +5272,120 @@ export const getDiamondSyncDiagnostics =
   };
 
 
+
+/*
+ * OMNI_AUDITORIA_FORTE_135
+ * Diagnóstico real da Outbox e do Conflict Ledger.
+ */
+export const getGlobalSyncAuditReport = async (result: any) => {
+  const status = String(result?.status || 'UNKNOWN');
+  const h: DiamondSyncHealth =
+    result?.health || await getDiamondSyncHealth();
+
+  const lines: string[] = [];
+
+  if (result?.error) {
+    lines.push('Motivo: ' + String(result.error).slice(0, 500));
+  }
+
+  if (h.lastServerPullError) {
+    lines.push('Download do servidor: ' + h.lastServerPullError);
+  }
+
+  if (h.diagnosticError) {
+    lines.push('Diagnóstico local: ' + h.diagnosticError);
+  }
+
+  if (h.manifestReason) {
+    lines.push('Configuração: ' + h.manifestReason);
+  }
+
+  const counts: Array<[string, number]> = [
+    ['Operações pendentes', h.pending],
+    ['Retentativas', h.retry],
+    ['Conflitos Outbox', h.conflict],
+    ['Conflitos não resolvidos', h.unresolvedConflicts],
+    ['Coletas pendentes', h.collectionsPending],
+    ['Coletas em conflito', h.collectionsConflict],
+    ['Visitas pendentes', h.visitsPending],
+    ['Visitas órfãs', h.orphanVisitsPending],
+    ['Evidência órfã do servidor', h.orphanServerEvidence],
+    ['Configuração pendente', h.configurationPending],
+    ['Tarefas a reconciliar', h.taskReconciliationPending],
+  ];
+
+  for (const [name, count] of counts) {
+    if (count > 0) lines.push(name + ': ' + count);
+  }
+
+  if (status === 'OFFLINE') {
+    lines.unshift('Sem internet. Evidências permanecem no aparelho.');
+  }
+
+  if (status.startsWith('SKIPPED')) {
+    lines.unshift('Sincronização não executada: ' + status);
+  }
+
+  const [queue, conflicts] = await Promise.all([
+    getDiamondPendingOperations(100),
+    getDiamondSyncConflicts({
+      unresolvedOnly: true,
+      limit: 100,
+    }),
+  ]);
+
+  for (const item of queue.slice(0, 15)) {
+    lines.push([
+      'Fila #' + item.queueId +
+        ' [' + item.status + '] ' +
+        item.method + ' ' + item.endpoint,
+      item.storeName
+        ? 'Loja: ' + item.storeName
+        : item.storeId
+          ? 'Loja ID: ' + item.storeId
+          : '',
+      item.visitId ? 'Visita: ' + item.visitId : '',
+      item.surveyName ? 'Pesquisa: ' + item.surveyName : '',
+      'Tentativas: ' + item.attempts,
+      item.lastError
+        ? 'Erro: ' + item.lastError
+        : 'Aguardando envio; sem erro registrado',
+      item.nextRetryAt
+        ? 'Próximo retry: ' + item.nextRetryAt
+        : '',
+    ].filter(Boolean).join(' | '));
+  }
+
+  for (const c of conflicts.slice(0, 15)) {
+    lines.push(
+      'Conflito #' + c.queueId + ' ' +
+      (c.endpoint || '') +
+      ' | HTTP ' + (c.httpStatus ?? '-') +
+      ' | ' + (c.conflictCode || 'NÃO CLASSIFICADO') +
+      ' | ' + (
+        c.conflictMessage ||
+        c.lastError ||
+        'Sem detalhe retornado pela API'
+      )
+    );
+  }
+
+  const complete = result?.ok === true;
+
+  return {
+    title: complete
+      ? 'Sincronização concluída'
+      : 'Sincronização não concluída',
+    status,
+    message: [
+      complete
+        ? 'Tudo confirmado no servidor.'
+        : 'Operações não confirmadas permanecem protegidas no aparelho.',
+      ...lines,
+    ].join('\n').slice(0, 9000),
+  };
+};
+
 /*
  * MOBILE_FAST_OUTBOX_SYNC_V1
  *
@@ -5482,7 +5586,7 @@ export const fastSync = async () => {
 };
 
 export const globalSync = async (
-  options: { forceRetry?: boolean } = {}
+  options: { forceRetry?: boolean } = { forceRetry: true }
 ) => {
   const { user, token, login } = useAuthStore.getState();
   const { setSyncing, setLastSync } = useSyncStore.getState();
@@ -5501,6 +5605,7 @@ export const globalSync = async (
 
   syncInProgress = true;
   setSyncing(true);
+  let remoteAckConfirmed = false;
 
   try {
     const network = await Network.getNetworkStateAsync();
@@ -5523,7 +5628,7 @@ export const globalSync = async (
 
     // Higiene retroativa: conflitos tombstone antigos de lifecycle sem
     // evidência humana deixam de bloquear a saúde, mas permanecem no ledger.
-    await reconcileObsoleteServerTombstoneConflictsV1(db);
+    // OMNI_AUDITORIA_FORTE_135: tombstones exigem reconciliacao auditada.
 
     const projectId = encodeURIComponent(String(rawProjectId).trim());
     const promotorId = encodeURIComponent(String(user.id).trim());
@@ -5534,7 +5639,7 @@ export const globalSync = async (
     await cleanExpiredLocalTasks(db);
 
     // 1. Primeiro envia pendências locais, antes de espelhar dados do servidor.
-    await uploadSyncQueue(db, options.forceRetry === true);
+    await uploadSyncQueue(db, options.forceRetry !== false);
 
     /*
      * MOBILE_DIAMOND_IDEMPOTENCY_RECONCILIATION_CALL_V1
@@ -6731,6 +6836,7 @@ export const globalSync = async (
 
         // OMNI_GLOBAL_ACK_VERIFIED_135
         if (receiptAccepted === true) {
+          remoteAckConfirmed = true;
           setLastSync(new Date());
         } else {
           console.warn(
@@ -6745,11 +6851,64 @@ export const globalSync = async (
       }
     }
 
+    const confirmed =
+      !hasBlockingState && remoteAckConfirmed;
+
+    await setSyncStateValue(
+      db,
+      String(rawProjectId),
+      String(user.id),
+      'last_global_sync_status',
+      confirmed ? 'SUCCESS' : 'PARTIAL'
+    );
+
+    await setSyncStateValue(
+      db,
+      String(rawProjectId),
+      String(user.id),
+      'last_global_sync_error',
+      confirmed
+        ? null
+        : (
+            health.lastServerPullError ||
+            health.diagnosticError ||
+            (
+              !hasBlockingState
+                ? 'Confirmação remota da API ausente.'
+                : 'Pendências ou conflitos locais.'
+            )
+          )
+    );
+
+    await addAppLog({
+      level: confirmed ? 'INFO' : 'WARNING',
+      module: 'SYNC',
+      action: 'GLOBAL_RESULT',
+      message: confirmed
+        ? 'Global Sync confirmada pela API.'
+        : 'Global Sync parcial: confira a fila e o histórico de conflitos.',
+      metadata: {
+        localComplete: !hasBlockingState,
+        remoteAckConfirmed,
+        pending: health.pending,
+        retry: health.retry,
+        conflict: health.conflict,
+        collectionsPending: health.collectionsPending,
+        visitsPending: health.visitsPending,
+        configPending: health.configurationPending,
+        pullError: health.lastServerPullError,
+      },
+    }).catch(() => {});
+
     return {
-      ok: !hasBlockingState,
-      status: hasBlockingState
-        ? 'PARTIAL' as const
-        : 'SUCCESS' as const,
+      ok: confirmed,
+      status: confirmed
+        ? 'SUCCESS' as const
+        : 'PARTIAL' as const,
+      error:
+        !hasBlockingState && !remoteAckConfirmed
+          ? 'API não confirmou a Global Sync.'
+          : undefined,
       health,
     };
 

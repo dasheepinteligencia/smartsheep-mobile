@@ -34,6 +34,7 @@ import { useSyncStore } from '../store/useSyncStore';
 import {
   globalSync,
   getDiamondSyncConflicts,
+  getGlobalSyncAuditReport,
   pauseGlobalSyncForWorkspaceSwitch,
   resumeGlobalSyncAfterWorkspaceSwitch,
   waitForGlobalSyncIdle,
@@ -484,9 +485,28 @@ export default function AjudaSuporteScreen() {
     setRefreshing(true);
 
     try {
-      await globalSync({ forceRetry: true });
+      let result: any = null;
+
+      for (let n = 0; n < 3; n++) {
+        const idle = await waitForGlobalSyncIdle(60000);
+        if (!idle) break;
+
+        result = await globalSync({ forceRetry: true });
+
+        if (result?.status !== 'SKIPPED_ALREADY_RUNNING') {
+          break;
+        }
+      }
+
+      if (!result?.ok) {
+        const audit = await getGlobalSyncAuditReport(result);
+        AppAlert.alert(audit.title, audit.message);
+      }
     } catch (error: any) {
-      console.log('[Suporte] Sync falhou:', error?.message || error);
+      AppAlert.alert(
+        'Falha na sincronização',
+        String(error?.message || error)
+      );
     }
 
     await loadSupportData(true);
@@ -540,7 +560,41 @@ export default function AjudaSuporteScreen() {
               second: '2-digit',
             });
 
-        return `${whenText} [${log.level}] ${log.module}/${log.action}: ${log.message}`;
+        const metadata = safeParseJson(log.metadata_json, {});
+
+        const detail =
+          log.module === 'SYNC' &&
+          metadata &&
+          typeof metadata === 'object'
+            ? [
+                'queueId',
+                'endpoint',
+                'operationKey',
+                'httpStatus',
+                'attempts',
+                'nextRetryAt',
+                'conflictCode',
+                'conflictMessage',
+                'cause',
+                'pending',
+                'retry',
+                'conflict',
+                'collectionsPending',
+                'visitsPending',
+                'pullError',
+              ]
+                .filter(key =>
+                  metadata[key] !== undefined &&
+                  metadata[key] !== null
+                )
+                .map(key =>
+                  key + '=' +
+                  String(metadata[key]).slice(0, 400)
+                )
+                .join(' | ')
+            : '';
+
+        return `${whenText} [${log.level}] ${log.module}/${log.action}: ${log.message}${detail ? '\n' + detail : ''}`;
       }),
     ].join('\n');
   }, [profile, diagnostic, user, logs, syncConflicts, recoveryAudit, language]);
