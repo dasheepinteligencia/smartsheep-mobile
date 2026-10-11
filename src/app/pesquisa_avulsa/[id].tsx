@@ -20,6 +20,7 @@ import { evaluateSurveyMatchAnswer, flattenSurveyQuestionsPreservingGroups, getS
 
 
 import { AppAlert } from '../../components/AppAlert';
+import { useInternalCamera } from '../../components/InternalCameraProvider';
 const safeParseArray = (data: any) => {
   if (!data) return [];
   if (Array.isArray(data)) return data;
@@ -900,6 +901,7 @@ const repeatableContext = (
 export default function PesquisaAvulsaScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
+  const { capturePhoto } = useInternalCamera();
   const settings = useSettingsStore() as any;
   const { theme } = settings;
   const language = settings.language || 'pt-BR';
@@ -1696,7 +1698,38 @@ const handleWatermarkImageLoaded = async () => {
       source: 'CAMERA' | 'GALLERY',
       locationPromise?: Promise<any>
     ) => {
-      if (!asset?.uri || !asset?.base64) return;
+      if (!asset?.uri) return;
+
+      /*
+       * MOBILE_CAMERA_LOW_MEMORY_V1
+       *
+       * Não pedimos mais base64 ao ImagePicker nativo.
+       *
+       * Em Android isso reduz drasticamente o payload devolvido
+       * pela Activity externa da câmera.
+       *
+       * O base64 é lido somente depois que o arquivo já voltou
+       * ao processo do Omni Field.
+       */
+      if (!asset?.base64) {
+        try {
+          asset.base64 =
+            await FileSystem.readAsStringAsync(
+              asset.uri,
+              {
+                encoding:
+                  FileSystem.EncodingType.Base64,
+              }
+            );
+        } catch (error) {
+          console.log(
+            '[CAMERA] Falha ao materializar base64:',
+            error
+          );
+
+          return;
+        }
+      }
 
       if (!assetMatchesOrientation(asset, requiredOrientation)) {
         AppAlert.alert(
@@ -1798,7 +1831,20 @@ const handleWatermarkImageLoaded = async () => {
       const locationPromise =
         getFastPhotoLocation();
 
-      const res = await ImagePicker.launchCameraAsync({ quality: 0.2, base64: true });
+      const captured =
+        await capturePhoto({
+          quality: 0.2,
+        });
+
+      const res = captured
+        ? {
+            canceled: false,
+            assets: [captured],
+          }
+        : {
+            canceled: true,
+            assets: [],
+          };
       if (!res.canceled && res.assets?.[0]) await processAsset(
           res.assets[0],
           'CAMERA',

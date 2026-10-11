@@ -46,6 +46,7 @@ import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveySt
 import { useAuthStore } from '../../store/useAuthStore';
 import * as Network from 'expo-network';
 import { useSyncStore } from '../../store/useSyncStore';
+import { useInternalCamera } from '../../components/InternalCameraProvider';
 
 // ============================================================================
 // 🎯 MOTOR DE ESTILO DE STORE INSIGHTS
@@ -1188,6 +1189,7 @@ type JustificativaOption = {
 export default function VisitaDetailScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
+  const { capturePhoto } = useInternalCamera();
   const mapRef = useRef<MapView>(null);
   const { theme, language } = useSettingsStore();
   const { user, token } = useAuthStore();
@@ -2322,21 +2324,40 @@ export default function VisitaDetailScreen() {
       return null;
     }
 
-    const result = source === 'camera'
-      ? await ImagePicker.launchCameraAsync({
-          mediaTypes: ['images'],
-          quality: 0.75,
-          allowsEditing: false,
-          exif: true,
-        })
-      : await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['images'],
-          quality: 0.75,
-          allowsEditing: false,
-          exif: true,
-        });
+    const result =
+      source === 'camera'
+        ? (() => {
+            return capturePhoto({
+              quality: 0.75,
+            }).then(
+              captured =>
+                captured
+                  ? {
+                      canceled: false,
+                      assets: [
+                        captured
+                      ],
+                    }
+                  : {
+                      canceled: true,
+                      assets: [],
+                    }
+            );
+          })()
+        : ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            quality: 0.75,
+            allowsEditing: false,
+            exif: true,
+          });
 
-    if (result.canceled || !result.assets?.[0]?.uri) {
+    const resolvedResult =
+      await result;
+
+    if (
+      resolvedResult.canceled ||
+      !resolvedResult.assets?.[0]?.uri
+    ) {
       showCustomAlert(
         visitT('visitPhotoRequiredTitle', 'Foto obrigatória'),
         visitT(
@@ -2349,7 +2370,8 @@ export default function VisitaDetailScreen() {
       return null;
     }
 
-    const asset = result.assets[0];
+    const asset =
+      resolvedResult.assets[0];
 
     if (!validatePhotoOrientation(asset, photoPolicy.orientation)) {
       showCustomAlert(
