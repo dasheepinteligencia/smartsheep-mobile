@@ -32,6 +32,7 @@ import { getStatusColors } from '../../utils/statusUtils';
 import {
   globalSync,
   waitForGlobalSyncIdle,
+  getGlobalSyncAuditReport,
 } from '../../services/syncService';
 import { useSyncStore } from '../../store/useSyncStore';
 import { i18n } from '../../utils/i18n';
@@ -2280,7 +2281,7 @@ qtdPerguntas:
         }
 
         syncResult =
-          await globalSync();
+          await globalSync({ forceRetry: true });
 
         if (
           syncResult?.status !==
@@ -2301,6 +2302,15 @@ qtdPerguntas:
 
       await loadData();
 
+      if (!syncResult?.ok) {
+        const audit = await getGlobalSyncAuditReport(syncResult);
+        showCustomAlert(
+          audit.title,
+          audit.message,
+          'warning'
+        );
+      }
+
     } catch (error) {
       console.error(
         'Erro na atualização:',
@@ -2309,7 +2319,7 @@ qtdPerguntas:
 
       showCustomAlert(
         i18n.t('error') || 'Erro',
-        rt('refreshRouteError', language),
+        String(error instanceof Error ? error.message : error || rt('refreshRouteError', language)),
         'warning'
       );
 

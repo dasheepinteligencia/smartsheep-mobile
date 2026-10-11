@@ -40,6 +40,8 @@ import { useSyncStore } from '../../store/useSyncStore';
 // MOBILE_DIAMOND_SYNC_MENU_IMPORT_V1
 import {
   globalSync,
+  getGlobalSyncAuditReport,
+  waitForGlobalSyncIdle,
   getDiamondSyncHealth,
   type DiamondSyncHealth,
 } from '../../services/syncService';
@@ -759,13 +761,37 @@ export default function MenuScreen() {
     setSyncingNow(true);
 
     try {
-      await globalSync();
+      let result: any = null;
+
+      for (let n = 0; n < 3; n++) {
+        const idle = await waitForGlobalSyncIdle(60000);
+        if (!idle) break;
+
+        result = await globalSync({ forceRetry: true });
+
+        if (result?.status !== 'SKIPPED_ALREADY_RUNNING') {
+          break;
+        }
+      }
+
+      if (!result?.ok) {
+        const audit = await getGlobalSyncAuditReport(result);
+
+        setModal({
+          visible: true,
+          title: audit.title,
+          message: audit.message,
+          type: 'error',
+          primaryText: translate('commonOk', 'OK'),
+          primaryAction: closeModal,
+        });
+      }
 
       // MOBILE_DIAMOND_SYNC_MENU_REFRESH_AFTER_SYNC_V1
       await loadDiamondSyncHealth();
 
       // Sem popup de confirmação: a própria tela já mostra a última sincronização.
-    } catch {
+    } catch (error: any) {
       setModal({
         visible: true,
         title:
@@ -774,12 +800,10 @@ export default function MenuScreen() {
             : language === 'es-ES'
               ? 'Fallo en la sincronización'
               : 'Falha na sincronização',
-        message:
-          language === 'en-US'
-            ? 'Unable to sync now. Check your connection and try again.'
-            : language === 'es-ES'
-              ? 'No fue posible sincronizar ahora. Verifica la conexión e inténtalo nuevamente.'
-              : 'Não foi possível sincronizar agora. Verifique a conexão e tente novamente.',
+        message: String(
+          error?.message || error ||
+          'Erro sem detalhes retornados'
+        ),
         type: 'error',
         primaryText: translate('commonOk', 'OK'),
         primaryAction: closeModal,
