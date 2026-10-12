@@ -2731,12 +2731,15 @@ qtdPerguntas:
                   language
                 );
 
+      // Agendada = roxo; em andamento = azul.
       const stateColor =
-        scheduledPending || inProgress
-          ? '#3B82F6'
-          : done
-            ? '#10B981'
-            : accent;
+        scheduledPending
+          ? '#8B5CF6'
+          : inProgress
+            ? '#3B82F6'
+            : done
+              ? '#10B981'
+              : accent;
 
       // MOBILE_PORTFOLIO_BADGE_COLOR_V1
       // CARTEIRA mantém a identidade laranja do app.

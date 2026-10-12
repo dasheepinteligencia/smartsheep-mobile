@@ -5372,15 +5372,39 @@ export const getGlobalSyncAuditReport = async (result: any) => {
 
   const complete = result?.ok === true;
 
+  // OMNI_GLOBAL_ACK_DIAGNOSTIC_135
+  // Fila vazia não significa confirmação remota recebida.
+  const localQueueEmpty = counts.every(
+    ([, count]) => count === 0
+  );
+
+  const confirmationMissing =
+    !complete &&
+    localQueueEmpty &&
+    String(result?.error || '')
+      .includes('API não confirmou');
+
   return {
     title: complete
       ? 'Sincronização concluída'
-      : 'Sincronização não concluída',
+      : confirmationMissing
+        ? 'Confirmação da API pendente'
+        : 'Sincronização não concluída',
     status,
     message: [
       complete
-        ? 'Tudo confirmado no servidor.'
-        : 'Operações não confirmadas permanecem protegidas no aparelho.',
+        ? 'Sincronização global confirmada pelo servidor.'
+        : confirmationMissing
+          ? (
+              'Nenhuma pendência local encontrada. ' +
+              'A API não confirmou a conclusão da Global Sync. ' +
+              'Os dados não serão apagados e o indicador ' +
+              'Sinc ainda não está validado.'
+            )
+          : (
+              'Sincronização incompleta. ' +
+              'Confira abaixo as operações e erros encontrados.'
+            ),
       ...lines,
     ].join('\n').slice(0, 9000),
   };
