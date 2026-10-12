@@ -32,7 +32,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useSyncStore } from '../../store/useSyncStore';
-import { globalSync, addToSyncQueue } from '../../services/syncService';
+import {
+  runManualGlobalSyncWithNotice,
+} from '../../services/manualSyncNotice';
+import { addToSyncQueue } from '../../services/syncService';
 import { getDBConnection } from '../../database/db';
 import { t } from '../../utils/i18n';
 
@@ -451,18 +454,25 @@ export default function Alertas({
     }, [language])
   );
 
+  // OMNI_MANUAL_SYNC_COVERAGE_135 - ALERTAS
   const onRefresh = async () => {
+    if (refreshing) return;
+
     setRefreshing(true);
 
     try {
-      await globalSync();
-      await loadAlerts();
+      await runManualGlobalSyncWithNotice(
+        language,
+        async () => {
+          await loadAlerts();
+        }
+      );
     } finally {
       setRefreshing(false);
     }
   };
 
-  const filteredAlerts = useMemo(() => {
+    const filteredAlerts = useMemo(() => {
     return alerts.filter((item) => {
       if (activeFilter === 'unread') return !item.lida;
       if (activeFilter === 'pending') return item.exige_aceite && !item.aceita_em;

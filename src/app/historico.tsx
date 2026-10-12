@@ -34,7 +34,9 @@ import {
 import { useAuthStore } from '../store/useAuthStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useSyncStore } from '../store/useSyncStore';
-import { globalSync } from '../services/syncService';
+import {
+  runManualGlobalSyncWithNotice,
+} from '../services/manualSyncNotice';
 import { api } from '../services/api';
 import { getDBConnection } from '../database/db';
 
@@ -5235,19 +5237,25 @@ export default function HistoricoScreen() {
     }, [projectId, userId, selectedPeriod, language])
   );
 
+  // OMNI_MANUAL_SYNC_COVERAGE_135 - HISTORICO
   const onRefresh = async () => {
+    if (refreshing) return;
+
     setRefreshing(true);
 
     try {
-      await globalSync();
-    } catch (error: any) {
-      console.log('[Histórico] globalSync falhou:', error?.message || error);
+      await runManualGlobalSyncWithNotice(
+        language,
+        async () => {
+          await loadHistorico(true);
+        }
+      );
+    } finally {
+      setRefreshing(false);
     }
-
-    await loadHistorico(true);
   };
 
-  const renderMainTab = (key: MainTab, label: string, Icon: any, percent: number) => {
+    const renderMainTab = (key: MainTab, label: string, Icon: any, percent: number) => {
     const active = mainTab === key;
     const color = getPercentColor(percent);
 

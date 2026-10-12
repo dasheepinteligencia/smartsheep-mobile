@@ -38,7 +38,9 @@ import {
 import { useAuthStore } from '../store/useAuthStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useSyncStore } from '../store/useSyncStore';
-import { globalSync } from '../services/syncService';
+import {
+  runManualGlobalSyncWithNotice,
+} from '../services/manualSyncNotice';
 import { api } from '../services/api';
 import { getDBConnection } from '../database/db';
 
@@ -714,17 +716,25 @@ export default function PerfilUsuarioScreen() {
     }, [base.projeto, base.empresa, base.supervisor, syncing, lastSync, language])
   );
 
+  // OMNI_MANUAL_SYNC_COVERAGE_135 - PERFIL
   const refresh = async () => {
+    if (refreshing) return;
+
     setRefreshing(true);
 
     try {
-      await globalSync();
-    } catch {}
-
-    await loadProfile(true);
+      await runManualGlobalSyncWithNotice(
+        language,
+        async () => {
+          await loadProfile(true);
+        }
+      );
+    } finally {
+      setRefreshing(false);
+    }
   };
 
-  const miniLine = (value: any, Icon: any) => {
+    const miniLine = (value: any, Icon: any) => {
     if (!value) return null;
 
     return (

@@ -32,7 +32,9 @@ import { useAuthStore } from '../store/useAuthStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useSyncStore } from '../store/useSyncStore';
 import { api } from '../services/api';
-import { globalSync } from '../services/syncService';
+import {
+  runManualGlobalSyncWithNotice,
+} from '../services/manualSyncNotice';
 
 const ACCENT_COLOR = '#FF7A00';
 
@@ -586,19 +588,25 @@ export default function PerformanceScreen() {
     }, [projectId, userId, language])
   );
 
+  // OMNI_MANUAL_SYNC_COVERAGE_135 - PERFORMANCE
   const onRefresh = async () => {
+    if (refreshing) return;
+
     setRefreshing(true);
 
     try {
-      await globalSync();
-    } catch (error: any) {
-      console.log('[Performance] globalSync falhou:', error?.message || error);
+      await runManualGlobalSyncWithNotice(
+        language,
+        async () => {
+          await loadPerformance(true);
+        }
+      );
+    } finally {
+      setRefreshing(false);
     }
-
-    await loadPerformance(true);
   };
 
-  const renderTab = (key: TabType, label: string) => {
+    const renderTab = (key: TabType, label: string) => {
     const active = activeTab === key;
 
     return (

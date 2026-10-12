@@ -3,6 +3,8 @@ import * as Network from 'expo-network';
 import { AppAlert } from '../components/AppAlert';
 import {
   getDiamondSyncHealth,
+  globalSync,
+  waitForGlobalSyncIdle,
 } from './syncService';
 import {
   i18n,
@@ -98,5 +100,60 @@ export async function notifyManualSyncResult(
       tone: 'warning',
       compact: true,
     }
+  );
+}
+
+
+// OMNI_MANUAL_SYNC_COVERAGE_135
+// Entrada comum para todos os gestos e botoes manuais.
+// Fast Sync e rotinas automaticas nao passam por aqui.
+export async function runManualGlobalSyncWithNotice(
+  language: string,
+  refreshLocal?: () => Promise<unknown>
+): Promise<void> {
+  let result: any = null;
+  let syncError: unknown = null;
+
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const idle = await waitForGlobalSyncIdle(60000);
+
+      if (!idle) {
+        result = {
+          ok: false,
+          status: 'SKIPPED_ALREADY_RUNNING',
+        };
+        break;
+      }
+
+      result = await globalSync({
+        forceRetry: true,
+      });
+
+      if (
+        result?.status !==
+        'SKIPPED_ALREADY_RUNNING'
+      ) {
+        break;
+      }
+    }
+  } catch (error) {
+    syncError = error;
+    console.warn('[MANUAL GLOBAL SYNC]', error);
+  }
+
+  // Recarregar dados locais nao altera a fila de envio.
+  if (refreshLocal) {
+    try {
+      await refreshLocal();
+    } catch (error) {
+      console.warn('[MANUAL LOCAL REFRESH]', error);
+    }
+  }
+
+  await notifyManualSyncResult(
+    result,
+    language,
+    syncError || undefined
   );
 }
