@@ -32,9 +32,9 @@ import { getStatusColors } from '../../utils/statusUtils';
 import {
   globalSync,
   waitForGlobalSyncIdle,
-  getGlobalSyncAuditReport,
 } from '../../services/syncService';
 import { useSyncStore } from '../../store/useSyncStore';
+import { notifyManualSyncResult } from '../../services/manualSyncNotice';
 import { i18n } from '../../utils/i18n';
 import { api } from '../../services/api';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -2302,14 +2302,7 @@ qtdPerguntas:
 
       await loadData();
 
-      if (!syncResult?.ok) {
-        const audit = await getGlobalSyncAuditReport(syncResult);
-        showCustomAlert(
-          audit.title,
-          audit.message,
-          'warning'
-        );
-      }
+      await notifyManualSyncResult(syncResult, language);
 
     } catch (error) {
       console.error(
@@ -2317,10 +2310,10 @@ qtdPerguntas:
         error
       );
 
-      showCustomAlert(
-        i18n.t('error') || 'Erro',
-        String(error instanceof Error ? error.message : error || rt('refreshRouteError', language)),
-        'warning'
+      await notifyManualSyncResult(
+        null,
+        language,
+        error
       );
 
     } finally {
