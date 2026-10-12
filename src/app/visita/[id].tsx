@@ -39,7 +39,13 @@ import { getSmartLocation, getDistanceInMeters } from '../../services/locationSe
 import { getStatusColors } from '../../utils/statusUtils';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { i18n } from '../../utils/i18n';
-import { enqueueSyncOperationInDb, fastSync, globalSync } from '../../services/syncService';
+import {
+  enqueueSyncOperationInDb,
+  fastSync,
+} from '../../services/syncService';
+import {
+  runManualGlobalSyncWithNotice,
+} from '../../services/manualSyncNotice';
 import { api } from '../../services/api';
 import { materializeFreeVisitExecutionFromManifestInDb } from '../../services/fieldPortfolioService';
 import { fetchRepeatableStatusForVisit } from '../../services/repeatableSurveyStatus';
@@ -2006,41 +2012,28 @@ export default function VisitaDetailScreen() {
   };
 
   // MOBILE_VISIT_PULL_TO_SYNC_V1
+  // OMNI_MANUAL_SYNC_COVERAGE_135 - VISITA
   const handlePullToSync = async () => {
-    if (refreshing || isSyncing) return;
+    if (refreshing) return;
 
     setRefreshing(true);
 
     try {
-      await globalSync();
-
-      await Promise.all([
-        carregarDadosCompletos(),
-        obterLocalizacaoInicial(),
-      ]);
-    } catch (error: any) {
-      await addAppLog({
-        level: 'WARNING',
-        module: 'VISITA',
-        action: 'PULL_TO_SYNC_FAILED',
-        message: 'Sincronização manual por gesto falhou na tela da visita.',
-        metadata: {
-          visitId: visita?.id || id,
-          error: error?.message || String(error),
-        },
-      }).catch(() => {});
-
-      showCustomAlert(
-        visitT('visitSyncNotCompletedTitle', 'Sincronização não concluída'),
-        visitT('visitSyncNotCompletedMessage', 'Não foi possível sincronizar agora. Seus dados locais foram preservados e uma nova tentativa poderá ser feita puxando a tela para baixo.'),
-        'warning'
+      await runManualGlobalSyncWithNotice(
+        language,
+        async () => {
+          await Promise.allSettled([
+            carregarDadosCompletos(),
+            obterLocalizacaoInicial(),
+          ]);
+        }
       );
     } finally {
       setRefreshing(false);
     }
   };
 
-  // MOBILE_VISIT_FAST_SYNC_AFTER_ACTION_V1
+    // MOBILE_VISIT_FAST_SYNC_AFTER_ACTION_V1
   const triggerSyncAfterVisitAction = (
     action: 'CHECKIN' | 'CHECKOUT' | 'JUSTIFICAR',
     operationId: string

@@ -28,6 +28,9 @@ import { i18n } from '../../utils/i18n';
 import { getDBConnection, initializeDatabase } from '../../database/db';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useSyncStore } from '../../store/useSyncStore';
+import {
+  runManualGlobalSyncWithNotice,
+} from '../../services/manualSyncNotice';
 import { globalSync } from '../../services/syncService';
 import { getStatusColors } from '../../utils/statusUtils';
 
@@ -1514,19 +1517,26 @@ export default function DashboardScreen() {
     globalSync();
   }, []);
 
+  // OMNI_MANUAL_SYNC_COVERAGE_135 - HOME
   const onRefresh = async () => {
+    if (refreshing) return;
+
     setRefreshing(true);
     setImgError(false);
 
     try {
-      await globalSync();
-      await loadDashboardData();
+      await runManualGlobalSyncWithNotice(
+        language,
+        async () => {
+          await loadDashboardData();
+        }
+      );
     } finally {
       setRefreshing(false);
     }
   };
 
-  useFocusEffect(
+    useFocusEffect(
     useCallback(() => {
       loadDashboardData();
     }, [user?.id, user?.custom_data, user?.pontos_gamificacao, lastSync])
