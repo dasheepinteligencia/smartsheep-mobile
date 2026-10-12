@@ -1302,12 +1302,14 @@ export default function SincronizacaoScreen() {
               <StatCard
                 label={
                   tr(
-                    'Pendentes',
-                    'Pending',
-                    'Pendientes'
+                    'Pendentes (total)',
+                    'Pending (total)',
+                    'Pendientes (total)'
                   )
                 }
-                value={pending}
+                // OMNI_PENDING_TOTAL_INCLUDES_RETRY_135
+                // RETRY continua aguardando entrega ao servidor.
+                value={pending + retry}
                 Icon={Database}
               />
 
