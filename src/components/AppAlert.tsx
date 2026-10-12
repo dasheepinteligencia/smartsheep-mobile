@@ -33,6 +33,8 @@ export type AppAlertButton = {
 
 
 export type AppAlertOptions = {
+  tone?: 'success' | 'warning' | 'error';
+  compact?: boolean;
   cancelable?: boolean;
   onDismiss?: () => void;
 };
@@ -168,10 +170,9 @@ export function AppAlertProvider({
   }, []);
 
 
-  const type = visualType(
-    state.title,
-    state.message
-  );
+  const type =
+    state.options?.tone ||
+    visualType(state.title, state.message);
 
   const mainColor =
     type === 'success'
@@ -260,11 +261,16 @@ export function AppAlertProvider({
         onRequestClose={requestClose}
       >
         <View style={styles.overlay}>
-          <View style={styles.card}>
+          <View
+            style={[
+              styles.card,
+              state.options?.compact && styles.compactCard,
+            ]}
+          >
 
             {type === 'success' && (
               <CheckCircle2
-                size={50}
+                size={state.options?.compact ? 32 : 50}
                 color="#10B981"
                 style={styles.icon}
               />
@@ -272,7 +278,7 @@ export function AppAlertProvider({
 
             {type === 'error' && (
               <XCircle
-                size={50}
+                size={state.options?.compact ? 32 : 50}
                 color="#EF4444"
                 style={styles.icon}
               />
@@ -280,7 +286,7 @@ export function AppAlertProvider({
 
             {type === 'warning' && (
               <AlertTriangle
-                size={50}
+                size={state.options?.compact ? 32 : 50}
                 color="#F59E0B"
                 style={styles.icon}
               />
@@ -355,6 +361,11 @@ export function AppAlertProvider({
 
 
 const styles = StyleSheet.create({
+  compactCard: {
+    maxWidth: 360,
+    padding: 18,
+    borderRadius: 18,
+  },
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',

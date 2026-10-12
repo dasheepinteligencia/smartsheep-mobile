@@ -40,7 +40,6 @@ import { useSyncStore } from '../../store/useSyncStore';
 // MOBILE_DIAMOND_SYNC_MENU_IMPORT_V1
 import {
   globalSync,
-  getGlobalSyncAuditReport,
   waitForGlobalSyncIdle,
   getDiamondSyncHealth,
   type DiamondSyncHealth,
@@ -48,6 +47,7 @@ import {
 import { api } from '../../services/api';
 import { getDBConnection } from '../../database/db';
 import { setI18nLocale, t } from '../../utils/i18n';
+import { notifyManualSyncResult } from '../../services/manualSyncNotice';
 import * as SecureStore from 'expo-secure-store';
 
 const ACCENT_COLOR = '#FF7A00';
@@ -763,8 +763,9 @@ export default function MenuScreen() {
     try {
       let result: any = null;
 
-      for (let n = 0; n < 3; n++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         const idle = await waitForGlobalSyncIdle(60000);
+
         if (!idle) break;
 
         result = await globalSync({ forceRetry: true });
@@ -774,46 +775,20 @@ export default function MenuScreen() {
         }
       }
 
-      if (!result?.ok) {
-        const audit = await getGlobalSyncAuditReport(result);
-
-        setModal({
-          visible: true,
-          title: audit.title,
-          message: audit.message,
-          type: 'error',
-          primaryText: translate('commonOk', 'OK'),
-          primaryAction: closeModal,
-        });
-      }
-
-      // MOBILE_DIAMOND_SYNC_MENU_REFRESH_AFTER_SYNC_V1
       await loadDiamondSyncHealth();
+      await notifyManualSyncResult(result, language);
 
-      // Sem popup de confirmação: a própria tela já mostra a última sincronização.
-    } catch (error: any) {
-      setModal({
-        visible: true,
-        title:
-          language === 'en-US'
-            ? 'Sync failed'
-            : language === 'es-ES'
-              ? 'Fallo en la sincronización'
-              : 'Falha na sincronização',
-        message: String(
-          error?.message || error ||
-          'Erro sem detalhes retornados'
-        ),
-        type: 'error',
-        primaryText: translate('commonOk', 'OK'),
-        primaryAction: closeModal,
-      });
+    } catch (error) {
+      console.warn('[MENU SYNC]', error);
+      await loadDiamondSyncHealth();
+      await notifyManualSyncResult(null, language, error);
+
     } finally {
       setSyncingNow(false);
     }
   };
 
-  const handleLogout = () => {
+    const handleLogout = () => {
     setModal({
       visible: true,
       title:

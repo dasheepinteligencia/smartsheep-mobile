@@ -1,3 +1,5 @@
+import { notifyManualSyncResult } from '../services/manualSyncNotice';
+
 import React, {
   useCallback,
   useMemo,
@@ -536,57 +538,42 @@ export default function SincronizacaoScreen() {
   const handleSyncNow =
     useCallback(
       async () => {
+        if (syncingNow || isSyncing) return;
 
-        if (
-          syncingNow ||
-          isSyncing
-        ) {
-          return;
-        }
-
-        setSyncingNow(
-          true
-        );
+        setSyncingNow(true);
 
         try {
+          const result = await globalSync({
+            forceRetry: true,
+          });
 
-          /*
-           * globalSync é conservador:
-           * falhas ficam preservadas no Outbox/Conflict Ledger.
-           */
-          const result =
-            await globalSync({ forceRetry: true });
+          await loadDiagnostics(true);
+          await notifyManualSyncResult(result, language);
 
-          if (
-            result &&
-            result.ok === false
-          ) {
-            console.warn(
-              '[SyncCenter] Sincronização não concluída:',
-              result
-            );
-          }
+        } catch (error) {
+          console.warn('[SyncCenter]', error);
+          await loadDiagnostics(true);
 
-          await loadDiagnostics(
-            true
+          await notifyManualSyncResult(
+            null,
+            language,
+            error
           );
 
         } finally {
-
-          setSyncingNow(
-            false
-          );
+          setSyncingNow(false);
         }
       },
       [
         syncingNow,
         isSyncing,
-        loadDiagnostics
+        loadDiagnostics,
+        language,
       ]
     );
 
 
-  const unresolvedConflicts =
+    const unresolvedConflicts =
     Number(
       health
         ?.unresolvedConflicts ||
