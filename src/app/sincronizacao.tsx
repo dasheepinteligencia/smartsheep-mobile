@@ -1097,27 +1097,6 @@ export default function SincronizacaoScreen() {
 
         </View>
 
-        <TouchableOpacity
-          style={[
-            styles.refreshIconButton,
-            {
-              backgroundColor:
-                surface,
-
-              borderColor:
-                border
-            }
-          ]}
-          onPress={
-            onRefresh
-          }
-        >
-          <RefreshCw
-            size={19}
-            color={accent}
-          />
-        </TouchableOpacity>
-
       </View>
 
 
@@ -1279,6 +1258,23 @@ export default function SincronizacaoScreen() {
 
             </View>
 
+
+            {/* OMNI_SYNC_CENTER_SINGLE_ACTION_135 */}
+            <Text
+              style={[
+                styles.sectionSubtitle,
+                {
+                  color: textSecondary,
+                  marginBottom: 12,
+                },
+              ]}
+            >
+              {tr(
+                'Puxe para baixo para atualizar os indicadores. Para enviar dados, toque em Sincronizar agora.',
+                'Pull down to refresh the indicators. To send data, tap Synchronize now.',
+                'Desliza hacia abajo para actualizar los indicadores. Para enviar datos, toca Sincronizar ahora.'
+              )}
+            </Text>
 
             <View
               style={
@@ -2026,26 +2022,6 @@ const styles =
     },
 
     backButton: {
-      width:
-        42,
-
-      height:
-        42,
-
-      borderRadius:
-        15,
-
-      borderWidth:
-        1,
-
-      alignItems:
-        'center',
-
-      justifyContent:
-        'center'
-    },
-
-    refreshIconButton: {
       width:
         42,
 
